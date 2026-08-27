@@ -7,17 +7,60 @@
 //! de nvm, y el runner resuelve esa versión (el PATH heredado puede
 //! apuntar al npm de OTRO node, p.ej. el de Homebrew).
 
+#[cfg(windows)]
+use crate::kernel::program_files;
 use crate::kernel::{
-    armar, correr, correr_streaming, find_in_path, guardar_path_nvm, resolve_nvm_bin_dir,
-    version_de, EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr, correr_streaming, find_in_path, guardar_path_nvm, home,
+    no_encontrado, resolve_nvm_bin_dir, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// ¿Hay npm en esta máquina? Chequeo de presencia (sin spawn): nvm con al
-/// menos una versión, o npm en el PATH. Alimenta qué pestañas existen.
+/// El ejecutable de npm: en POSIX es el shim `npm`; en Windows es
+/// `npm.cmd` (un script de cmd que CreateProcess no puede ejecutar
+/// directo — ver [`RealRunner`]).
+#[cfg(windows)]
+const NPM_BIN: &str = "npm.cmd";
+#[cfg(not(windows))]
+const NPM_BIN: &str = "npm";
+
+/// Dónde puede estar npm: devuelve el directorio bin resuelto (si hay) y
+/// las rutas exploradas fuera del PATH (alimentan el error visible).
+#[cfg(not(windows))]
+fn ubicaciones_npm() -> (Option<PathBuf>, Vec<PathBuf>) {
+    let mut buscadas = Vec::new();
+    // nvm es la fuente autoritativa en POSIX: el PATH heredado puede
+    // apuntar al npm de OTRO node (p.ej. el de Homebrew).
+    if let Some(bin_dir) = home().and_then(|h| resolve_nvm_bin_dir(&h.join(".nvm"))) {
+        return (Some(bin_dir), buscadas);
+    }
+    if let Some(h) = home() {
+        buscadas.push(h.join(".nvm"));
+    }
+    (
+        find_in_path(NPM_BIN).and_then(|p| p.parent().map(PathBuf::from)),
+        buscadas,
+    )
+}
+
+/// Windows: npm es un shim del instalador de node.js (estándar:
+/// `%ProgramFiles%\nodejs`). nvm-windows publica su versión activa por
+/// symlink YA en el PATH: sin resolución propia (defer hasta un reporte
+/// real de usuario).
+#[cfg(windows)]
+fn ubicaciones_npm() -> (Option<PathBuf>, Vec<PathBuf>) {
+    let mut buscadas = Vec::new();
+    if let Some(pf) = program_files() {
+        buscadas.push(pf.join("nodejs"));
+    }
+    let bin = find_in_path(NPM_BIN)
+        .or_else(|| crate::kernel::primer_existente(buscadas.clone()).map(|dir| dir.join(NPM_BIN)));
+    (bin.and_then(|b| b.parent().map(PathBuf::from)), buscadas)
+}
+
+/// ¿Hay npm en esta máquina? Chequeo de presencia (sin spawn). Alimenta
+/// qué pestañas existen.
 pub fn instalado() -> bool {
-    let nvm = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".nvm"));
-    nvm.as_deref().and_then(resolve_nvm_bin_dir).is_some() || find_in_path("npm").is_some()
+    ubicaciones_npm().0.is_some()
 }
 
 /// Runner real: ejecuta el npm de la versión activa de node.
@@ -28,36 +71,22 @@ pub struct RealRunner {
 }
 
 impl RealRunner {
-    /// Descubre el npm de la versión activa de node. nvm es la fuente
-    /// autoritativa; el PATH queda como fallback cuando no hay nvm.
+    /// Descubre el npm de esta máquina y resuelve sus versiones.
     pub fn discover() -> std::io::Result<Self> {
-        let nvm = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".nvm"));
-        let bin_dir = nvm
-            .as_deref()
-            .and_then(resolve_nvm_bin_dir)
-            .map(Ok)
-            .unwrap_or_else(|| {
-                find_in_path("npm")
-                    .map(|p| p.parent().map(PathBuf::from).unwrap_or(p))
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            "npm no encontrado: ni en ~/.nvm ni en PATH",
-                        )
-                    })
-            })?;
+        let (bin_dir, buscadas) = ubicaciones_npm();
+        let bin_dir = bin_dir.ok_or_else(|| no_encontrado("npm", &buscadas))?;
         Ok(Self::de_bin_dir(bin_dir))
     }
 
     fn de_bin_dir(bin_dir: PathBuf) -> Self {
         // El espacio global de npm lo define la versión de NODE activa; la
         // versión del gestor es el otro hecho que la statusbar muestra.
-        let node_version =
-            version_de(std::process::Command::new(bin_dir.join("node")).arg("--version"))
-                .map(|v| crate::kernel::sin_v(&v).to_string());
-        let npm_version =
-            version_de(std::process::Command::new(bin_dir.join("npm")).arg("--version"))
-                .unwrap_or_else(|| "desconocida".to_string());
+        let node_version = version_de(
+            std::process::Command::new(bin_dir.join(con_extension("node"))).arg("--version"),
+        )
+        .map(|v| crate::kernel::sin_v(&v).to_string());
+        let npm_version = version_de(&mut comando_npm(&bin_dir, &["--version"]))
+            .unwrap_or_else(|| "desconocida".to_string());
         Self {
             bin_dir,
             npm_version,
@@ -65,15 +94,35 @@ impl RealRunner {
         }
     }
 
-    /// Comando npm listo con el PATH de la versión resuelta antepuesto:
-    /// el shim de npm lleva shebang `#!/usr/bin/env node`, así encuentra su
-    /// node aunque el PATH heredado no lo tenga (app abierta desde Finder).
+    /// Comando npm listo para correr.
     fn command(&self, args: &[&str]) -> std::process::Command {
-        let mut cmd = std::process::Command::new(self.bin_dir.join("npm"));
-        cmd.args(args);
-        guardar_path_nvm(&mut cmd);
-        cmd
+        comando_npm(&self.bin_dir, args)
     }
+}
+
+/// Arma el comando npm sobre un directorio bin resuelto.
+///
+/// POSIX: el shim `npm` lleva shebang `#!/usr/bin/env node`; se antepone
+/// el PATH de la versión de nvm para que encuentre su node aunque la app
+/// GUI no herede el PATH del shell.
+///
+/// Windows: npm es `npm.cmd` y CreateProcess no ejecuta scripts de cmd —
+/// se invoca `node.exe npm-cli.js`, exactamente lo que el shim hace
+/// por dentro (layout estable del instalador de node.js).
+#[cfg(not(windows))]
+fn comando_npm(bin_dir: &Path, args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(bin_dir.join(NPM_BIN));
+    cmd.args(args);
+    guardar_path_nvm(&mut cmd);
+    cmd
+}
+
+#[cfg(windows)]
+fn comando_npm(bin_dir: &Path, args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(bin_dir.join("node.exe"));
+    cmd.arg(bin_dir.join("node_modules/npm/bin/npm-cli.js"));
+    cmd.args(args);
+    cmd
 }
 
 impl Runner for RealRunner {

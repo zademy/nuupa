@@ -5,21 +5,34 @@
 //! (`add`) y el comando visible viven en la tabla de gestores de [`crate`].
 
 use crate::kernel::{
-    armar, correr, correr_streaming, find_in_path, version_de, EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr, correr_streaming, find_in_path, home, no_encontrado,
+    primer_existente, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// ¿Hay binario de bun en esta máquina? Chequeo de presencia (sin spawn).
-pub fn instalado() -> bool {
-    if find_in_path("bun").is_some() {
-        return true;
+/// Ubicaciones estándar de bun (fuera del PATH): la variable `BUN_INSTALL`
+/// si existe y el default del instalador (`~/.bun/bin`, también en
+/// Windows). Cero-config: la var es bonus, nunca requisito.
+fn ubicaciones_bun() -> Vec<PathBuf> {
+    let mut rutas = Vec::new();
+    if let Some(v) = std::env::var_os("BUN_INSTALL") {
+        rutas.push(PathBuf::from(v).join("bin").join(con_extension("bun")));
     }
-    std::env::var_os("HOME").is_some_and(|h| PathBuf::from(h).join(".bun/bin/bun").is_file())
+    if let Some(h) = home() {
+        rutas.push(h.join(".bun/bin").join(con_extension("bun")));
+    }
+    rutas
 }
 
-/// Runner real de bun: PATH o ~/.bun/bin/bun. Bun no depende de node: no
-/// hace falta anteponer el PATH de nvm ni reportar versión de node.
+/// ¿Hay binario de bun en esta máquina? Chequeo de presencia (sin spawn).
+pub fn instalado() -> bool {
+    find_in_path(&con_extension("bun")).is_some() || primer_existente(ubicaciones_bun()).is_some()
+}
+
+/// Runner real de bun: PATH o ubicaciones estándar. Bun no depende de
+/// node: no hace falta anteponer el PATH de nvm ni reportar versión de
+/// node.
 pub struct RealBunRunner {
     bin: PathBuf,
     bun_version: String,
@@ -27,13 +40,10 @@ pub struct RealBunRunner {
 
 impl RealBunRunner {
     pub fn discover() -> std::io::Result<Self> {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let bin = find_in_path("bun")
-            .or_else(|| home.map(|h| h.join(".bun/bin/bun")))
-            .filter(|p| p.is_file())
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "bun no encontrado")
-            })?;
+        let buscadas = ubicaciones_bun();
+        let bin = find_in_path(&con_extension("bun"))
+            .or_else(|| primer_existente(buscadas.clone()))
+            .ok_or_else(|| no_encontrado("bun", &buscadas))?;
         let bun_version = version_de(std::process::Command::new(&bin).arg("--version"))
             .unwrap_or_else(|| "desconocida".to_string());
         Ok(Self { bin, bun_version })
@@ -187,7 +197,7 @@ mod tests {
     use crate::kernel::testutil::FakeRunner;
 
     // Fixtures capturados de bun 1.3.14 reales
-    const LS_SALIDA: &str = "/Users/sadot node_modules (49)\n├── @antfu/ni@30.5.0\n├── cowsay@1.0.0\n└── headroom-ai@0.22.4\n";
+    const LS_SALIDA: &str = "/Users/ejemplo node_modules (49)\n├── @antfu/ni@30.5.0\n├── cowsay@1.0.0\n└── headroom-ai@0.22.4\n";
     const TABLA: &str = "bun outdated v1.3.14 (0d9b296a)\n|-----------------------------------------|\n| Package     | Current | Update | Latest |\n|-------------|---------|--------|--------|\n| cowsay      | 1.0.0   | 1.0.0  | 1.6.0  |\n|-------------|---------|--------|--------|\n| headroom-ai | 0.22.4  | 0.22.4  | 0.36.5 |\n|-----------------------------------------|\n";
 
     fn runner_bun() -> FakeRunner {

@@ -4,19 +4,35 @@
 //! (`add`) y el comando visible viven en la tabla de gestores de [`crate`].
 
 use crate::kernel::{
-    armar, correr, correr_streaming, find_in_path, guardar_path_nvm, parse_outdated, version_de,
-    EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr, correr_streaming, find_in_path, guardar_path_nvm, home,
+    local_app_data, no_encontrado, parse_outdated, primer_existente, version_de, EspacioGlobal,
+    Runner, RunnerOutput,
 };
 use std::path::{Path, PathBuf};
+
+/// Ubicaciones estándar de pnpm (fuera del PATH), en orden: la variable
+/// `PNPM_HOME` si existe, y los defaults por SO — una app GUI no hereda el
+/// PATH del shell, así que los defaults salvan. Cero-config: la var es
+/// bonus, nunca requisito.
+fn ubicaciones_pnpm() -> Vec<PathBuf> {
+    let mut rutas = Vec::new();
+    if let Some(v) = std::env::var_os("PNPM_HOME") {
+        rutas.push(PathBuf::from(v).join(con_extension("pnpm")));
+    }
+    if let Some(lad) = local_app_data() {
+        rutas.push(lad.join("pnpm").join(con_extension("pnpm"))); // Windows
+    }
+    if let Some(h) = home() {
+        rutas.push(h.join("Library/pnpm/pnpm")); // macOS (PNPM_HOME)
+        rutas.push(h.join(".local/share/pnpm/pnpm")); // Linux
+    }
+    rutas
+}
 
 /// ¿Hay binario de pnpm en esta máquina? Chequeo de presencia (sin spawn):
 /// alimenta qué pestañas existen.
 pub fn instalado() -> bool {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    find_in_path("pnpm").is_some()
-        || home.is_some_and(|h| {
-            h.join("Library/pnpm/pnpm").is_file() || h.join(".local/share/pnpm/pnpm").is_file()
-        })
+    find_in_path(&con_extension("pnpm")).is_some() || primer_existente(ubicaciones_pnpm()).is_some()
 }
 
 /// Runner real de pnpm: binario del PATH o de las ubicaciones estándar de
@@ -30,16 +46,10 @@ pub struct RealPnpmRunner {
 
 impl RealPnpmRunner {
     pub fn discover() -> std::io::Result<Self> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "sin HOME"))?;
-        let bin = find_in_path("pnpm")
-            .or_else(|| Some(home.join("Library/pnpm/pnpm"))) // PNPM_HOME macOS
-            .or_else(|| Some(home.join(".local/share/pnpm/pnpm"))) // Linux
-            .filter(|p| p.is_file())
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "pnpm no encontrado")
-            })?;
+        let buscadas = ubicaciones_pnpm();
+        let bin = find_in_path(&con_extension("pnpm"))
+            .or_else(|| primer_existente(buscadas.clone()))
+            .ok_or_else(|| no_encontrado("pnpm", &buscadas))?;
         // Los probes usan el mismo PATH antepuesto que run(): sin eso,
         // desde Finder la versión saldría "desconocida" en silencio.
         let pnpm_version = version_de(&mut Self::command(&bin, &["--version"]))
@@ -136,7 +146,7 @@ mod tests {
     use crate::kernel::testutil::FakeRunner;
 
     // Fixtures capturados de pnpm 10.33 reales
-    const LS_JSON: &str = r#"[{"path":"/Users/x/Library/pnpm/global/5","private":false,"dependencies":{"cowsay":{"from":"cowsay","version":"1.0.0","resolved":"https://registry.npmjs.org/"},"@org/paquete":{"version":"2.0.0"}}}]"#;
+    const LS_JSON: &str = r#"[{"path":"/Users/ejemplo/Library/pnpm/global/5","private":false,"dependencies":{"cowsay":{"from":"cowsay","version":"1.0.0","resolved":"https://registry.npmjs.org/"},"@org/paquete":{"version":"2.0.0"}}}]"#;
     const OUTDATED_JSON: &str =
         r#"{"cowsay":{"current":"1.0.0","latest":"1.6.0","wanted":"1.0.0","isDeprecated":false}}"#;
 

@@ -301,22 +301,82 @@ fn version_key(v: &str) -> Vec<u64> {
 /// comando: los shims (npm, pnpm) llevan `#!/usr/bin/env node` y una app
 /// GUI abierta desde Finder no hereda el PATH del shell.
 pub fn guardar_path_nvm(cmd: &mut std::process::Command) {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if let Some(bin_dir) = home.and_then(|h| resolve_nvm_bin_dir(&h.join(".nvm"))) {
+    if let Some(bin_dir) = home().and_then(|h| resolve_nvm_bin_dir(&h.join(".nvm"))) {
         let path = std::env::var_os("PATH").unwrap_or_default();
-        let mut nueva = bin_dir.into_os_string();
-        nueva.push(":");
-        nueva.push(&path);
-        cmd.env("PATH", nueva);
+        // join_paths usa el separador del SO (`:` POSIX, `;` Windows).
+        if let Ok(nueva) =
+            std::env::join_paths(std::iter::once(bin_dir).chain(std::env::split_paths(&path)))
+        {
+            cmd.env("PATH", nueva);
+        }
     }
 }
 
-/// Busca un binario en el PATH (chequeo de presencia, sin spawn).
+// ---- Descubrimiento multiplataforma ----
+//
+// Una app GUI no hereda el PATH del shell: hallar un gestor exige PATH +
+// variables conocidas (si existen) + ubicaciones estándar por SO. Nunca se
+// EXIGE al usuario configurar nada: cero-config, las vars son bonus.
+
+/// Home del usuario multiplataforma: `HOME` (POSIX) o `USERPROFILE`
+/// (Windows, donde HOME suele no estar definido).
+pub fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|h| !h.as_os_str().is_empty())
+}
+
+/// `%LOCALAPPDATA%` (Windows): ahí instala pnpm por defecto.
+pub fn local_app_data() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// `%ProgramFiles%` (Windows): instalación por defecto de node.js.
+#[cfg(windows)]
+pub fn program_files() -> Option<PathBuf> {
+    std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// Nombre del binario con extensión de Windows (`pnpm` → `pnpm.exe`):
+/// `is_file()` no resuelve extensiones por su cuenta.
+pub fn con_extension(bin: &str) -> String {
+    if cfg!(windows) {
+        format!("{bin}.exe")
+    } else {
+        bin.to_string()
+    }
+}
+
+/// Busca un binario en el PATH por su nombre YA extendido (ver
+/// [`con_extension`]). Chequeo de presencia, sin spawn.
 pub fn find_in_path(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(bin))
         .find(|candidate| candidate.is_file())
+}
+
+/// El primer candidato que existe, en orden: así se resuelve el
+/// descubrimiento de cada gestor (PATH → vars → estándar del SO).
+pub fn primer_existente(candidatos: Vec<PathBuf>) -> Option<PathBuf> {
+    candidatos.into_iter().find(|c| c.is_file())
+}
+
+/// Error de descubrimiento que enseña dónde se buscó: mata el ticket
+/// "no me detecta X" sin adivinación.
+pub fn no_encontrado(gestor: &str, buscadas: &[PathBuf]) -> std::io::Error {
+    let rutas: Vec<String> = std::iter::once("PATH".to_string())
+        .chain(buscadas.iter().map(|p| p.display().to_string()))
+        .collect();
+    std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("{gestor} no encontrado. Busqué en: {}", rutas.join(", ")),
+    )
 }
 
 /// Corre un comando de probe (`--version`) y devuelve su stdout recortado
@@ -584,5 +644,34 @@ mod tests {
         assert_eq!(sin_v("v26.2.0"), "26.2.0");
         assert_eq!(sin_v("26.2.0"), "26.2.0");
         assert_eq!(sin_v(" v1.0.0 "), "1.0.0");
+    }
+
+    #[test]
+    fn primer_existente_toma_el_primero_que_existe_en_orden() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&b, "").unwrap();
+        // "a" no existe: la búsqueda sigue hasta "b"
+        assert_eq!(primer_existente(vec![a, b.clone()]), Some(b));
+        assert_eq!(primer_existente(vec![dir.path().join("nada")]), None);
+    }
+
+    #[test]
+    fn no_encontrado_lista_el_path_y_las_rutas_exploradas() {
+        let err = no_encontrado(
+            "pnpm",
+            &[
+                PathBuf::from("/Users/ejemplo/Library/pnpm"),
+                PathBuf::from("/opt/pnpm"),
+            ],
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("pnpm no encontrado. Busqué en: PATH"),
+            "{msg}"
+        );
+        assert!(msg.contains("/Users/ejemplo/Library/pnpm"), "{msg}");
+        assert!(msg.contains("/opt/pnpm"), "{msg}");
     }
 }
