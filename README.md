@@ -35,6 +35,24 @@ Grab an installer from the [releases page](https://github.com/zademy/nuupa/relea
 
 Every release ships a `SHASUMS256.txt` with the checksums of all artifacts.
 
+### Unsigned builds
+
+> **IMPORTANT (UNSIGNED APPS)**: Nuupa releases are currently **not signed
+> or notarized** (Apple Developer ID and Windows code signing are still
+> pending), so your OS may block the app from running.
+
+You can still run it:
+
+- **macOS**: after moving the app to `/Applications`, open a terminal and
+  run:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/Nuupa.app
+  ```
+
+- **Windows**: when SmartScreen warns that the app is not signed, choose
+  **More info → Run anyway**.
+
 ## Supported package managers
 
 npm, pnpm and bun — detected automatically. Only the ones installed on
