@@ -166,7 +166,11 @@ jobs:
   # notas y checksums.
   publicar-release:
     needs: build
-    if: github.ref == 'refs/heads/master'
+    # El guard de estado es OBLIGATORIO: `tests` se salta en master y
+    # GitHub arrastra el skip hacia los dependientes cuyo `if` no consulta
+    # estado (skip en cascada documentado de `needs`). Sin el guard, este
+    # job se salta aunque build haya triunfado.
+    if: ${{ !failure() && !cancelled() && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
