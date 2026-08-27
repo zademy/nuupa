@@ -1,6 +1,7 @@
 # 1. Build en develop, release en master reutilizando los artefactos
 
-Estado: aceptado (2026-08-27)
+Estado: supercedido por el ADR-0002 (2026-08-27) en lo de reutilizar
+artefactos; el tag por CI y la sanidad de tag nuevo siguen vigentes.
 
 ## Contexto
 

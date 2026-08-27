@@ -99,19 +99,16 @@ two long-lived branches — nobody pushes tags by hand:
 3. Five platform builds run in parallel and upload their installers as
    artifacts.
 
-**`master` — publish (no rebuild):**
+**`master` — build and publish:**
 
 1. Sanity also verifies that the tag `v{version}` about to be created does
    not exist yet — bump the version **in `develop`** before merging.
-2. The publish job downloads the installers built by the `develop` run of
-   the exact commit that was merged, validates that every installer family
-   is present, and adds checksums.
+2. The five platform builds run again and the publish job validates that
+   every installer family is present and adds checksums.
 3. It creates the tag at the merge commit and publishes the release with
    notes of all commits since the last release.
 
-Merges must be regular merges or fast-forwards (not squash merges), so the
-`develop` commit's artifacts can be resolved. Versions containing `rc`,
-`beta` or `alpha` are published as pre-releases.
+Versions containing `rc`, `beta` or `alpha` are published as pre-releases.
 
 ## Contributing
 
