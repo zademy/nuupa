@@ -45,11 +45,13 @@ jobs:
           fi
           echo "Se creará el tag $TAG al publicar la release."
 
-  # Tests de verdad (solo develop): Rust y frontend. Un test roto no
-  # debería llegar ni a construirse.
+  # Tests de verdad: Rust y frontend, en develop Y master. Un test roto no
+  # debería llegar ni a construirse. CORRE EN AMBAS RAMAS a propósito:
+  # ningún job de esta cadena se salta por rama, así los skips en cascada
+  # de `needs` (GitHub salta dependientes cuyo if no consulta estado) no
+  # pueden morder, y todo release se publica con su suite verde.
   tests:
     needs: sanidad
-    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -87,9 +89,6 @@ jobs:
   # instaladores de su propio run (predecible, sin saltos entre runs).
   build:
     needs: tests
-    # Corre en develop y master (tests se salta en master: con este guard
-    # el skip no detiene la cadena).
-    if: ${{ !failure() && !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -166,11 +165,9 @@ jobs:
   # notas y checksums.
   publicar-release:
     needs: build
-    # El guard de estado es OBLIGATORIO: `tests` se salta en master y
-    # GitHub arrastra el skip hacia los dependientes cuyo `if` no consulta
-    # estado (skip en cascada documentado de `needs`). Sin el guard, este
-    # job se salta aunque build haya triunfado.
-    if: ${{ !failure() && !cancelled() && github.ref == 'refs/heads/master' }}
+    # Plain if, sin guards de estado: como `tests` ya corre en master,
+    # ningún job de la cadena se salta y el skip en cascada no existe.
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
