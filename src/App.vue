@@ -19,7 +19,8 @@ onMounted(async () => {
   // líneas de una actualización en curso llegan al log compartido aunque
   // el usuario esté cambiando de pestaña — nada se pierde en remontajes.
   desubscribir = await listen("pm-output", (e) => {
-    log.append(`${e.payload.gestor}/${e.payload.package}: ${e.payload.line}`);
+    const { gestor, package: paquete, line } = e.payload;
+    log.appendLine(gestor, paquete, line);
   });
   try {
     const instalados = await invoke("gestores_instalados");

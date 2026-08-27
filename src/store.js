@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 /**
  * Log compartido entre todos los gestores: un único histórico con líneas
  * prefijadas `gestor/paquete:` que sobrevive a los cambios de pestaña.
+ * `appendLine` es la ÚNICA dueña de esa convención de prefijo.
  */
 export function crearLog(capacidad = 500) {
   const lineas = ref([]);
@@ -11,7 +12,9 @@ export function crearLog(capacidad = 500) {
     lineas.value.push(linea);
     if (lineas.value.length > capacidad) lineas.value.shift();
   };
-  return { lineas, append };
+  const appendLine = (gestor, paquete, linea) =>
+    append(`${gestor}/${paquete}: ${linea}`);
+  return { lineas, append, appendLine };
 }
 
 /**
@@ -79,12 +82,6 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     appendLog(`${gestor}/${name}: ${detail}`);
   }
 
-  // Línea streameada de un gestor (evento pm-output): la store es dueña
-  // de la convención de prefijo `gestor/paquete:`.
-  function appendLogLine(g, pkg, line) {
-    appendLog(`${g}/${pkg}: ${line}`);
-  }
-
   const isUpdating = (name) => status[name] === ESTADO.ACTUALIZANDO;
   const hasError = (name) => status[name] === ESTADO.ERROR;
 
@@ -139,10 +136,11 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     };
   });
 
-  // "Actualizar todo": cola estrictamente secuencial sobre los
-  // desactualizados (en orden de lista, sin filtro de búsqueda). Un fallo no
-  // detiene la cola; "Detener" deja terminar el paquete en curso y no
-  // empieza el siguiente.
+  // "Actualizar todo": la cola vive en Rust (orden de lista, de a uno, un
+  // fallo no detiene, excluidos saltados siempre, Detener con gracia).
+  // La store delega y reacciona a los eventos `pm-cola` (empieza/resultado
+  // por paquete); el invoke devuelve resumen + snapshot final — un solo
+  // refresco.
   const queue = reactive({
     active: false,
     current: null,
@@ -151,51 +149,49 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
   });
 
   async function updateAll() {
-    const pendientes = desactualizables.value.map((p) => p.name);
-    if (pendientes.length === 0 || queue.active) return;
+    if (desactualizables.value.length === 0 || queue.active) return;
 
     queue.active = true;
     queue.stopped = false;
     queue.summary = null;
-    let ok = 0;
-    let failed = 0;
-    let saltados = 0;
-    for (const name of pendientes) {
-      if (queue.stopped) break;
-      // "Actualizar todo" lo salta SIEMPRE: incluso excluido a mitad de
-      // cola, una vez construida.
-      if (isExcluded(name)) {
-        saltados++;
-        continue;
-      }
-      queue.current = name;
-      const exito = await update(name, { refrescar: false });
-      if (exito === true) ok++;
-      else if (exito === false) failed++;
+    try {
+      const { resumen, snapshot } = await invokeFn("actualizar_todo", { gestor });
+      state.snapshot = snapshot;
+      queue.summary = resumen;
+      // El resumen también vive en el log: si el usuario está en otra
+      // pestaña, la statusbar del panel desmontado no lo perdería… esto sí.
+      appendLog(
+        `${gestor}: cola terminada — ${resumen.ok} de ${resumen.total} actualizados` +
+          (resumen.failed ? ` · ${resumen.failed} fallidos` : "") +
+          (resumen.detenida ? " · detenida" : "")
+      );
+    } catch (e) {
+      appendLog(`${gestor}: la cola falló: ${e}`);
+      await refresh();
+    } finally {
+      queue.current = null;
+      queue.active = false;
     }
-    queue.current = null;
-    queue.active = false;
-    await refresh();
-    // "Detenida" solo si de verdad quedó cola sin correr (parar durante el
-    // último paquete no dejó nada pendiente; los excluidos sí corrieron su
-    // destino: saltarse no es detenerse).
-    queue.summary = {
-      total: pendientes.length,
-      ok,
-      failed,
-      detenida: ok + failed + saltados < pendientes.length,
-    };
-    // El resumen también vive en el log: si el usuario está en otra
-    // pestaña, la statusbar del panel desmontado no lo perdería… esto sí.
-    appendLog(
-      `${gestor}: cola terminada — ${ok} de ${pendientes.length} actualizados` +
-        (failed ? ` · ${failed} fallidos` : "") +
-        (queue.summary.detenida ? " · detenida" : "")
-    );
+  }
+
+  // Evento `pm-cola` de ESTE gestor (empieza/resultado): mueve la fila de
+  // la tabla. Las líneas de salida llegan por `pm-output` directo al log
+  // compartido (App.vue, siempre montado).
+  function procesarEventoCola(e) {
+    if (e.gestor !== gestor) return;
+    if (e.tipo === "empieza") {
+      queue.current = e.paquete;
+      status[e.paquete] = ESTADO.ACTUALIZANDO;
+    } else if (e.tipo === "resultado") {
+      if (e.exito) delete status[e.paquete];
+      else markFailed(e.paquete, `la actualización falló\n${e.salida ?? ""}`.trim());
+    }
   }
 
   function stopAll() {
-    if (queue.active) queue.stopped = true;
+    if (!queue.active) return;
+    queue.stopped = true;
+    invokeFn("detener_actualizar_todo").catch(() => {});
   }
 
   // Paquetes filtrados por la búsqueda (subcadena, insensible a mayúsculas;
@@ -218,7 +214,7 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     update,
     updateAll,
     stopAll,
-    appendLogLine,
+    procesarEventoCola,
     cargarExclusiones,
     toggleExcluded,
     isUpdating,
