@@ -3,21 +3,27 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PanelGestor from "./PanelGestor.vue";
+import Icono from "./Icono.vue";
 import { crearLog } from "./store";
+import { useI18n } from "./i18n";
+import { useTema } from "./tema";
 
-// Pestañas: solo gestores soportados E instalados; siempre abre en el
-// primero (npm). El orden lo da el backend.
+// Tabs: only supported AND installed managers; always opens on the first
+// one (npm). The backend sets the order.
 const gestores = ref(["npm"]);
 const activo = ref("npm");
-// Un único log para toda la app: sobrevive a los cambios de pestaña.
+// A single log for the whole app: survives tab switches.
 const log = crearLog();
+
+const { t, destino, alternar } = useI18n();
+const { destino: destinoTema, alternar: alternarTema } = useTema();
 
 let desubscribir = null;
 
 onMounted(async () => {
-  // El listener de streaming vive AQUÍ (App nunca se desmonta): las
-  // líneas de una actualización en curso llegan al log compartido aunque
-  // el usuario esté cambiando de pestaña — nada se pierde en remontajes.
+  // The streaming listener lives HERE (App never unmounts): the lines of
+  // an in-flight update reach the shared log even while the user switches
+  // tabs — nothing is lost in remounts.
   desubscribir = await listen("pm-output", (e) => {
     const { gestor, package: paquete, line } = e.payload;
     log.appendLine(gestor, paquete, line);
@@ -29,7 +35,7 @@ onMounted(async () => {
       activo.value = instalados[0];
     }
   } catch {
-    // sin detección: npm solo — el panel mostrará su propio error si falla
+    // no detection: npm only — the panel will show its own error if it fails
   }
 });
 
@@ -37,8 +43,8 @@ onUnmounted(() => desubscribir?.());
 </script>
 
 <template>
-  <!-- Sprite de iconos (una sola instancia, oculto): los <use> de los
-       paneles lo referencian por id. -->
+  <!-- Icon sprite (a single instance, hidden): the panels' <use> elements
+       reference it by id. -->
   <svg width="0" height="0" style="position: absolute" aria-hidden="true">
     <defs>
       <symbol id="ic-refrescar" viewBox="0 0 24 24">
@@ -61,13 +67,27 @@ onUnmounted(() => desubscribir?.());
         <circle cx="11" cy="11" r="8" />
         <path d="m21 21-4.3-4.3" />
       </symbol>
+      <symbol id="ic-sol" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="ic-luna" viewBox="0 0 24 24">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+      </symbol>
     </defs>
   </svg>
 
   <main>
     <header class="barra">
       <h1 class="wordmark">nuupa</h1>
-      <nav class="pestanas" aria-label="Gestores instalados">
+      <nav class="pestanas" :aria-label="t('gestoresInstalados')">
         <button
           v-for="g in gestores"
           :key="g"
@@ -78,6 +98,26 @@ onUnmounted(() => desubscribir?.());
           {{ g }}
         </button>
       </nav>
+      <!-- Language toggle: shows the language it switches TO; English is
+           the default on first launch. -->
+      <button
+        class="idioma"
+        :title="t('cambiarIdioma')"
+        :aria-label="t('cambiarIdioma')"
+        @click="alternar"
+      >
+        {{ destino }}
+      </button>
+      <!-- Theme toggle: same rule, shows the theme it switches TO; light is
+           the default on first launch. -->
+      <button
+        class="tema"
+        :title="destinoTema === 'oscuro' ? t('temaOscuro') : t('temaClaro')"
+        :aria-label="destinoTema === 'oscuro' ? t('temaOscuro') : t('temaClaro')"
+        @click="alternarTema"
+      >
+        <Icono :nombre="destinoTema === 'oscuro' ? 'luna' : 'sol'" :tamano="12" />
+      </button>
     </header>
 
     <PanelGestor :key="activo" :gestor="activo" :log="log" />
@@ -85,17 +125,24 @@ onUnmounted(() => desubscribir?.());
 </template>
 
 <style>
-/* Reset + lienzo: la app es oscura de borde a borde. */
-html,
-body {
-  margin: 0;
-  height: 100%;
-  background: #0d0f12;
+/* Theme palettes: the ONLY place hex colors live. Both ramps are the same
+   cold-gray family (Monochrome; the light one is its "between gray and
+   white" variant). A new theme is a new [data-tema] block — every
+   consumer reads roles via var(--*), never a hex. Light is the default. */
+:root {
+  color-scheme: light;
+  --bg: #f9fafb;
+  --surface: #ffffff;
+  --surface-2: #f3f4f6;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --fg: #111827;
+  --fg-muted: #4b5563;
+  --fg-faint: #6b7280;
 }
-</style>
 
-<style scoped>
-main {
+:root[data-tema="oscuro"] {
+  color-scheme: dark;
   --bg: #0d0f12;
   --surface: #15181d;
   --surface-2: #1c2026;
@@ -104,7 +151,20 @@ main {
   --fg: #e6e8eb;
   --fg-muted: #9aa1ab;
   --fg-faint: #6b7280;
+}
 
+/* Reset + canvas: the app is themed edge to edge (index.html pre-paints
+   the right background so there is no flash on launch). */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+}
+</style>
+
+<style scoped>
+main {
   font-family: system-ui, sans-serif;
   font-size: 12px;
   color: var(--fg);
@@ -120,7 +180,6 @@ main {
 .barra {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
   flex-shrink: 0;
@@ -135,9 +194,12 @@ main {
   margin: 0;
 }
 
+/* Tabs sit pushed to the right; the toggles (language, theme) are the
+   top-right corner elements, right after them. */
 .pestanas {
   display: flex;
   gap: 4px;
+  margin-left: auto;
 }
 
 .pestanas button {
@@ -163,12 +225,37 @@ main {
   background: var(--surface);
   border-color: var(--border);
   border-bottom: 1px solid var(--surface);
-  /* se "funde" con el contenido del panel activo */
+  /* "fuses" with the active panel's content */
   margin-bottom: -1px;
 }
 
-.pestanas button:focus-visible {
+.pestanas button:focus-visible,
+.idioma:focus-visible,
+.tema:focus-visible {
   outline: 1px solid var(--fg);
   outline-offset: 1px;
+}
+
+.idioma,
+.tema {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: color 120ms, background 120ms;
+}
+
+.idioma:hover,
+.tema:hover {
+  color: var(--fg);
+  background: var(--surface);
 }
 </style>

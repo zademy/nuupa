@@ -1,9 +1,9 @@
-//! Exclusiones persistentes de "Actualizar todo", por (gestor, paquete).
+//! Persistent "Update all" exclusions, per (manager, package).
 //!
-//! Un paquete Excluido se salta en la cola de SU gestor pero mantiene
-//! disponible la actualización individual (glosario en CONTEXT.md). El
-//! JSON es un mapa { gestor: [nombres] }; el formato legado (lista plana)
-//! se normaliza al leer como exclusiones de npm y se reescribe una vez.
+//! An Excluded package is skipped in ITS manager's queue but keeps the
+//! individual update available (glossary in CONTEXT.md). The JSON is a
+//! map { manager: [names] }; the legacy format (flat list) is normalized
+//! on read as npm's exclusions and rewritten once.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,16 +13,16 @@ const ARCHIVO: &str = "exclusiones.json";
 
 type Mapa = BTreeMap<String, Vec<String>>;
 
-/// Carga el mapa por gestor. Devuelve `era_legado` cuando el archivo era la
-/// lista plana de v1 (o no había nada que conservar): el llamador decide
-/// reescribirlo en formato mapa — la migración corre una sola vez.
+/// Loads the per-manager map. Returns `era_legado` when the file was the
+/// v1 flat list (or there was nothing to preserve): the caller decides
+/// to rewrite it in map format — the migration runs once.
 pub fn cargar(dir: &Path) -> (Mapa, bool) {
     let texto = match fs::read_to_string(dir.join(ARCHIVO)) {
         Ok(t) => t,
         Err(_) => return (Mapa::new(), false),
     };
     if let Ok(legado) = serde_json::from_str::<Vec<String>>(&texto) {
-        // Formato v1: todo lo excluido era de npm.
+        // v1 format: everything excluded belonged to npm.
         let mut mapa = Mapa::new();
         if !legado.is_empty() {
             mapa.insert("npm".to_string(), legado);
@@ -32,9 +32,9 @@ pub fn cargar(dir: &Path) -> (Mapa, bool) {
     (serde_json::from_str(&texto).unwrap_or_default(), false)
 }
 
-/// Guarda el mapa completo por gestor, creando el directorio si hace falta.
-/// Escritura atómica (tmp + rename): un crash a mitad de escritura no puede
-/// dejar un JSON a medias que el siguiente arranque trataría como corrupto.
+/// Saves the whole per-manager map, creating the directory if needed.
+/// Atomic write (tmp + rename): a crash mid-write cannot leave a
+/// half-written JSON that the next startup would treat as corrupt.
 pub fn guardar(dir: &Path, mapa: &Mapa) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
     let destino = dir.join(ARCHIVO);
@@ -87,11 +87,11 @@ mod tests {
     fn migracion_reescrita_es_idempotente() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(ARCHIVO), r#"["hunkdiff"]"#).unwrap();
-        // Primera carga: legado → se reescribe en formato mapa
+        // First load: legacy → rewritten in map format
         let (mapa, era_legado) = cargar(dir.path());
         assert!(era_legado);
         guardar(dir.path(), &mapa).unwrap();
-        // Segunda carga: ya no es legado
+        // Second load: no longer legacy
         let (mapa2, era_legado2) = cargar(dir.path());
         assert!(!era_legado2);
         assert_eq!(mapa2.get("npm"), Some(&vec!["hunkdiff".to_string()]));
@@ -116,7 +116,7 @@ mod tests {
         let mut mapa = Mapa::new();
         mapa.insert("npm".to_string(), vec!["hunkdiff".to_string()]);
         mapa.insert("pnpm".to_string(), vec!["otro".to_string()]);
-        // simula set_excluded("pnpm", [])
+        // simulates set_excluded("pnpm", [])
         mapa.insert("pnpm".to_string(), vec![]);
         guardar(dir.path(), &mapa).unwrap();
         let (cargado, _) = cargar(dir.path());
@@ -130,6 +130,6 @@ mod tests {
         fs::write(dir.path().join(ARCHIVO), "no soy json").unwrap();
         let (mapa, era_legado) = cargar(dir.path());
         assert!(mapa.is_empty());
-        assert!(!era_legado); // corrupto no dispara migración: arranca limpio
+        assert!(!era_legado); // corrupt does not trigger migration: starts clean
     }
 }

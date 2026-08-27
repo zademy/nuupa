@@ -1,8 +1,8 @@
-//! Adapter del gestor bun: binario autocontenido (sin shim de node) y
-//! espacio global propio. `pm ls -g` dibuja un árbol y `outdated -g` una
-//! tabla para humanos — sin JSON: se parsean ambas, y un formato
-//! inesperado es error visible, nunca un falso "todo al día". El verbo
-//! (`add`) y el comando visible viven en la tabla de gestores de [`crate`].
+//! bun adapter: self-contained binary (no node shim) and its own global
+//! space. `pm ls -g` draws a tree and `outdated -g` a human table — no
+//! JSON: both are parsed, and an unexpected format is a visible error,
+//! never a fake "all up to date". The verb (`add`) and the visible
+//! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
     armar, con_extension, correr, correr_streaming, find_in_path, home, no_encontrado,
@@ -11,9 +11,9 @@ use crate::kernel::{
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Ubicaciones estándar de bun (fuera del PATH): la variable `BUN_INSTALL`
-/// si existe y el default del instalador (`~/.bun/bin`, también en
-/// Windows). Cero-config: la var es bonus, nunca requisito.
+/// bun's standard locations (outside the PATH): the `BUN_INSTALL`
+/// variable if present and the installer's default (`~/.bun/bin`, also on
+/// Windows). Zero-config: the variable is a bonus, never a requirement.
 fn ubicaciones_bun() -> Vec<PathBuf> {
     let mut rutas = Vec::new();
     if let Some(v) = std::env::var_os("BUN_INSTALL") {
@@ -25,14 +25,13 @@ fn ubicaciones_bun() -> Vec<PathBuf> {
     rutas
 }
 
-/// ¿Hay binario de bun en esta máquina? Chequeo de presencia (sin spawn).
+/// Is there a bun binary on this machine? Presence check (no spawn).
 pub fn instalado() -> bool {
     find_in_path(&con_extension("bun")).is_some() || primer_existente(ubicaciones_bun()).is_some()
 }
 
-/// Runner real de bun: PATH o ubicaciones estándar. Bun no depende de
-/// node: no hace falta anteponer el PATH de nvm ni reportar versión de
-/// node.
+/// bun's real runner: PATH or standard locations. bun does not depend on
+/// node: no need to prepend nvm's PATH or report a node version.
 pub struct RealBunRunner {
     bin: PathBuf,
     bun_version: String,
@@ -45,7 +44,7 @@ impl RealBunRunner {
             .or_else(|| primer_existente(buscadas.clone()))
             .ok_or_else(|| no_encontrado("bun", &buscadas))?;
         let bun_version = version_de(std::process::Command::new(&bin).arg("--version"))
-            .unwrap_or_else(|| "desconocida".to_string());
+            .unwrap_or_else(|| "unknown".to_string());
         Ok(Self { bin, bun_version })
     }
 
@@ -74,9 +73,9 @@ impl Runner for RealBunRunner {
     }
 }
 
-/// `bun pm ls -g` dibuja un árbol; solo las dependencias de PRIMER nivel
-/// (prefijo ├──/└──) son los globales: las anidadas son transitivas.
-/// Formato: `├── nombre@versión` (scoped: `@org/pkg@1.2.3`).
+/// `bun pm ls -g` draws a tree; only FIRST-level dependencies (prefix
+/// ├──/└──) are the globals: nested ones are transitive. Format:
+/// `├── name@version` (scoped: `@org/pkg@1.2.3`).
 fn parse_ls(salida: &str) -> Vec<(String, String)> {
     let mut pares = Vec::new();
     for linea in salida.lines() {
@@ -95,11 +94,11 @@ fn parse_ls(salida: &str) -> Vec<(String, String)> {
     pares
 }
 
-/// `bun outdated -g` imprime una tabla para humanos. Las posiciones de las
-/// columnas se leen del ENCABEZADO real (Package/Latest); toda fila que no
-/// respete el ancho del encabezado, o celda vacía donde va la versión,
-/// invalida la tabla completa (None → error visible): un formato cambiado
-/// jamás se traduce en falsos al-día. Tabla sin filas = todo al día.
+/// `bun outdated -g` prints a human table. Column positions are read from
+/// the REAL header (Package/Latest); any row that does not respect the
+/// header's width, or an empty cell where the version goes, invalidates
+/// the whole table (None → visible error): a changed format never becomes
+/// fake up-to-dates. Table with no rows = all up to date.
 fn parse_tabla(salida: &str) -> Option<BTreeMap<String, String>> {
     let lineas: Vec<&str> = salida.lines().collect();
     let encabezado = lineas
@@ -113,11 +112,11 @@ fn parse_tabla(salida: &str) -> Option<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
     for l in lineas {
         if !l.starts_with('|') || l.contains("--") || l.contains("Package") {
-            continue; // separadores y encabezado
+            continue; // separators and header
         }
         let celdas: Vec<&str> = l.split('|').map(str::trim).collect();
         if celdas.len() != ancho {
-            return None; // fila con otro ancho: el formato cambió
+            return None; // row with a different width: the format changed
         }
         let name = celdas[col_pkg];
         let latest = celdas[col_lat];
@@ -125,28 +124,28 @@ fn parse_tabla(salida: &str) -> Option<BTreeMap<String, String>> {
             continue;
         }
         if latest.is_empty() {
-            return None; // fila rota: no fabricar al-día
+            return None; // broken row: never fabricate up-to-date
         }
         map.insert(name.to_string(), latest.to_string());
     }
     Some(map)
 }
 
-/// Foto del espacio global de bun.
+/// Photo of bun's global space.
 pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
     let ls = runner.run(&["pm", "ls", "-g"])?;
     if ls.exit_code != 0 && !ls.stdout.contains("──") {
         return Err(std::io::Error::other(format!(
-            "bun pm ls falló (exit {}): {}",
+            "bun pm ls failed (exit {}): {}",
             ls.exit_code,
             ls.stderr.trim()
         )));
     }
     let pares = parse_ls(&ls.stdout);
     if pares.is_empty() {
-        // Espacio vacío legítimo: salida vacía o el encabezado del árbol
-        // sin ramas. Otra cosa con cero globales parseados = el formato
-        // del árbol cambió: error visible, no un falso "sin paquetes".
+        // Legitimate empty space: empty output or the tree's header
+        // without branches. Anything else with zero parsed globals = the
+        // tree's format changed: visible error, not a fake "no packages".
         if ls.stdout.trim().is_empty() || ls.stdout.contains("node_modules") {
             return Ok(EspacioGlobal {
                 version_gestor: runner.version_gestor(),
@@ -155,16 +154,16 @@ pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
             });
         }
         return Err(std::io::Error::other(format!(
-            "bun pm ls no produjo el árbol esperado (exit {}): {}",
+            "bun pm ls did not produce the expected tree (exit {}): {}",
             ls.exit_code,
             ls.stderr.trim()
         )));
     }
     let out = runner.run(&["outdated", "-g"])?;
-    // Salida vacía —o solo el banner "bun outdated vX (hash)"— con
-    // exit 0 = nada desactualizado: bun omite la tabla cuando todo
-    // está al día. Cualquier otra salida sin tabla reconocible es
-    // error visible.
+    // Empty output —or only the "bun outdated vX (hash)" banner— with
+    // exit 0 = nothing outdated: bun omits the table when everything is
+    // up to date. Any other output without a recognizable table is a
+    // visible error.
     let todo_al_dia = out.exit_code == 0
         && out
             .stdout
@@ -181,10 +180,10 @@ pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
             version_node: runner.version_node(),
             packages: armar(pares, &mapa),
         }),
-        // Sin tabla reconocible: fallo real (exit != 0) o formato de bun
-        // cambiado — en ambos casos error visible, jamás "todo al día".
+        // No recognizable table: real failure (exit != 0) or bun's format
+        // changed — a visible error either way, never "all up to date".
         None => Err(std::io::Error::other(format!(
-            "bun outdated no produjo la tabla esperada (exit {}): {}",
+            "bun outdated did not produce the expected table (exit {}): {}",
             out.exit_code,
             out.stderr.trim()
         ))),
@@ -196,7 +195,7 @@ mod tests {
     use super::*;
     use crate::kernel::testutil::FakeRunner;
 
-    // Fixtures capturados de bun 1.3.14 reales
+    // Fixtures captured from real bun 1.3.14
     const LS_SALIDA: &str = "/Users/ejemplo node_modules (49)\n├── @antfu/ni@30.5.0\n├── cowsay@1.0.0\n└── headroom-ai@0.22.4\n";
     const TABLA: &str = "bun outdated v1.3.14 (0d9b296a)\n|-----------------------------------------|\n| Package     | Current | Update | Latest |\n|-------------|---------|--------|--------|\n| cowsay      | 1.0.0   | 1.0.0  | 1.6.0  |\n|-------------|---------|--------|--------|\n| headroom-ai | 0.22.4  | 0.22.4  | 0.36.5 |\n|-----------------------------------------|\n";
 
@@ -218,7 +217,7 @@ mod tests {
 
     #[test]
     fn parse_ls_ignora_lineas_anidadas_y_ruido() {
-        // transitivas (│ ├──) y basura del log no son globales
+        // transitive (│ ├──) and log garbage are not globals
         let salida = "│ ├── ansi-styles@4.0.0\n[14ms] algo\n└── cowsay@1.6.0\n";
         let pares = parse_ls(salida);
         assert_eq!(pares, vec![("cowsay".to_string(), "1.6.0".to_string())]);
@@ -226,7 +225,7 @@ mod tests {
 
     #[test]
     fn parse_tabla_mapea_nombre_a_latest() {
-        let mapa = parse_tabla(TABLA).expect("tabla válida");
+        let mapa = parse_tabla(TABLA).expect("valid table");
         assert_eq!(mapa.get("cowsay").map(String::as_str), Some("1.6.0"));
         assert_eq!(mapa.get("headroom-ai").map(String::as_str), Some("0.36.5"));
     }
@@ -234,7 +233,7 @@ mod tests {
     #[test]
     fn parse_tabla_sin_filas_es_todo_al_dia() {
         let tabla = "| Package | Current | Update | Latest |\n|---------|---------|--------|--------|\n|---------|---------|--------|--------|\n";
-        assert!(parse_tabla(tabla).expect("formato ok").is_empty());
+        assert!(parse_tabla(tabla).expect("format ok").is_empty());
     }
 
     #[test]
@@ -245,7 +244,7 @@ mod tests {
 
     #[test]
     fn parse_tabla_fila_con_otro_ancho_invalida_toda() {
-        // encabezado de 4 columnas + fila de 3: el formato cambió
+        // 4-column header + 3-column row: the format changed
         let tabla =
             "| Package | Current | Latest |\n|---------|---------|--------|\n| cowsay  | 1.0.0 |\n";
         assert!(parse_tabla(tabla).is_none());
@@ -269,25 +268,25 @@ mod tests {
         let runner = FakeRunner::new("1.3.14")
             .respuesta("pm", LS_SALIDA, 0)
             .respuesta("outdated", "", 0);
-        let snap = snapshot(&runner).expect("vacío = al día");
+        let snap = snapshot(&runner).expect("empty = up to date");
         assert!(snap.packages.iter().all(|p| !p.outdated));
     }
 
     #[test]
     fn snapshot_banner_solo_todo_al_dia() {
-        // bun 1.3.x omite la tabla cuando no hay desactualizados y deja
-        // únicamente el banner de versión en stdout (exit 0)
+        // bun 1.3.x omits the table when nothing is outdated and leaves
+        // only the version banner on stdout (exit 0)
         let runner = FakeRunner::new("1.3.14")
             .respuesta("pm", LS_SALIDA, 0)
             .respuesta("outdated", "bun outdated v1.3.14 (0d9b296a)\n", 0);
-        let snap = snapshot(&runner).expect("banner solo = al día");
+        let snap = snapshot(&runner).expect("banner only = up to date");
         assert!(snap.packages.iter().all(|p| !p.outdated));
     }
 
     #[test]
     fn snapshot_banner_mas_ruido_desconocido_es_error_visible() {
-        // el banner es aceptable solo si es la ÚNICA línea: cualquier
-        // contenido extra sin tabla sigue siendo un formato cambiado
+        // the banner is acceptable only as the ONLY line: any extra
+        // content without a table is still a changed format
         let runner = FakeRunner::new("1.3.14")
             .respuesta("pm", LS_SALIDA, 0)
             .respuesta(
@@ -300,9 +299,9 @@ mod tests {
 
     #[test]
     fn snapshot_detecta_desactualizados_y_no_reporta_node() {
-        let snap = snapshot(&runner_bun()).expect("snapshot válido");
+        let snap = snapshot(&runner_bun()).expect("valid snapshot");
         assert_eq!(snap.version_gestor, "1.3.14");
-        assert_eq!(snap.version_node, None); // bun es autocontenido
+        assert_eq!(snap.version_node, None); // bun is self-contained
         let cowsay = snap.packages.iter().find(|p| p.name == "cowsay").unwrap();
         assert!(cowsay.outdated);
         assert_eq!(cowsay.latest.as_deref(), Some("1.6.0"));
@@ -310,8 +309,8 @@ mod tests {
 
     #[test]
     fn snapshot_vacio_no_llama_a_outdated() {
-        let runner = FakeRunner::new("1.3.14").respuesta("pm", "", 0); // sin árbol, sin globales
-        let snap = snapshot(&runner).expect("vacío válido");
+        let runner = FakeRunner::new("1.3.14").respuesta("pm", "", 0); // no tree, no globals
+        let snap = snapshot(&runner).expect("empty is valid");
         assert!(snap.packages.is_empty());
         assert!(!runner.se_llamo_a("outdated -g"));
     }

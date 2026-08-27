@@ -3,12 +3,13 @@ import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import Icono from "./Icono.vue";
 import { createPackagesStore } from "./store";
+import { useI18n } from "./i18n";
 
-// El espacio global de UN gestor: controles, barra de estado, log y tabla.
-// App.vue decide qué paneles existen (pestañas) y cuál está activo.
+// ONE manager's global space: controls, statusbar, log and table.
+// App.vue decides which panels exist (tabs) and which one is active.
 const props = defineProps({
   gestor: { type: String, required: true },
-  log: { type: Object, required: true }, // log compartido entre pestañas
+  log: { type: Object, required: true }, // log shared across tabs
 });
 
 const {
@@ -31,8 +32,10 @@ const {
   isExcluded,
 } = createPackagesStore(undefined, props.gestor, props.log);
 
-// El log siempre muestra la última línea: auto-scroll al fondo, también
-// al montar sobre un histórico largo (immediate).
+const { t } = useI18n();
+
+// The log always shows the last line: auto-scroll to the bottom, also on
+// mount over a long history (immediate).
 const logBox = ref(null);
 watch(
   () => logs.value.length,
@@ -46,19 +49,19 @@ watch(
 let desuscribirCola = null;
 
 onMounted(async () => {
-  // Las exclusiones cargan ANTES de que la lista esté usable: una cola
-  // temprana no puede computarse sin ellas. El listener de streaming
-  // vive en App (siempre montado): nada se pierde al cambiar de pestaña.
+  // Exclusions load BEFORE the list is usable: an early queue cannot be
+  // computed without them. The streaming listener lives in App (always
+  // mounted): nothing is lost when switching tabs.
   await cargarExclusiones();
   refresh();
-  // Los acontecimientos de la cola (empieza/resultado por paquete) mueven
-  // las filas de ESTE panel; las líneas de log van por App.
+  // Queue events (starts/result per package) move THIS panel's rows; log
+  // lines travel through App.
   desuscribirCola = await listen("pm-cola", (e) => procesarEventoCola(e.payload));
 });
 
-// Salir del panel detiene su cola con gracia: el backend termina el
-// paquete en curso y no empieza el siguiente — nunca queda una cola
-// huérfana sin log ni botón Detener en otra pestaña.
+// Leaving the panel stops its queue gracefully: the backend finishes the
+// in-flight package and does not start the next one — an orphan queue
+// never remains, without a log or Stop button, on another tab.
 onUnmounted(() => {
   desuscribirCola?.();
   stopAll();
@@ -69,25 +72,25 @@ onUnmounted(() => {
   <section class="panel">
     <div class="barra">
       <div class="controles">
-        <label class="busqueda" title="Filtrar la tabla por nombre de paquete">
+        <label class="busqueda" :title="t('filtrarTabla')">
           <Icono nombre="buscar" :tamano="13" />
-          <input v-model="search" type="search" placeholder="Buscar paquete…" />
+          <input v-model="search" type="search" :placeholder="t('buscarPlaceholder')" />
         </label>
         <button
           class="primario"
           :disabled="!hayDesactualizados || queue.active"
-          title="Actualizar, de a uno, todos los desactualizados no excluidos"
+          :title="t('actualizarTodoTitulo')"
           @click="updateAll"
         >
           <Icono nombre="actualizar" :tamano="14" />
-          Actualizar todo
+          {{ t("actualizarTodo") }}
         </button>
         <button
           v-if="queue.active"
           class="detener solo-icono"
           :disabled="queue.stopped"
-          :title="queue.stopped ? 'Deteniendo tras el paquete en curso…' : 'Detener tras el paquete en curso'"
-          :aria-label="'Detener cola'"
+          :title="queue.stopped ? t('deteniendoTras') : t('detenerTras')"
+          :aria-label="t('detenerCola')"
           @click="stopAll"
         >
           <span v-if="queue.stopped" class="spinner mini"></span>
@@ -96,8 +99,8 @@ onUnmounted(() => {
         <button
           class="refrescar solo-icono"
           :disabled="state.loading || queue.active"
-          :title="state.loading ? 'Refrescando…' : 'Refrescar: volver a consultar la lista y sus últimas versiones'"
-          aria-label="Refrescar"
+          :title="state.loading ? t('refrescando') : t('refrescar')"
+          :aria-label="t('refrescarBreve')"
           @click="refresh"
         >
           <span v-if="state.loading" class="spinner mini"></span>
@@ -106,8 +109,8 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Barra de estado tipo terminal: la situacionalidad del gestor en una
-         línea monocroma. -->
+    <!-- Terminal-style statusbar: the manager's situation in one
+         monochrome line. -->
     <div class="statusbar">
       <span v-if="state.snapshot" class="mono"
         >{{ gestor }} v{{ state.snapshot.version_gestor }}<template
@@ -117,58 +120,57 @@ onUnmounted(() => {
         ></span
       >
       <span class="mono">
-        {{ conteo.total }} {{ conteo.total === 1 ? "paquete" : "paquetes" }}
+        {{ conteo.total }} {{ conteo.total === 1 ? t("paquete") : t("paquetes") }}
       </span>
       <span class="mono" :class="{ relevante: conteo.desactualizados > 0 }">
         {{ conteo.desactualizados }}
-        {{ conteo.desactualizados === 1 ? "desactualizado" : "desactualizados" }}
+        {{ conteo.desactualizados === 1 ? t("desactualizado") : t("desactualizados") }}
       </span>
       <span v-if="conteo.excluidos" class="mono">
-        {{ conteo.excluidos }} {{ conteo.excluidos === 1 ? "excluido" : "excluidos" }}
+        {{ conteo.excluidos }} {{ conteo.excluidos === 1 ? t("excluido") : t("excluidos") }}
       </span>
       <span class="statusbar-der">
         <span v-if="queue.summary" class="mono">
-          {{ queue.summary.ok }} de {{ queue.summary.total }} actualizados<template
-            v-if="queue.summary.failed"
-          >
-            · {{ queue.summary.failed }} fallidos</template
-          ><template v-if="queue.summary.detenida"> · detenida</template>
+          {{ queue.summary.ok }} {{ t("de") }} {{ queue.summary.total }}
+          {{ t("actualizados") }}<template v-if="queue.summary.failed">
+            · {{ queue.summary.failed }} {{ t("fallidos") }}</template
+          ><template v-if="queue.summary.detenida"> · {{ t("detenida") }}</template>
         </span>
         <span v-if="queue.active || state.loading" class="spinner mini"></span>
       </span>
     </div>
 
-    <!-- Log fijo entre los controles y la tabla: siempre visible (desde el
-         arranque, sin aparecer de golpe) mientras la tabla scrollea;
-         auto-scroll a la última línea. -->
+    <!-- Fixed log between the controls and the table: always visible (from
+         startup, without popping in) while the table scrolls; auto-scroll
+         to the last line. -->
     <section class="log">
       <div class="log-cabecera">
         <span class="log-titulo mono">log</span>
       </div>
       <pre ref="logBox" class="mono">{{
-        logs.length ? logs.join("\n") : "sin actividad todavía"
+        logs.length ? logs.join("\n") : t("sinActividad")
       }}</pre>
     </section>
 
     <p v-if="state.loading && !state.snapshot" class="estado mono">
-      consultando paquetes globales…
+      {{ t("consultando") }}
     </p>
     <p v-else-if="state.error" class="error mono">{{ state.error }}</p>
 
     <div v-if="state.snapshot && packages.length === 0 && search" class="vacio mono">
-      sin coincidencias para “{{ search }}”
+      {{ t("sinCoincidencias", { q: search }) }}
     </div>
     <div v-else-if="state.snapshot && packages.length === 0" class="vacio mono">
-      sin paquetes globales de {{ gestor }} todavía
+      {{ t("sinPaquetes", { gestor }) }}
     </div>
 
     <div v-if="state.snapshot" class="tabla-scroll">
       <table>
         <thead>
           <tr>
-            <th>paquete</th>
-            <th class="angosta">instalada</th>
-            <th class="angosta">última</th>
+            <th>{{ t("columnaPaquete") }}</th>
+            <th class="angosta">{{ t("columnaInstalada") }}</th>
+            <th class="angosta">{{ t("columnaUltima") }}</th>
             <th class="angosta"></th>
           </tr>
         </thead>
@@ -199,7 +201,7 @@ onUnmounted(() => {
               <div class="acciones-contenido">
                 <span v-if="isUpdating(p.name)" class="actualizando">
                   <span class="spinner"></span>
-                  {{ queue.stopped ? "deteniendo…" : "actualizando…" }}
+                  {{ queue.stopped ? t("deteniendo") : t("actualizando") }}
                 </span>
                 <template v-else>
                   <button
@@ -207,11 +209,9 @@ onUnmounted(() => {
                     :class="{ activo: isExcluded(p.name) }"
                     :disabled="!p.outdated && !isExcluded(p.name)"
                     :title="
-                      isExcluded(p.name)
-                        ? 'Quitar exclusión (Actualizar todo volverá a incluirlo)'
-                        : 'Excluir de Actualizar todo'
+                      isExcluded(p.name) ? t('quitarExclusion') : t('excluir')
                     "
-                    :aria-label="'Excluir ' + p.name + ' de Actualizar todo'"
+                    :aria-label="t('excluirPaquete', { paquete: p.name })"
                     @click="toggleExcluded(p.name)"
                   >
                     <Icono nombre="excluir" :tamano="13" />
@@ -219,8 +219,13 @@ onUnmounted(() => {
                   <button
                     class="actualizar solo-icono"
                     :disabled="!p.outdated || queue.active"
-                    :title="`Actualizar a la última versión (${state.snapshot.comando_actualizar} ${p.name}@latest)`"
-                    :aria-label="'Actualizar ' + p.name"
+                    :title="
+                      t('actualizarUltima', {
+                        comando: state.snapshot.comando_actualizar,
+                        paquete: p.name,
+                      })
+                    "
+                    :aria-label="t('actualizarPaquete', { paquete: p.name })"
                     @click="update(p.name)"
                   >
                     <Icono nombre="actualizar" :tamano="14" />
@@ -330,7 +335,7 @@ onUnmounted(() => {
   cursor: default;
 }
 
-/* El único elemento de máximo contraste de toda la app. */
+/* The app's single highest-contrast element. */
 .primario:not(:disabled) {
   background: var(--fg);
   color: var(--bg);
@@ -481,7 +486,7 @@ tbody tr:hover td {
   margin-left: 4px;
 }
 
-/* Estados de fila: marcadores de contraste, no tintes de color. */
+/* Row states: contrast markers, not color tints. */
 tr.desactualizado td:first-child {
   box-shadow: inset 2px 0 0 0 var(--fg);
 }
@@ -535,7 +540,7 @@ tr.excluido .nombre {
 }
 
 .excluir:disabled {
-  color: #767e8a;
+  color: var(--fg-faint);
   border-color: var(--border);
   cursor: default;
 }

@@ -1,9 +1,9 @@
-//! Capa de comandos: la interfaz real de la app hacia la UI.
+//! Command layer: the app's real interface towards the UI.
 //!
-//! Cada `#[tauri::command]` es un wrapper delgado sobre un núcleo que
-//! recibe sus dependencias por parámetro (tabla de gestores, directorio de
-//! configuración, bandera de parada): los núcleos se prueban por su
-//! interfaz con gestores de juguete, sin Tauri ni entorno.
+//! Each `#[tauri::command]` is a thin wrapper over a core that receives
+//! its dependencies by parameter (manager table, config directory, stop
+//! flag): the cores are tested through their interface with toy managers,
+//! no Tauri, no environment.
 
 mod bun;
 mod cola;
@@ -20,15 +20,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
-/// Un gestor soportado: comando visible, verbo de instalación y cómo se
-/// descubren sus runners y su espacio global. El verbo vive AQUÍ, una sola
-/// vez por gestor: la UI lo recibe por la seam (Snapshot), no lo duplica.
-/// Añadir un gestor = añadir una entrada.
+/// A supported manager: visible command, install verb and how its
+/// runners and its global space are discovered. The verb lives HERE,
+/// once per manager: the UI receives it through the seam (Snapshot), it
+/// never duplicates it. Adding a manager = adding one entry.
 pub(crate) struct DefinicionGestor {
     pub(crate) nombre: &'static str,
-    /// Comando visible para la UI (tooltip): "npm i -g".
+    /// Visible command for the UI (tooltip): "npm i -g".
     pub(crate) comando: &'static str,
-    /// Argumento de instalación (install/add) que kernel::instalar corre.
+    /// Install argument (install/add) that kernel::instalar runs.
     pub(crate) verbo: &'static str,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
@@ -81,25 +81,25 @@ fn def_gestor_en<'a>(
     tabla
         .iter()
         .find(|g| g.nombre == gestor)
-        .ok_or_else(|| format!("gestor no soportado: {gestor}"))
+        .ok_or_else(|| format!("unsupported manager: {gestor}"))
 }
 
 fn validar_gestor(gestor: &str) -> Result<(), String> {
     def_gestor_en(GESTORES, gestor).map(|_| ())
 }
 
-// ---- Núcleos (testeables por su interfaz, sin Tauri) ----
+// ---- Cores (testable through their interface, no Tauri) ----
 
-/// Descubre el runner y produce la foto del espacio global, con el comando
-/// visible del gestor ya ensamblado.
+/// Discovers the runner and produces the photo of the global space, with
+/// the manager's visible command already assembled.
 fn correr_snapshot(def: &DefinicionGestor) -> Result<Snapshot, String> {
     let runner = (def.runner)().map_err(|e| e.to_string())?;
     let espacio = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
     Ok(espacio.con_comando(def.comando))
 }
 
-/// Actualiza un paquete con el verbo del gestor; cada línea de salida sale
-/// por `on_line` (el wrapper la streamea como evento `pm-output`).
+/// Updates a package with the manager's verb; each output line leaves
+/// through `on_line` (the wrapper streams it as a `pm-output` event).
 fn correr_update(
     def: &DefinicionGestor,
     name: &str,
@@ -109,8 +109,8 @@ fn correr_update(
     kernel::instalar(runner.as_ref(), def.verbo, name, on_line).map_err(|e| e.to_string())
 }
 
-/// Excluidos de un gestor; la migración del formato legado corre aquí, una
-/// sola vez, cuando el archivo todavía lo es.
+/// A manager's excluded packages; the legacy-format migration runs here,
+/// once, while the file still is legacy.
 fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<Vec<String>, String> {
     let (mapa, era_legado) = exclusiones::cargar(dir);
     if era_legado {
@@ -125,18 +125,18 @@ fn nucleo_set_excluded(dir: &Path, gestor: &str, nombres: Vec<String>) -> Result
     exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
 }
 
-// ---- Comandos (wrappers delgados sobre los núcleos) ----
+// ---- Commands (thin wrappers over the cores) ----
 
-/// Dependencias de los comandos, resueltas una vez en el arranque.
+/// Command dependencies, resolved once at startup.
 struct Contexto {
     dir_config: PathBuf,
-    /// Bandera de "Detener": compartida por la cola activa. Una sola cola
-    /// razonable a la vez (los paneles detienen la suya al desmontarse).
+    /// The "Stop" flag: shared with the active queue. Only one queue at
+    /// a time makes sense (panels stop theirs when unmounted).
     parar: Arc<AtomicBool>,
 }
 
-/// Pestañas disponibles: gestores soportados E instalados en esta máquina
-/// (chequeo de presencia, sin spawns).
+/// Available tabs: supported AND installed managers on this machine
+/// (presence check, no spawns).
 #[tauri::command]
 fn gestores_instalados() -> Vec<String> {
     GESTORES
@@ -146,9 +146,9 @@ fn gestores_instalados() -> Vec<String> {
         .collect()
 }
 
-/// Lista los paquetes globales del espacio del gestor.
-/// `outdated` tarda segundos (consulta el registro): corre bloqueado en un
-/// hilo del pool para no congelar la IPC.
+/// Lists the global packages of the manager's space.
+/// `outdated` takes seconds (registry query): it runs blocking on a pool
+/// thread so the IPC does not freeze.
 #[tauri::command]
 async fn list_globals(gestor: String) -> Result<Snapshot, String> {
     let def = def_gestor_en(GESTORES, &gestor)?;
@@ -157,7 +157,7 @@ async fn list_globals(gestor: String) -> Result<Snapshot, String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Línea de salida de un gestor streameada durante una actualización.
+/// A manager output line streamed during an update.
 #[derive(Clone, Serialize)]
 struct OutputLine {
     gestor: String,
@@ -165,8 +165,8 @@ struct OutputLine {
     line: String,
 }
 
-/// Actualiza un paquete global a su última versión; cada línea de salida
-/// llega como evento `pm-output` para el panel de log.
+/// Updates a global package to its latest version; each output line
+/// arrives as a `pm-output` event for the log panel.
 #[tauri::command]
 async fn update_package(
     gestor: String,
@@ -206,9 +206,9 @@ fn set_excluded(
     nucleo_set_excluded(&estado.dir_config, &gestor, nombres)
 }
 
-/// «Actualizar todo»: cola secuencial en Rust. Progreso vía `pm-cola`
-/// (empieza/resultado por paquete) y `pm-output` (líneas de log); al
-/// terminar devuelve resumen + snapshot final (un solo refresco).
+/// "Update all": sequential queue in Rust. Progress via `pm-cola`
+/// (starts/result per package) and `pm-output` (log lines); on finish it
+/// returns summary + final snapshot (a single refresh).
 #[derive(Serialize)]
 struct ResultadoActualizarTodo {
     resumen: Resumen,
@@ -256,7 +256,7 @@ async fn actualizar_todo(
     .map_err(|e| e.to_string())?
 }
 
-/// Acontecimiento de la cola para una fila de la tabla.
+/// A queue event for a table row.
 #[derive(Clone, Serialize)]
 struct EventoPaquete {
     gestor: String,
@@ -290,7 +290,7 @@ impl EventoPaquete {
     }
 }
 
-/// Detiene la cola tras el paquete en curso (graceful).
+/// Stops the queue after the in-flight package (graceful).
 #[tauri::command]
 fn detener_actualizar_todo(estado: tauri::State<Contexto>) {
     estado.parar.store(true, Ordering::Relaxed);
@@ -304,7 +304,7 @@ pub fn run() {
             let dir_config = app
                 .path()
                 .app_config_dir()
-                .map_err(|e| format!("sin directorio de configuración: {e}"))?;
+                .map_err(|e| format!("no config directory: {e}"))?;
             app.manage(Contexto {
                 dir_config,
                 parar: Arc::new(AtomicBool::new(false)),
@@ -329,7 +329,7 @@ mod tests {
     use super::*;
     use crate::kernel::testutil::FakeRunner;
 
-    // ---- dispatch sobre la tabla ----
+    // ---- dispatch over the table ----
 
     #[test]
     fn npm_pnpm_y_bun_soportados() {
@@ -341,11 +341,11 @@ mod tests {
     #[test]
     fn gestores_no_soportados_rechazados() {
         for g in ["yarn", "", "--force"] {
-            assert!(validar_gestor(g).is_err(), "{g} no debe pasar");
+            assert!(validar_gestor(g).is_err(), "{g} must not pass");
         }
     }
 
-    // Tabla de juguete: mismo protocolo que npm, runner falso.
+    // Toy manager table: same protocol as npm, fake runner.
     const LS_JSON: &str = r#"{"dependencies": {"hunkdiff": {"version": "0.17.2"}}}"#;
     const OUTDATED_JSON: &str = r#"{"hunkdiff": {"latest": "0.18.0"}}"#;
 
@@ -369,8 +369,8 @@ mod tests {
 
     #[test]
     fn correr_snapshot_ensambla_el_comando_visible_del_def() {
-        let snap = correr_snapshot(&def_falsa()).expect("snapshot válido");
-        assert_eq!(snap.comando_actualizar, "falso i -g"); // verbo: fuente única
+        let snap = correr_snapshot(&def_falsa()).expect("valid snapshot");
+        assert_eq!(snap.comando_actualizar, "falso i -g"); // verb: single source
         assert_eq!(snap.espacio.version_gestor, "1.0.0");
         assert!(snap.espacio.packages.iter().any(|p| p.outdated));
     }
@@ -381,7 +381,7 @@ mod tests {
         let out = correr_update(&def_falsa(), "hunkdiff", &mut |l| {
             lineas.push(l.to_string())
         })
-        .expect("update válido");
+        .expect("valid update");
         assert!(out.success);
         assert_eq!(lineas, vec!["added 1 package in 2s"]);
     }
@@ -392,27 +392,27 @@ mod tests {
             runner: || {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "no hay binario",
+                    "no binary",
                 ))
             },
             ..def_falsa()
         };
         let err = correr_update(&def, "hunkdiff", &mut |_| {}).unwrap_err();
-        assert!(err.contains("no hay binario"));
+        assert!(err.contains("no binary"));
     }
 
-    // ---- exclusiones por su núcleo ----
+    // ---- exclusions through their core ----
 
     #[test]
     fn exclusiones_roundtrip_por_gestor_y_migracion_legada_una_vez() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("exclusiones.json"), r#"["hunkdiff"]"#).unwrap();
-        // primera lectura: legado → migrado y devuelto como npm
+        // first read: legacy → migrated and returned as npm's
         assert_eq!(
             nucleo_get_excluded(dir.path(), "npm").unwrap(),
             ["hunkdiff"]
         );
-        // el archivo ya reescrito en formato mapa
+        // the file already rewritten in map format
         assert_eq!(
             nucleo_get_excluded(dir.path(), "pnpm").unwrap(),
             Vec::<String>::new()

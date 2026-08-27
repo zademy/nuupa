@@ -17,6 +17,10 @@ _Avoid_: lista global (singular), store
 Paquete instalado con `-g`, perteneciente al espacio global de un gestor.
 _Avoid_: módulo, dependencia, librería
 
+**Paquete del gestor**:
+Paquete global cuyo nombre es el de un gestor (npm, pnpm, bun): se actualiza fuera de Nuupa (npm viene con node; pnpm y bun los instala su instalador oficial) y por eso nunca aparece en el espacio global de ningún gestor.
+_Avoid_: excluido (la actualización individual sigue disponible), bloqueado, especial
+
 **Versión activa**:
 La versión de node seleccionada por nvm; define qué paquetes globales existen.
 _Avoid_: node actual, node por defecto
@@ -44,3 +48,15 @@ _Avoid_: sincronizar, actualizar (reservado para versiones)
 **Descubrimiento**:
 Hallar el binario de un gestor en esta máquina: el PATH y las ubicaciones habituales por sistema. Si no aparece, el gestor no está: su pestaña no existe y el error muestra dónde se buscó. Nunca exige al usuario configurar nada.
 _Avoid_: validación de instalación, chequeo de entorno
+
+**Tema**:
+Conjunto de colores con nombre que el usuario elige y que persiste entre sesiones; el claro es el predeterminado.
+_Avoid_: skin, modo
+
+**Paleta**:
+Los valores concretos (rol → color) que componen un tema.
+_Avoid_: esquema, colores sueltos
+
+**Rol**:
+La función semántica de un color (fondo, superficie, borde, texto tenue…): igual en todos los temas; cambia el color, no el rol.
+_Avoid_: variable, token

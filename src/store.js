@@ -1,10 +1,11 @@
 import { computed, reactive, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { useI18n } from "./i18n";
 
 /**
- * Log compartido entre todos los gestores: un único histórico con líneas
- * prefijadas `gestor/paquete:` que sobrevive a los cambios de pestaña.
- * `appendLine` es la ÚNICA dueña de esa convención de prefijo.
+ * Log shared by all managers: a single history with `manager/package:`
+ * prefixed lines that survives tab switches. `appendLine` is the ONLY
+ * owner of that prefix convention.
  */
 export function crearLog(capacidad = 500) {
   const lineas = ref([]);
@@ -18,13 +19,14 @@ export function crearLog(capacidad = 500) {
 }
 
 /**
- * Estado de la tabla de paquetes globales de UN gestor.
+ * State of ONE manager's global package table.
  *
- * Seam B de testing: `invokeFn` inyectable — los tests pasan un falso
- * invoke y prueban carga, error, filtrado, actualización y exclusiones
- * sin tocar Tauri. `gestor` viaja en cada invocación.
+ * Testing seam B: injectable `invokeFn` — tests pass a fake invoke and
+ * exercise loading, error, filtering, updates and exclusions without
+ * touching Tauri. `gestor` travels in every invocation.
  */
 export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompartido = null) {
+  const { t } = useI18n();
   const state = reactive({
     snapshot: null,
     error: "",
@@ -33,14 +35,15 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
   const search = ref("");
   const ESTADO = { ACTUALIZANDO: "updating", ERROR: "error" };
   const status = reactive({});
-  // Log: compartido si la app pasa uno (histórico único entre pestañas);
-  // propio si no (tests y uso aislado). Sin duplicar el tope: crearLog manda.
+  // Log: shared if the app passes one (single history across tabs);
+  // own otherwise (tests and isolated use). No duplicated cap: crearLog
+  // owns it.
   const logPropio = crearLog();
   const logs = logCompartido ? logCompartido.lineas : logPropio.lineas;
   const appendLog = logCompartido ? logCompartido.append : logPropio.append;
 
-  // Refrescar: volver a consultar la lista y sus últimas versiones
-  // (vocabulario del glosario; sirve también para la carga inicial).
+  // Refresh: query the package list and its latest versions again
+  // (glossary vocabulary; also serves the initial load).
   async function refresh() {
     state.loading = true;
     state.error = "";
@@ -53,12 +56,12 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     }
   }
 
-  // Actualizar un paquete: instalar su última versión. Con éxito se refresca
-  // la lista (la fila pasa a al día) salvo dentro de "Actualizar todo", que
-  // refresca una sola vez al terminar la cola; con fallo la fila queda
-  // marcada en error y el detalle (salida real del gestor) vive en el log.
-  // Devuelve true/false según éxito; undefined si ya estaba en curso (la
-  // cola solo cuenta resultados explícitos).
+  // Update one package: install its latest version. On success the list
+  // refreshes (the row becomes up to date) except inside "Update all",
+  // which refreshes once when the queue finishes; on failure the row
+  // stays marked in error and the detail (the manager's real output)
+  // lives in the log. Returns true/false on success/failure; undefined
+  // if it was already in-flight (the queue only counts explicit results).
   async function update(name, { refrescar = true } = {}) {
     if (status[name] === ESTADO.ACTUALIZANDO) return;
     status[name] = ESTADO.ACTUALIZANDO;
@@ -69,7 +72,7 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
         if (refrescar) await refresh();
         return true;
       }
-      markFailed(name, `la actualización falló\n${res?.output ?? ""}`.trim());
+      markFailed(name, `${t("actualizacionFallo")}\n${res?.output ?? ""}`.trim());
       return false;
     } catch (e) {
       markFailed(name, String(e));
@@ -85,8 +88,8 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
   const isUpdating = (name) => status[name] === ESTADO.ACTUALIZANDO;
   const hasError = (name) => status[name] === ESTADO.ERROR;
 
-  // Excluidos: "Actualizar todo" los salta; la individual sigue disponible.
-  // Persisten en el backend (JSON de configuración).
+  // Excluded: "Update all" skips them; the individual update stays
+  // available. Persisted in the backend (config JSON).
   const excluded = ref([]);
   const isExcluded = (name) => excluded.value.includes(name);
 
@@ -94,12 +97,12 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     try {
       excluded.value = await invokeFn("get_excluded", { gestor });
     } catch (e) {
-      appendLog(`${gestor}: no se pudieron cargar las exclusiones: ${e}`);
+      appendLog(`${gestor}: ${t("cargarExclusionesFallo", { e })}`);
     }
   }
 
-  // Optimista con rollback: si el guardado falla, la UI vuelve al estado
-  // real del disco y el fallo queda en el log.
+  // Optimistic with rollback: if the save fails, the UI goes back to the
+  // real on-disk state and the failure lands in the log.
   async function toggleExcluded(name) {
     const previos = excluded.value;
     const next = isExcluded(name)
@@ -110,23 +113,23 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
       await invokeFn("set_excluded", { gestor, nombres: next });
     } catch (e) {
       excluded.value = previos;
-      appendLog(`${gestor}: no se pudieron guardar las exclusiones: ${e}`);
+      appendLog(`${gestor}: ${t("guardarExclusionesFallo", { e })}`);
     }
   }
 
-  // Regla única de "desactualizado actualizable": desactualizado y no
-  // excluido. La alimenta el botón y la cola.
+  // Single rule for "updatable outdated": outdated and not excluded. It
+  // feeds the button and the queue.
   const desactualizables = computed(() =>
     (state.snapshot?.packages ?? []).filter(
       (p) => p.outdated && !isExcluded(p.name)
     )
   );
 
-  // ¿Hay algo que "Actualizar todo" pueda hacer? Mira la lista completa (no
-  // el filtro) y descuenta los excluidos.
+  // Is there anything "Update all" can do? Looks at the full list (not
+  // the filter) and discounts the excluded ones.
   const hayDesactualizados = computed(() => desactualizables.value.length > 0);
 
-  // Conteos para la barra de estado (derivados puros, sin invoke).
+  // Counts for the statusbar (pure derivations, no invoke).
   const conteo = computed(() => {
     const all = state.snapshot?.packages ?? [];
     return {
@@ -136,11 +139,11 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     };
   });
 
-  // "Actualizar todo": la cola vive en Rust (orden de lista, de a uno, un
-  // fallo no detiene, excluidos saltados siempre, Detener con gracia).
-  // La store delega y reacciona a los eventos `pm-cola` (empieza/resultado
-  // por paquete); el invoke devuelve resumen + snapshot final — un solo
-  // refresco.
+  // "Update all": the queue lives in Rust (list order, one at a time, a
+  // failure does not stop it, excluded always skipped, graceful Stop).
+  // The store delegates and reacts to `pm-cola` events (starts/result per
+  // package); the invoke returns summary + final snapshot — a single
+  // refresh.
   const queue = reactive({
     active: false,
     current: null,
@@ -158,15 +161,15 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
       const { resumen, snapshot } = await invokeFn("actualizar_todo", { gestor });
       state.snapshot = snapshot;
       queue.summary = resumen;
-      // El resumen también vive en el log: si el usuario está en otra
-      // pestaña, la statusbar del panel desmontado no lo perdería… esto sí.
+      // The summary also lives in the log: if the user is on another tab,
+      // the unmounted panel's statusbar would lose it… this one keeps it.
       appendLog(
-        `${gestor}: cola terminada — ${resumen.ok} de ${resumen.total} actualizados` +
-          (resumen.failed ? ` · ${resumen.failed} fallidos` : "") +
-          (resumen.detenida ? " · detenida" : "")
+        `${gestor}: ${t("colaTerminada", { ok: resumen.ok, total: resumen.total })}` +
+          (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
+          (resumen.detenida ? ` · ${t("detenida")}` : "")
       );
     } catch (e) {
-      appendLog(`${gestor}: la cola falló: ${e}`);
+      appendLog(`${gestor}: ${t("colaFallo", { e })}`);
       await refresh();
     } finally {
       queue.current = null;
@@ -174,9 +177,9 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     }
   }
 
-  // Evento `pm-cola` de ESTE gestor (empieza/resultado): mueve la fila de
-  // la tabla. Las líneas de salida llegan por `pm-output` directo al log
-  // compartido (App.vue, siempre montado).
+  // `pm-cola` event of THIS manager (starts/result): moves the table row.
+  // Output lines arrive via `pm-output` straight to the shared log
+  // (App.vue, always mounted).
   function procesarEventoCola(e) {
     if (e.gestor !== gestor) return;
     if (e.tipo === "empieza") {
@@ -184,7 +187,7 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
       status[e.paquete] = ESTADO.ACTUALIZANDO;
     } else if (e.tipo === "resultado") {
       if (e.exito) delete status[e.paquete];
-      else markFailed(e.paquete, `la actualización falló\n${e.salida ?? ""}`.trim());
+      else markFailed(e.paquete, `${t("actualizacionFallo")}\n${e.salida ?? ""}`.trim());
     }
   }
 
@@ -194,8 +197,8 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     invokeFn("detener_actualizar_todo").catch(() => {});
   }
 
-  // Paquetes filtrados por la búsqueda (subcadena, insensible a mayúsculas;
-  // los scoped se filtran por su nombre completo "@org/paquete").
+  // Packages filtered by the search (substring, case-insensitive; scoped
+  // ones filter by their full name "@org/package").
   const packages = computed(() => {
     const q = search.value.trim().toLowerCase();
     const all = state.snapshot?.packages ?? [];
