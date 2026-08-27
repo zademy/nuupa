@@ -3,8 +3,10 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PanelGestor from "./PanelGestor.vue";
+import Icono from "./Icono.vue";
 import { crearLog } from "./store";
 import { useI18n } from "./i18n";
+import { useTema } from "./tema";
 
 // Tabs: only supported AND installed managers; always opens on the first
 // one (npm). The backend sets the order.
@@ -14,6 +16,7 @@ const activo = ref("npm");
 const log = crearLog();
 
 const { t, destino, alternar } = useI18n();
+const { destino: destinoTema, alternar: alternarTema } = useTema();
 
 let desubscribir = null;
 
@@ -64,6 +67,20 @@ onUnmounted(() => desubscribir?.());
         <circle cx="11" cy="11" r="8" />
         <path d="m21 21-4.3-4.3" />
       </symbol>
+      <symbol id="ic-sol" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="ic-luna" viewBox="0 0 24 24">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+      </symbol>
     </defs>
   </svg>
 
@@ -91,6 +108,16 @@ onUnmounted(() => desubscribir?.());
       >
         {{ destino }}
       </button>
+      <!-- Theme toggle: same rule, shows the theme it switches TO; light is
+           the default on first launch. -->
+      <button
+        class="tema"
+        :title="destinoTema === 'oscuro' ? t('temaOscuro') : t('temaClaro')"
+        :aria-label="destinoTema === 'oscuro' ? t('temaOscuro') : t('temaClaro')"
+        @click="alternarTema"
+      >
+        <Icono :nombre="destinoTema === 'oscuro' ? 'luna' : 'sol'" :tamano="12" />
+      </button>
     </header>
 
     <PanelGestor :key="activo" :gestor="activo" :log="log" />
@@ -98,17 +125,24 @@ onUnmounted(() => desubscribir?.());
 </template>
 
 <style>
-/* Reset + canvas: the app is dark edge to edge. */
-html,
-body {
-  margin: 0;
-  height: 100%;
-  background: #0d0f12;
+/* Theme palettes: the ONLY place hex colors live. Both ramps are the same
+   cold-gray family (Monochrome; the light one is its "between gray and
+   white" variant). A new theme is a new [data-tema] block — every
+   consumer reads roles via var(--*), never a hex. Light is the default. */
+:root {
+  color-scheme: light;
+  --bg: #f9fafb;
+  --surface: #ffffff;
+  --surface-2: #f3f4f6;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --fg: #111827;
+  --fg-muted: #4b5563;
+  --fg-faint: #6b7280;
 }
-</style>
 
-<style scoped>
-main {
+:root[data-tema="oscuro"] {
+  color-scheme: dark;
   --bg: #0d0f12;
   --surface: #15181d;
   --surface-2: #1c2026;
@@ -117,7 +151,20 @@ main {
   --fg: #e6e8eb;
   --fg-muted: #9aa1ab;
   --fg-faint: #6b7280;
+}
 
+/* Reset + canvas: the app is themed edge to edge (index.html pre-paints
+   the right background so there is no flash on launch). */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+}
+</style>
+
+<style scoped>
+main {
   font-family: system-ui, sans-serif;
   font-size: 12px;
   color: var(--fg);
@@ -147,8 +194,8 @@ main {
   margin: 0;
 }
 
-/* Tabs sit pushed to the right; the language toggle is the true top-right
-   corner element, right after them. */
+/* Tabs sit pushed to the right; the toggles (language, theme) are the
+   top-right corner elements, right after them. */
 .pestanas {
   display: flex;
   gap: 4px;
@@ -183,12 +230,17 @@ main {
 }
 
 .pestanas button:focus-visible,
-.idioma:focus-visible {
+.idioma:focus-visible,
+.tema:focus-visible {
   outline: 1px solid var(--fg);
   outline-offset: 1px;
 }
 
-.idioma {
+.idioma,
+.tema {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px;
   letter-spacing: 0.06em;
@@ -201,7 +253,8 @@ main {
   transition: color 120ms, background 120ms;
 }
 
-.idioma:hover {
+.idioma:hover,
+.tema:hover {
   color: var(--fg);
   background: var(--surface);
 }

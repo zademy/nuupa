@@ -11,6 +11,8 @@ export const MENSAJES = {
   en: {
     gestoresInstalados: "Installed managers",
     cambiarIdioma: "Switch language",
+    temaOscuro: "Switch to the dark theme",
+    temaClaro: "Switch to the light theme",
     filtrarTabla: "Filter the table by package name",
     buscarPlaceholder: "Search packages…",
     actualizarTodo: "Update all",
@@ -54,6 +56,8 @@ export const MENSAJES = {
   es: {
     gestoresInstalados: "Gestores instalados",
     cambiarIdioma: "Cambiar idioma",
+    temaOscuro: "Cambiar al tema oscuro",
+    temaClaro: "Cambiar al tema claro",
     filtrarTabla: "Filtrar la tabla por nombre de paquete",
     buscarPlaceholder: "Buscar paquete…",
     actualizarTodo: "Actualizar todo",

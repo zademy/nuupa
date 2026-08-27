@@ -540,7 +540,7 @@ tr.excluido .nombre {
 }
 
 .excluir:disabled {
-  color: #767e8a;
+  color: var(--fg-faint);
   border-color: var(--border);
   cursor: default;
 }

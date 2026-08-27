@@ -4,6 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nuupa</title>
+    <script>
+      // Pre-paint theme: runs before the bundle so the app never flashes
+      // the wrong background. Mirrors src/tema.js (same key, same values);
+      // keep the two hexes in sync with the palettes in App.vue. The
+      // background rule below lives here as a <style> (not a JS style) so
+      // the app's own `background: var(--bg)` overrides it once loaded —
+      // runtime theme switches keep working.
+      var tema = "claro";
+      try {
+        var guardado = localStorage.getItem("nuupa.tema");
+        if (guardado === "claro" || guardado === "oscuro") tema = guardado;
+      } catch (e) {}
+      document.documentElement.dataset.tema = tema;
+    </script>
+    <style>
+      html {
+        background: #f9fafb;
+      }
+      html[data-tema="oscuro"] {
+        background: #0d0f12;
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>

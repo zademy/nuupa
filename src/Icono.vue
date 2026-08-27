@@ -3,7 +3,7 @@
 // the <svg> — <template v-if> fragments inside SVG are problematic in
 // WebKit/WKWebView, the app's engine on macOS.
 // The ids follow the vocabulary: ic-refrescar, ic-actualizar, ic-detener,
-// ic-excluir, ic-buscar.
+// ic-excluir, ic-buscar, ic-sol, ic-luna.
 defineProps({
   nombre: { type: String, required: true },
   tamano: { type: Number, default: 14 },
