@@ -1,0 +1,175 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+# Un run nuevo cancela el anterior de la misma rama/tag.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Verificación barata (segundos en ubuntu) ANTES de gastar 5 runners:
+  # en tags, el tag debe coincidir con la versión del proyecto y las
+  # versiones entre sí (tauri.conf.json manda: es la que usa el bundler).
+  sanidad:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag y versiones consistentes
+        run: |
+          TAG="${{ github.ref_name }}"
+          V_JSON=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          V_CARGO=$(sed -n 's/^version *= *"\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          echo "tag=$TAG  tauri.conf.json=$V_JSON  Cargo.toml=$V_CARGO"
+          [ "v$V_JSON" = "$TAG" ] || { echo "::error::El tag $TAG no coincide con v$V_JSON de tauri.conf.json"; exit 1; }
+          [ "$V_JSON" = "$V_CARGO" ] || { echo "::error::Cargo.toml ($V_CARGO) != tauri.conf.json ($V_JSON)"; exit 1; }
+
+  # Construye los bundles por plataforma. NO publica nada: la release se
+  # centraliza en publicar-release, sin carreras entre jobs paralelos.
+  build:
+    needs: sanidad
+    # Corre también cuando sanidad se saltó (push a master sin tag).
+    if: ${{ !failure() && !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: binario UNIVERSAL compilado en el runner ARM (Intel +
+          # Apple Silicon en un solo .app/.dmg). Los runners Intel
+          # (macos-13) fueron retirados por GitHub en dic 2025.
+          - os: macos-latest
+            label: macos-universal
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+            args: '--target universal-apple-darwin'
+          # Linux: x64 normal + arm64 (runner público de GitHub)
+          - { os: ubuntu-latest, label: linux-x64 }
+          - { os: ubuntu-24.04-arm, label: linux-arm64 }
+          # Windows: x64 normal + arm64 (runner público de GitHub)
+          - { os: windows-latest, label: windows-x64 }
+          - { os: windows-11-arm, label: windows-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Dependencias de WebKitGTK para el bundling de Linux (ambas arqs).
+      # xdg-utils: el empaquetado del .deb requiere xdg-open (plugin opener).
+      - name: Dependencias de Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            xdg-utils
+
+      - name: Dependencias del frontend
+        run: npm ci
+
+      # Sin tagName: tauri-action SOLO construye (bundle.targets: "all"
+      # genera dmg / msi + exe NSIS / deb + rpm + AppImage según el SO).
+      - name: Construir y empaquetar
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: ${{ matrix.args }}
+
+      # Solo instaladores: el .app suelto de macOS ya va dentro del .dmg.
+      # El ** cubre el target-dir extra del build universal
+      # (target/universal-apple-darwin/release/bundle/...).
+      - name: Subir instaladores
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuupa-${{ matrix.label }}
+          path: |
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/msi/*.msi
+            src-tauri/target/**/release/bundle/nsis/*.exe
+            src-tauri/target/**/release/bundle/debian/*.deb
+            src-tauri/target/**/release/bundle/rpm/*.rpm
+            src-tauri/target/**/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  # Al pasar TODOS los builds de un tag: publica la release de una vez,
+  # con notas de todos los commits desde la última release y checksums.
+  publicar-release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # historial completo para las notas
+
+      - name: Descargar instaladores
+        uses: actions/download-artifact@v8
+        with:
+          pattern: nuupa-*
+          merge-multiple: true
+          path: instaladores
+
+      - name: Preparar assets (aplanar, validar y checksums)
+        run: |
+          mkdir assets
+          # Cada artefacto llega anidado; se aplana a un solo directorio.
+          find instaladores -type f -regextype posix-extended \
+            -regex '.*\.(dmg|msi|exe|deb|rpm|AppImage)' -exec mv {} assets/ \;
+          # Equivalente a fail_on_unmatched_files: si falta cualquier
+          # familia de instalador, la release no se publica a medias.
+          for ext in dmg msi exe deb rpm AppImage; do
+            ls assets/*."$ext" >/dev/null 2>&1 || {
+              echo "::error::Faltan instaladores *.$ext"; ls -la assets; exit 1;
+            }
+          done
+          (cd assets && sha256sum * > SHASUMS256.txt)
+          ls -la assets
+
+      - name: Notas con todos los commits
+        run: |
+          TAG="${{ github.ref_name }}"
+          # Tag anterior (si existe) para acotar el rango de commits
+          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          RANGO="${PREV:+$PREV..}$TAG"
+          {
+            echo "## Commits incluidos"
+            echo
+            git log --pretty=format:'- %s (%h)' "$RANGO"
+            echo
+            echo
+            echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/commits/$TAG"
+          } > notas.md
+
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          # v1.2.3-rc.1 / -beta / -alpha → prerelease; resto → latest
+          FLAGS="--latest"
+          if echo "$TAG" | grep -Eq '[-.](rc|beta|alpha)'; then
+            FLAGS="--prerelease"
+          fi
+          gh release create "$TAG" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Nuupa $TAG" \
+            --notes-file notas.md $FLAGS
