@@ -79,29 +79,35 @@ jobs:
           )
           echo "Último tag: ${LATEST:-ninguno} → release: v$NEXT"
           # Estampar los tres archivos preservando el formato de cada uno.
+          # Idempotente: si ya llevan la versión derivada (la de los
+          # archivos ganó), no hay nada que cambiar.
           python3 - "$NEXT" <<'PY'
           import re, sys
           nex = sys.argv[1]
-          p = 'src-tauri/tauri.conf.json'
-          s = open(p).read()
-          s2 = re.sub(r'("version"\s*:\s*")[^"]+(")', r'\g<1>' + nex + r'\g<2>', s, count=1)
-          assert s2 != s, 'tauri.conf.json: no se encontró "version"'
-          open(p, 'w').write(s2)
-          p = 'src-tauri/Cargo.toml'
-          s = open(p).read()
-          s2 = re.sub(r'(^version\s*=\s*")[^"]+(")', r'\g<1>' + nex + r'\g<2>', s, count=1, flags=re.M)
-          assert s2 != s, 'Cargo.toml: no se encontró version'
-          open(p, 'w').write(s2)
+
+          def estampar(path, patron):
+              s = open(path).read()
+              m = re.search(patron, s, flags=re.M)
+              assert m, f'{path}: no se encontró la versión'
+              if m.group(2) == nex:
+                  return
+              inicio, fin = m.start(2), m.end(2)
+              open(path, 'w').write(s[:inicio] + nex + s[fin:])
+
+          estampar('src-tauri/tauri.conf.json', r'("version"\s*:\s*")([^"]+)(")')
+          estampar('src-tauri/Cargo.toml', r'(^version\s*=\s*")([^"]+)(")')
+
           p = 'src-tauri/Cargo.lock'
           lines = open(p).read().split('\n')
           for i, ln in enumerate(lines):
               if ln == 'name = "nuupa"':
                   assert lines[i + 1].startswith('version = '), 'Cargo.lock: bloque nuupa sin version'
-                  lines[i + 1] = f'version = "{nex}"'
+                  if lines[i + 1].split('"')[1] != nex:
+                      lines[i + 1] = f'version = "{nex}"'
+                      open(p, 'w').write('\n'.join(lines))
                   break
           else:
               raise SystemExit('Cargo.lock: no se encontró el paquete nuupa')
-          open(p, 'w').write('\n'.join(lines))
           PY
           V_JSON=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           V_CARGO=$(sed -n 's/^version *= *"\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
@@ -111,9 +117,16 @@ jobs:
           git config user.name "nuupa-ci"
           git config user.email "actions@github.com"
           git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
-          git commit -m "chore(release): v$NEXT [skip ci]" -m "Release-of: $GITHUB_SHA"
-          git push origin HEAD:master
-          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if git diff --cached --quiet; then
+            # El merge ya traía la versión derivada: el merge commit ES el
+            # commit de release — nada que estampar.
+            echo "Los archivos ya llevan v$NEXT; el merge commit es el release commit."
+            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "chore(release): v$NEXT [skip ci]" -m "Release-of: $GITHUB_SHA"
+            git push origin HEAD:master
+            echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
           echo "version=$NEXT" >> "$GITHUB_OUTPUT"
           echo "publicar=true" >> "$GITHUB_OUTPUT"
 

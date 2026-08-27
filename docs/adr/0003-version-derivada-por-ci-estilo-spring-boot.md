@@ -26,7 +26,9 @@ tiene que ocurrir antes del build — y eso también puede hacerlo CI.
   `chore(release): vN [skip ci]` con pie `Release-of: <merge-SHA>` y lo
   pusha a master. tests/build/publicar corren sobre ese SHA estampado y el
   tag lo crea `gh release create --target` apuntando a él: el tag
-  CONTIENE su propia versión.
+  CONTIENE su propia versión. El estampado es idempotente: si el merge ya
+  traía la versión derivada (la de los archivos ganó), no hay commit de
+  release — el merge commit ES el commit de release.
 - Anti-bucle y anti-repetición: los pushes hechos con GITHUB_TOKEN no
   disparan workflows (y `[skip ci]` lo refuerza); si un re-run encuentra
   `Release-of: <SHA>` en la historia de master, no estampa ni publica otra
