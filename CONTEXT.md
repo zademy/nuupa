@@ -40,3 +40,7 @@ _Avoid_: bloqueado, ignorado, pausado
 **Refrescar**:
 Volver a consultar la lista de paquetes y sus últimas versiones.
 _Avoid_: sincronizar, actualizar (reservado para versiones)
+
+**Descubrimiento**:
+Hallar el binario de un gestor en esta máquina: el PATH y las ubicaciones habituales por sistema. Si no aparece, el gestor no está: su pestaña no existe y el error muestra dónde se buscó. Nunca exige al usuario configurar nada.
+_Avoid_: validación de instalación, chequeo de entorno

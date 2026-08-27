@@ -1,5 +1,6 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import Icono from "./Icono.vue";
 import { createPackagesStore } from "./store";
 
@@ -9,9 +10,6 @@ const props = defineProps({
   gestor: { type: String, required: true },
   log: { type: Object, required: true }, // log compartido entre pestañas
 });
-
-// El comando real que corre al actualizar, para el tooltip.
-const VERBO = { npm: "npm i -g", pnpm: "pnpm add -g", bun: "bun add -g" };
 
 const {
   state,
@@ -25,6 +23,7 @@ const {
   update,
   updateAll,
   stopAll,
+  procesarEventoCola,
   cargarExclusiones,
   toggleExcluded,
   isUpdating,
@@ -44,18 +43,26 @@ watch(
   { immediate: true }
 );
 
+let desuscribirCola = null;
+
 onMounted(async () => {
   // Las exclusiones cargan ANTES de que la lista esté usable: una cola
   // temprana no puede computarse sin ellas. El listener de streaming
   // vive en App (siempre montado): nada se pierde al cambiar de pestaña.
   await cargarExclusiones();
   refresh();
+  // Los acontecimientos de la cola (empieza/resultado por paquete) mueven
+  // las filas de ESTE panel; las líneas de log van por App.
+  desuscribirCola = await listen("pm-cola", (e) => procesarEventoCola(e.payload));
 });
 
-// Salir del panel detiene su cola con gracia: termina el paquete en curso
-// y no empieza el siguiente — nunca queda una cola huérfana sin log ni
-// botón Detener en otra pestaña.
-onUnmounted(() => stopAll());
+// Salir del panel detiene su cola con gracia: el backend termina el
+// paquete en curso y no empieza el siguiente — nunca queda una cola
+// huérfana sin log ni botón Detener en otra pestaña.
+onUnmounted(() => {
+  desuscribirCola?.();
+  stopAll();
+});
 </script>
 
 <template>
@@ -102,7 +109,13 @@ onUnmounted(() => stopAll());
     <!-- Barra de estado tipo terminal: la situacionalidad del gestor en una
          línea monocroma. -->
     <div class="statusbar">
-      <span v-if="state.snapshot" class="mono">{{ gestor }} v{{ state.snapshot.version }}</span>
+      <span v-if="state.snapshot" class="mono"
+        >{{ gestor }} v{{ state.snapshot.version_gestor }}<template
+          v-if="state.snapshot.version_node"
+        >
+          · node {{ state.snapshot.version_node }}</template
+        ></span
+      >
       <span class="mono">
         {{ conteo.total }} {{ conteo.total === 1 ? "paquete" : "paquetes" }}
       </span>
@@ -206,7 +219,7 @@ onUnmounted(() => stopAll());
                   <button
                     class="actualizar solo-icono"
                     :disabled="!p.outdated || queue.active"
-                    :title="`Actualizar a la última versión (${VERBO[gestor] ?? gestor} ${p.name}@latest)`"
+                    :title="`Actualizar a la última versión (${state.snapshot.comando_actualizar} ${p.name}@latest)`"
                     :aria-label="'Actualizar ' + p.name"
                     @click="update(p.name)"
                   >

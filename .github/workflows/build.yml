@@ -2,11 +2,13 @@ name: build
 
 on:
   push:
-    branches: [master]
-    tags: ['v*']
+    branches: [develop, master]
   workflow_dispatch:
+  # Sin trigger de tags: los tags v* los crea CI al publicar la release en
+  # master. Un trigger de tags re-dispararía este workflow en bucle (el tag
+  # creado por la API genera un evento push de tag).
 
-# Un run nuevo cancela el anterior de la misma rama/tag.
+# Un run nuevo cancela el anterior de la misma rama.
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -15,30 +17,76 @@ permissions:
   contents: write
 
 jobs:
-  # Verificación barata (segundos en ubuntu) ANTES de gastar 5 runners:
-  # en tags, el tag debe coincidir con la versión del proyecto y las
-  # versiones entre sí (tauri.conf.json manda: es la que usa el bundler).
+  # Verificación barata (segundos en ubuntu) ANTES de gastar runners:
+  # tauri.conf.json y Cargo.toml deben llevar LA MISMA versión (tauri.conf
+  # manda: es la que usa el bundler). En master, además, el tag que se va a
+  # crear debe ser NUEVO — si ya existe, el merge no trajo un bump de
+  # versión y la release se queda sin poder publicarse.
   sanidad:
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Tag y versiones consistentes
+      - name: Versiones consistentes
         run: |
-          TAG="${{ github.ref_name }}"
           V_JSON=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           V_CARGO=$(sed -n 's/^version *= *"\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
-          echo "tag=$TAG  tauri.conf.json=$V_JSON  Cargo.toml=$V_CARGO"
-          [ "v$V_JSON" = "$TAG" ] || { echo "::error::El tag $TAG no coincide con v$V_JSON de tauri.conf.json"; exit 1; }
+          echo "tauri.conf.json=$V_JSON  Cargo.toml=$V_CARGO"
           [ "$V_JSON" = "$V_CARGO" ] || { echo "::error::Cargo.toml ($V_CARGO) != tauri.conf.json ($V_JSON)"; exit 1; }
 
-  # Construye los bundles por plataforma. NO publica nada: la release se
-  # centraliza en publicar-release, sin carreras entre jobs paralelos.
-  build:
+      - name: El tag v$V_JSON debe ser nuevo (solo master)
+        if: github.ref == 'refs/heads/master'
+        run: |
+          V_JSON=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          TAG="v$V_JSON"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::El tag $TAG ya existe: sube la versión en develop antes de mergear a master."
+            exit 1
+          fi
+          echo "Se creará el tag $TAG al publicar la release."
+
+  # Tests de verdad (solo develop): Rust y frontend. Un test roto no
+  # debería llegar ni a construirse.
+  tests:
     needs: sanidad
-    # Corre también cuando sanidad se saltó (push a master sin tag).
-    if: ${{ !failure() && !cancelled() }}
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Las mismas dependencias de WebKitGTK que el build: compilar el
+      # crate de tauri (cargo test) las necesita en Linux.
+      - name: Dependencias de Linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Frontend (vitest)
+        run: |
+          npm ci
+          npm test
+
+      - name: Rust (cargo test)
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  # Construye los bundles por plataforma (solo develop) y los deja como
+  # artefactos: la release en master los REUTILIZA, no se reconstruye nada.
+  build:
+    needs: tests
+    if: github.ref == 'refs/heads/develop'
     strategy:
       fail-fast: false
       matrix:
@@ -110,16 +158,45 @@ jobs:
             src-tauri/target/**/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
-  # Al pasar TODOS los builds de un tag: publica la release de una vez,
-  # con notas de todos los commits desde la última release y checksums.
+  # Merge a master = publicar. NO construye: descarga los instaladores del
+  # run de develop que construyó exactamente el commit fusionado, crea el
+  # tag v{versión} en este SHA y publica la release con notas y checksums.
   publicar-release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: sanidad
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # historial completo para las notas
+          fetch-depth: 0 # historial completo: padres del merge y notas
+
+      # El commit de develop que se fusionó: si es fast-forward, el propio
+      # HEAD; si es merge commit, su segundo padre (la punta de develop).
+      # NOTA: merge normal o fast-forward — un squash-merge rompería esta
+      # resolución (y el job fallaría ruidosamente, que es lo correcto).
+      - name: Resolver el commit de develop fusionado
+        run: |
+          if git rev-parse --verify -q HEAD^2 >/dev/null; then
+            SHA=$(git rev-parse HEAD^2)
+          else
+            SHA=$(git rev-parse HEAD)
+          fi
+          echo "SHA_DEVELOP=$SHA" >> "$GITHUB_ENV"
+          echo "Artefactos del run de develop para: $SHA"
+
+      - name: Hallar el run de build que construyó ese commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?branch=develop&status=success" \
+            --jq ".workflow_runs | map(select(.head_sha == \"$SHA_DEVELOP\")) | .[0].id")
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::No hay run exitoso de build en develop para $SHA_DEVELOP. Todo cambio debe pasar por develop antes de master."
+            exit 1
+          fi
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "Run de develop: $RUN_ID"
 
       - name: Descargar instaladores
         uses: actions/download-artifact@v8
@@ -127,6 +204,8 @@ jobs:
           pattern: nuupa-*
           merge-multiple: true
           path: instaladores
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
 
       - name: Preparar assets (aplanar, validar y checksums)
         run: |
@@ -146,10 +225,11 @@ jobs:
 
       - name: Notas con todos los commits
         run: |
-          TAG="${{ github.ref_name }}"
-          # Tag anterior (si existe) para acotar el rango de commits
-          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
-          RANGO="${PREV:+$PREV..}$TAG"
+          TAG="v$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          # Tag anterior (si existe) para acotar el rango de commits; el tag
+          # nuevo todavía no existe — el rango termina en HEAD.
+          PREV=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)
+          RANGO="${PREV:+$PREV..}HEAD"
           {
             echo "## Commits incluidos"
             echo
@@ -159,17 +239,20 @@ jobs:
             echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/commits/$TAG"
           } > notas.md
 
-      - name: Publicar release
+      - name: Publicar release (crea el tag en este SHA)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="v$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
           # v1.2.3-rc.1 / -beta / -alpha → prerelease; resto → latest
           FLAGS="--latest"
           if echo "$TAG" | grep -Eq '[-.](rc|beta|alpha)'; then
             FLAGS="--prerelease"
           fi
+          # --target crea el tag en el SHA de master si no existe: tag y
+          # release nacen juntos, nadie pushea tags a mano.
           gh release create "$TAG" assets/* \
             --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
             --title "Nuupa $TAG" \
             --notes-file notas.md $FLAGS

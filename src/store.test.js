@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createPackagesStore, crearLog } from "./store";
 
 const SNAPSHOT = {
-  version: "26.2.0",
+  version_gestor: "11.4.2",
+  version_node: "26.2.0",
+  comando_actualizar: "npm i -g",
   packages: [
     { name: "@alibaba-group/open-code-review", installed: "1.10.2", latest: "1.10.2", outdated: false },
     { name: "context-mode", installed: "1.0.169", latest: "1.0.170", outdated: true },
@@ -188,11 +190,11 @@ describe("store de paquetes globales", () => {
     expect(store.state.error).toContain("gestor no soportado");
   });
 
-  it("appendLogLine acumula líneas con prefijo gestor/paquete", () => {
-    const store = createPackagesStore(fakeInvoke());
-    store.appendLogLine("npm", "hunkdiff", "added 1 package");
-    store.appendLogLine("npm", "hunkdiff", "done");
-    expect(store.logs.value).toEqual([
+  it("crearLog.appendLine acumula líneas con prefijo gestor/paquete", () => {
+    const log = crearLog();
+    log.appendLine("npm", "hunkdiff", "added 1 package");
+    log.appendLine("npm", "hunkdiff", "done");
+    expect(log.lineas.value).toEqual([
       "npm/hunkdiff: added 1 package",
       "npm/hunkdiff: done",
     ]);
@@ -210,8 +212,8 @@ describe("store de paquetes globales", () => {
       "bun",
       log
     );
-    storeNpm.appendLogLine("npm", "hunkdiff", "added 1 package");
-    storeBun.appendLogLine("bun", "headroom-ai", "installed");
+    log.appendLine("npm", "hunkdiff", "added 1 package");
+    log.appendLine("bun", "headroom-ai", "installed");
     // el histórico es Único: ambas stores ven las mismas líneas
     expect(storeNpm.logs.value).toEqual([
       "npm/hunkdiff: added 1 package",
@@ -223,87 +225,94 @@ describe("store de paquetes globales", () => {
   it("el log compartido respeta el tope de líneas", () => {
     const log = crearLog(3);
     const store = createPackagesStore(fakeInvoke(), "npm", log);
-    for (let i = 0; i < 5; i++) store.appendLogLine("npm", "p", `línea ${i}`);
+    for (let i = 0; i < 5; i++) log.appendLine("npm", "p", `línea ${i}`);
     expect(store.logs.value).toHaveLength(3);
     expect(store.logs.value[0]).toBe("npm/p: línea 2");
   });
 
-  it("updateAll actualiza solo los desactualizados, en orden de lista", async () => {
-    const actualizados = [];
-    let refrescos = 0;
+  it("updateAll delega la cola a actualizar_todo y adopta resumen y snapshot", async () => {
+    const llamadas = [];
     const store = createPackagesStore(async (cmd, args) => {
-      if (cmd === "list_globals") {
-        refrescos++;
-        return SNAPSHOT;
+      llamadas.push(cmd);
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "actualizar_todo") {
+        expect(args).toEqual({ gestor: "npm" });
+        return {
+          resumen: { total: 2, ok: 2, failed: 0, detenida: false },
+          snapshot: SNAPSHOT,
+        };
       }
-      if (cmd === "update_package") {
-        actualizados.push(args.name);
-        return { success: true };
-      }
+      throw new Error(`comando inesperado: ${cmd}`);
     });
     await store.refresh();
     await store.updateAll();
-    // SNAPSHOT trae desactualizados: context-mode y hunkdiff, en ese orden
-    expect(actualizados).toEqual(["context-mode", "hunkdiff"]);
-    expect(refrescos).toBe(2); // carga inicial + uno al final de la cola
-    expect(store.queue.summary).toEqual({
-      total: 2,
-      ok: 2,
-      failed: 0,
-      detenida: false,
-    });
+    // un solo invoke para toda la cola; el snapshot final viene con él
+    expect(llamadas).toEqual(["list_globals", "actualizar_todo"]);
+    expect(store.queue.summary).toEqual({ total: 2, ok: 2, failed: 0, detenida: false });
     expect(store.queue.active).toBe(false);
+    expect(store.state.snapshot).toEqual(SNAPSHOT);
     // el resumen también vive en el log (visible aunque cambies de pestaña)
     expect(
       store.logs.value.some((l) => l.includes("cola terminada — 2 de 2 actualizados"))
     ).toBe(true);
   });
 
-  it("updateAll continúa tras un fallo y lo cuenta", async () => {
-    const actualizados = [];
-    const store = createPackagesStore(async (cmd, args) => {
+  it("los eventos de la cola mueven las filas: empieza y resultado", async () => {
+    let store;
+    store = createPackagesStore(async (cmd) => {
       if (cmd === "list_globals") return SNAPSHOT;
-      if (cmd === "update_package") {
-        actualizados.push(args.name);
-        return { success: args.name !== "context-mode" };
+      if (cmd === "actualizar_todo") {
+        store.procesarEventoCola({ gestor: "npm", tipo: "empieza", paquete: "context-mode" });
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "resultado",
+          paquete: "context-mode",
+          exito: true,
+        });
+        store.procesarEventoCola({ gestor: "npm", tipo: "empieza", paquete: "hunkdiff" });
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "resultado",
+          paquete: "hunkdiff",
+          exito: false,
+          salida: "EACCES",
+        });
+        return {
+          resumen: { total: 2, ok: 1, failed: 1, detenida: false },
+          snapshot: SNAPSHOT,
+        };
       }
     });
     await store.refresh();
     await store.updateAll();
-    expect(actualizados).toEqual(["context-mode", "hunkdiff"]); // no se detuvo
-    expect(store.queue.summary).toEqual({
-      total: 2,
-      ok: 1,
-      failed: 1,
-      detenida: false,
-    });
-    expect(store.hasError("context-mode")).toBe(true);
+    expect(store.hasError("hunkdiff")).toBe(true); // resultado fallido
+    expect(store.isUpdating("context-mode")).toBe(false); // éxito limpia
+    expect(store.queue.current).toBeNull();
+    expect(
+      store.logs.value.some((l) => l.includes("npm/hunkdiff: la actualización falló"))
+    ).toBe(true);
   });
 
-  it("Detener deja terminar el actual y no empieza el siguiente", async () => {
-    const actualizados = [];
-    const enCurso = [];
-    const store = createPackagesStore(async (cmd, args) => {
+  it("los eventos de OTRO gestor no tocan esta store", async () => {
+    const store = createPackagesStore(fakeInvoke());
+    store.procesarEventoCola({ gestor: "pnpm", tipo: "empieza", paquete: "cowsay" });
+    expect(store.isUpdating("cowsay")).toBe(false);
+    expect(store.queue.current).toBeNull();
+  });
+
+  it("updateAll con fallo de comando deja el log y refresca", async () => {
+    const llamadas = [];
+    const store = createPackagesStore(async (cmd) => {
+      llamadas.push(cmd);
       if (cmd === "list_globals") return SNAPSHOT;
-      if (cmd === "update_package") {
-        actualizados.push(args.name);
-        return new Promise((resolve) => enCurso.push(() => resolve({ success: true })));
-      }
+      if (cmd === "actualizar_todo") throw "spawn falló";
     });
     await store.refresh();
-    const cola = store.updateAll();
-    await new Promise((r) => setTimeout(r, 0)); // arranca el primer update
-    expect(store.queue.current).toBe("context-mode");
-    store.stopAll();
-    enCurso[0](); // termina el paquete en curso
-    await cola;
-    expect(actualizados).toEqual(["context-mode"]); // no empezó hunkdiff
-    expect(store.queue.summary).toEqual({
-      total: 2,
-      ok: 1,
-      failed: 0,
-      detenida: true,
-    });
+    await store.updateAll();
+    expect(llamadas).toEqual(["list_globals", "actualizar_todo", "list_globals"]);
+    expect(store.queue.active).toBe(false);
+    expect(store.queue.summary).toBeNull();
+    expect(store.logs.value.some((l) => l.includes("la cola falló"))).toBe(true);
   });
 
   it("updateAll sin desactualizados no hace nada", async () => {
@@ -322,22 +331,46 @@ describe("store de paquetes globales", () => {
     expect(store.queue.summary).toBeNull();
   });
 
-  it("updateAll salta los excluidos", async () => {
-    const actualizados = [];
+  it("updateAll salta a los excluidos: la cola del backend los filtra", async () => {
     const store = createPackagesStore(async (cmd, args) => {
       if (cmd === "list_globals") return SNAPSHOT;
       if (cmd === "get_excluded") return ["hunkdiff"];
-      if (cmd === "update_package") {
-        actualizados.push(args.name);
-        return { success: true };
+      if (cmd === "actualizar_todo") {
+        // el backend construye la cola sin hunkdiff: llega en el resumen
+        expect(args).toEqual({ gestor: "npm" });
+        return {
+          resumen: { total: 1, ok: 1, failed: 0, detenida: false },
+          snapshot: SNAPSHOT,
+        };
       }
     });
     await store.cargarExclusiones();
     await store.refresh();
-    expect(store.isExcluded("hunkdiff")).toBe(true);
     await store.updateAll();
-    expect(actualizados).toEqual(["context-mode"]); // hunkdiff excluido
     expect(store.queue.summary.total).toBe(1);
+  });
+
+  it("Detener pide el alto al backend y muestra el estado deteniendo", async () => {
+    const llamadas = [];
+    let resolver;
+    const store = createPackagesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "actualizar_todo")
+        return new Promise((r) => (resolver = () => r({
+          resumen: { total: 2, ok: 1, failed: 0, detenida: true },
+          snapshot: SNAPSHOT,
+        })));
+      if (cmd === "detener_actualizar_todo") return {};
+    });
+    await store.refresh();
+    const cola = store.updateAll();
+    store.stopAll();
+    expect(llamadas).toContain("detener_actualizar_todo");
+    expect(store.queue.stopped).toBe(true); // feedback inmediato de "Detener"
+    resolver();
+    await cola;
+    expect(store.queue.summary.detenida).toBe(true); // el backend confirma
   });
 
   it("toggleExcluded persiste la lista completa por ambos lados", async () => {
@@ -386,34 +419,5 @@ describe("store de paquetes globales", () => {
     await store.toggleExcluded("hunkdiff");
     expect(store.isExcluded("hunkdiff")).toBe(false); // revertido
     expect(store.logs.value.some((l) => l.includes("exclusiones"))).toBe(true);
-  });
-
-  it("excluir a mitad de cola salta el paquete ya encolado", async () => {
-    const actualizados = [];
-    let store;
-    let primera = true;
-    store = createPackagesStore(async (cmd, args) => {
-      if (cmd === "list_globals") return SNAPSHOT;
-      if (cmd === "get_excluded") return [];
-      if (cmd === "set_excluded") return {};
-      if (cmd === "update_package") {
-        if (primera) {
-          primera = false;
-          store.toggleExcluded("hunkdiff"); // excluye mientras corre el 1º
-        }
-        actualizados.push(args.name);
-        return { success: true };
-      }
-    });
-    await store.cargarExclusiones();
-    await store.refresh();
-    await store.updateAll();
-    expect(actualizados).toEqual(["context-mode"]); // hunkdiff saltado
-    expect(store.queue.summary).toEqual({
-      total: 2,
-      ok: 1,
-      failed: 0,
-      detenida: false, // saltarse no es detenerse
-    });
   });
 });
