@@ -19,13 +19,25 @@ permissions:
 jobs:
   # Verificación barata (segundos en ubuntu) ANTES de gastar runners:
   # tauri.conf.json y Cargo.toml deben llevar LA MISMA versión (tauri.conf
-  # manda: es la que usa el bundler). En master, además, el tag que se va a
-  # crear debe ser NUEVO — si ya existe, el merge no trajo un bump de
-  # versión y la release se queda sin poder publicarse.
+  # manda: es la que usa el bundler).
+  #
+  # En master, además, deriva la versión del release AL ESTILO SPRING BOOT:
+  # los merges jamás cargan bumps — el proceso de release es quien estampa
+  # la versión (allí main lleva 4.2.0-SNAPSHOT y ningún PR toca version=).
+  # Consecutivo del último tag (patch +1); si los archivos traen una
+  # versión MAYOR, esa gana (intención explícita de minor/major). El
+  # estampado se commitea con [skip ci] — y los pushes del GITHUB_TOKEN no
+  # disparan workflows — para que el tag final CONTENGA su propia versión.
   sanidad:
     runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.version.outputs.ref }}
+      version: ${{ steps.version.outputs.version }}
+      publicar: ${{ steps.version.outputs.publicar }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # historial y tags completos para derivar
 
       - name: Versiones consistentes
         run: |
@@ -34,16 +46,76 @@ jobs:
           echo "tauri.conf.json=$V_JSON  Cargo.toml=$V_CARGO"
           [ "$V_JSON" = "$V_CARGO" ] || { echo "::error::Cargo.toml ($V_CARGO) != tauri.conf.json ($V_JSON)"; exit 1; }
 
-      - name: El tag v$V_JSON debe ser nuevo (solo master)
+      - name: Derivar versión y estamparla (solo master)
+        id: version
         if: github.ref == 'refs/heads/master'
         run: |
-          V_JSON=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
-          TAG="v$V_JSON"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "::error::El tag $TAG ya existe: sube la versión en develop antes de mergear a master."
-            exit 1
+          # Anti-repetición: un re-run de un run que ya publicó no debe
+          # generar OTRA release — si este merge ya fue estampado, salir.
+          if git log --format=%B origin/master | grep -qF "Release-of: $GITHUB_SHA"; then
+            echo "Este commit ya tiene su release; no se estampa de nuevo."
+            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "publicar=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "Se creará el tag $TAG al publicar la release."
+          git fetch --tags origin
+          LATEST=$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -1)
+          V_JSON=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          NEXT=$(python3 - "$LATEST" "$V_JSON" <<'PY'
+          import sys
+          def key(v):
+              core = v.split('-')[0].split('.')
+              parts = [int(p) for p in core] + [0] * (3 - len(core))
+              return tuple(parts)
+          latest, files = sys.argv[1], sys.argv[2]
+          # Los archivos mandan solo si traen una versión MAYOR; si no,
+          # consecutivo del último tag publicado.
+          if not latest or key(files) > key(latest):
+              print(files)
+          else:
+              a, b, c = key(latest)
+              print(f"{a}.{b}.{c + 1}")
+          PY
+          )
+          echo "Último tag: ${LATEST:-ninguno} → release: v$NEXT"
+          # Estampar los tres archivos preservando el formato de cada uno.
+          python3 - "$NEXT" <<'PY'
+          import re, sys
+          nex = sys.argv[1]
+          p = 'src-tauri/tauri.conf.json'
+          s = open(p).read()
+          s2 = re.sub(r'("version"\s*:\s*")[^"]+(")', r'\g<1>' + nex + r'\g<2>', s, count=1)
+          assert s2 != s, 'tauri.conf.json: no se encontró "version"'
+          open(p, 'w').write(s2)
+          p = 'src-tauri/Cargo.toml'
+          s = open(p).read()
+          s2 = re.sub(r'(^version\s*=\s*")[^"]+(")', r'\g<1>' + nex + r'\g<2>', s, count=1, flags=re.M)
+          assert s2 != s, 'Cargo.toml: no se encontró version'
+          open(p, 'w').write(s2)
+          p = 'src-tauri/Cargo.lock'
+          lines = open(p).read().split('\n')
+          for i, ln in enumerate(lines):
+              if ln == 'name = "nuupa"':
+                  assert lines[i + 1].startswith('version = '), 'Cargo.lock: bloque nuupa sin version'
+                  lines[i + 1] = f'version = "{nex}"'
+                  break
+          else:
+              raise SystemExit('Cargo.lock: no se encontró el paquete nuupa')
+          open(p, 'w').write('\n'.join(lines))
+          PY
+          V_JSON=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          V_CARGO=$(sed -n 's/^version *= *"\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          [ "$V_JSON" = "$NEXT" ] && [ "$V_CARGO" = "$NEXT" ] || {
+            echo "::error::El estampado no quedó consistente ($V_JSON/$V_CARGO != $NEXT)"; exit 1;
+          }
+          git config user.name "nuupa-ci"
+          git config user.email "actions@github.com"
+          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          git commit -m "chore(release): v$NEXT [skip ci]" -m "Release-of: $GITHUB_SHA"
+          git push origin HEAD:master
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "publicar=true" >> "$GITHUB_OUTPUT"
 
   # Tests de verdad: Rust y frontend, en develop Y master. Un test roto no
   # debería llegar ni a construirse. CORRE EN AMBAS RAMAS a propósito:
@@ -55,6 +127,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # En master: el SHA estampado (la versión ya va dentro).
+          ref: ${{ needs.sanidad.outputs.ref || github.sha }}
 
       - uses: actions/setup-node@v7
         with:
@@ -88,7 +163,7 @@ jobs:
   # mergear; en master reconstruye para publicar: la release usa LOS
   # instaladores de su propio run (predecible, sin saltos entre runs).
   build:
-    needs: tests
+    needs: [tests, sanidad]
     strategy:
       fail-fast: false
       matrix:
@@ -109,6 +184,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # En master: el SHA estampado (la versión ya va dentro).
+          ref: ${{ needs.sanidad.outputs.ref || github.sha }}
 
       - uses: actions/setup-node@v7
         with:
@@ -161,18 +239,23 @@ jobs:
           if-no-files-found: error
 
   # Merge a master = publicar. Usa los instaladores que ESTE run acaba de
-  # construir, crea el tag v{versión} en este SHA y publica la release con
-  # notas y checksums.
+  # construir, crea el tag v{versión} en el commit estampado y publica la
+  # release con notas y checksums.
   publicar-release:
-    needs: build
-    # Plain if, sin guards de estado: como `tests` ya corre en master,
-    # ningún job de la cadena se salta y el skip en cascada no existe.
-    if: github.ref == 'refs/heads/master'
+    needs: [build, sanidad]
+    # If de rama + estado explícito de la derivación: si este merge ya
+    # publicó su release (re-run), no se publica otra vez. Consulta estado
+    # a propósito — es un skip intencional, no uno en cascada.
+    if: github.ref == 'refs/heads/master' && needs.sanidad.outputs.publicar != 'false'
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.sanidad.outputs.version }}
+      REF: ${{ needs.sanidad.outputs.ref }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # historial completo para las notas
+          ref: ${{ needs.sanidad.outputs.ref }}
 
       - name: Descargar instaladores
         uses: actions/download-artifact@v8
@@ -199,9 +282,9 @@ jobs:
 
       - name: Notas con todos los commits
         run: |
-          TAG="v$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          TAG="v$VERSION"
           # Tag anterior (si existe) para acotar el rango de commits; el tag
-          # nuevo todavía no existe — el rango termina en HEAD.
+          # nuevo todavía no existe — el rango termina en HEAD (estampado).
           PREV=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)
           RANGO="${PREV:+$PREV..}HEAD"
           {
@@ -213,20 +296,20 @@ jobs:
             echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/commits/$TAG"
           } > notas.md
 
-      - name: Publicar release (crea el tag en este SHA)
+      - name: Publicar release (crea el tag en el commit estampado)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+          TAG="v$VERSION"
           # v1.2.3-rc.1 / -beta / -alpha → prerelease; resto → latest
           FLAGS="--latest"
           if echo "$TAG" | grep -Eq '[-.](rc|beta|alpha)'; then
             FLAGS="--prerelease"
           fi
-          # --target crea el tag en el SHA de master si no existe: tag y
-          # release nacen juntos, nadie pushea tags a mano.
+          # --target crea el tag en el SHA estampado de master si no existe:
+          # tag y release nacen juntos, nadie pushea tags a mano.
           gh release create "$TAG" assets/* \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --target "$REF" \
             --title "Nuupa $TAG" \
             --notes-file notas.md $FLAGS

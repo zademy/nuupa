@@ -101,12 +101,16 @@ two long-lived branches — nobody pushes tags by hand:
 
 **`master` — build and publish:**
 
-1. Sanity also verifies that the tag `v{version}` about to be created does
-   not exist yet — bump the version **in `develop`** before merging.
+1. Sanity derives the release version Spring Boot-style: merges never
+   carry version bumps. CI takes the latest `v*` tag and increments the
+   patch (`v0.3.2` → `v0.3.3`); a **higher** version in the files wins
+   (set `0.4.0` in `develop` when you want a minor/major). It stamps
+   `tauri.conf.json`, `Cargo.toml` and `Cargo.lock`, and commits the
+   stamp with `[skip ci]` so the tag contains its own version.
 2. The five platform builds run again and the publish job validates that
    every installer family is present and adds checksums.
-3. It creates the tag at the merge commit and publishes the release with
-   notes of all commits since the last release.
+3. It creates the tag at the stamped commit and publishes the release
+   with notes of all commits since the last release.
 
 Versions containing `rc`, `beta` or `alpha` are published as pre-releases.
 
