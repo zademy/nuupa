@@ -1,13 +1,14 @@
-//! «Actualizar todo»: cola secuencial sobre los paquetes desactualizados
-//! del espacio global de UN gestor (concepto del glosario en CONTEXT.md).
+//! "Update all": sequential queue over the outdated packages of ONE
+//! manager's global space (concept in CONTEXT.md's glossary).
 //!
-//! Semántica — la misma que vivía en la store del frontend, ahora con
-//! localidad debajo de la seam de Rust:
-//! * orden de lista, de a uno, un fallo no detiene la cola;
-//! * los Excluidos se saltan SIEMPRE, incluso marcados a mitad de cola
-//!   (las exclusiones se releen del disco en cada paso);
-//! * «Detener» deja terminar el paquete en curso y no empieza el siguiente;
-//! * al terminar devuelve resumen + snapshot final (un solo refresco).
+//! Semantics — the same that lived in the frontend store, now with
+//! locality below the Rust seam:
+//! * list order, one at a time, a failure does not stop the queue;
+//! * Excluded packages are ALWAYS skipped, even when marked mid-queue
+//!   (exclusions are re-read from disk at every step);
+//! * "Stop" lets the in-flight package finish and does not start the
+//!   next one;
+//! * on finish it returns summary + final snapshot (a single refresh).
 
 use crate::kernel::Snapshot;
 use crate::DefinicionGestor;
@@ -16,20 +17,20 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Cuenta de la cola: contra qué se corrió, cómo terminó.
+/// Queue accounting: what it ran against, how it ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Resumen {
     pub total: usize,
     pub ok: usize,
     pub failed: usize,
-    /// Quedó cola sin correr (parar durante el último paquete no deja
-    /// pendiente; los excluidos sí corrieron su destino: saltarse no es
-    /// detenerse).
+    /// Queue left unrun (stopping during the last package leaves nothing
+    /// pending; excluded ones met their fate too: being skipped is not
+    /// being stopped).
     pub detenida: bool,
 }
 
-/// Lo que la cola informa conforme avanza. Las líneas de salida van al log
-/// (`pm-output`); empieza/resultado mueven la fila de la tabla.
+/// What the queue reports as it advances. Output lines go to the log
+/// (`pm-output`); starts/result move the table row.
 pub enum EventoCola {
     Empieza {
         paquete: String,
@@ -55,8 +56,8 @@ fn excluidos_de(dir: &Path, gestor: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Corre la cola completa. `parar` se consulta antes de cada paquete (y se
-/// resetea al empezar: cada cola nueva arranca limpia).
+/// Runs the whole queue. `parar` is checked before each package (and
+/// reset at the start: every new queue starts clean).
 pub fn correr(
     def: &DefinicionGestor,
     dir_config: &Path,
@@ -66,8 +67,8 @@ pub fn correr(
     parar.store(false, Ordering::Relaxed);
     let runner = (def.runner)().map_err(|e| e.to_string())?;
 
-    // La cola se construye sobre el estado real al empezar: desactualizados
-    // no excluidos, en orden de lista.
+    // The queue is built on the real state at start: outdated, not
+    // excluded, in list order.
     let snap0 = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
     let pendientes: Vec<String> = snap0
         .packages
@@ -82,8 +83,8 @@ pub fn correr(
         if parar.load(Ordering::Relaxed) {
             break;
         }
-        // Releer del disco: una exclusión marcada a mitad de cola salta el
-        // paquete ya encolado (set_excluded escribe aquí).
+        // Re-read from disk: an exclusion marked mid-queue skips the
+        // already-enqueued package (set_excluded writes here).
         if excluidos_de(dir_config, def.nombre).contains(name) {
             saltados += 1;
             continue;
@@ -113,7 +114,8 @@ pub fn correr(
         });
     }
 
-    // Un solo refresco al final: la foto final ya viene con la cola.
+    // A single refresh at the end: the final photo already comes with the
+    // queue.
     let snapshot_final = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
     let resumen = Resumen {
         total,
@@ -133,8 +135,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
 
-    // Definición de gestor de juguete con protocolo npm: dos desactualizados
-    // (context-mode, hunkdiff) y uno al día.
+    // Toy manager definition with npm's protocol: two outdated
+    // (context-mode, hunkdiff) and one up to date.
     const LS_JSON: &str = r#"{"dependencies": {
         "@alibaba-group/open-code-review": {"version": "1.10.2"},
         "context-mode": {"version": "1.0.169"},
@@ -190,13 +192,13 @@ mod tests {
         mapa.insert("npm".to_string(), vec!["hunkdiff".to_string()]);
         crate::exclusiones::guardar(dir.path(), &mapa).unwrap();
         let (resumen, _) = cola_con(&def_de_prueba(), dir.path());
-        // hunkdiff excluido: la cola se construye SIN él
+        // hunkdiff excluded: the queue is built WITHOUT it
         assert_eq!(resumen.total, 1);
         assert_eq!(resumen.ok, 1);
     }
 
-    /// Runner con efecto: al instalar su primer paquete marca al segundo
-    /// como excluido — simula "excluir a mitad de cola".
+    /// Runner with a side effect: installing its first package marks the
+    /// second as excluded — simulates "exclude mid-queue".
     struct ExcluyenteAF;
     impl ExcluyenteAF {
         fn new() -> Self {
@@ -209,7 +211,7 @@ mod tests {
         }
         fn run(&self, args: &[&str]) -> io::Result<RunnerOutput> {
             if args.first() == Some(&"install") && args.contains(&"context-mode@latest") {
-                // mientras corre el 1º, alguien excluye al 2º
+                // while the 1st runs, someone excludes the 2nd
                 let dir = EXCLUSION_DIR.with(|d| d.borrow().clone()).unwrap();
                 let mut mapa = std::collections::BTreeMap::new();
                 mapa.insert("npm".to_string(), vec!["hunkdiff".to_string()]);
@@ -238,10 +240,10 @@ mod tests {
             ..def_de_prueba()
         };
         let (resumen, _) = cola_con(&def, dir.path());
-        // context-mode corrió; hunkdiff quedó excluido a mitad: saltado
-        assert_eq!(resumen.total, 2); // se construyó con los dos
+        // context-mode ran; hunkdiff got excluded mid-queue: skipped
+        assert_eq!(resumen.total, 2); // built with both
         assert_eq!(resumen.ok, 1);
-        assert!(!resumen.detenida); // saltarse no es detenerse
+        assert!(!resumen.detenida); // skipping is not stopping
     }
 
     #[test]
@@ -252,8 +254,8 @@ mod tests {
         let mut actualizados = Vec::new();
         let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| {
             if let EventoCola::Empieza { paquete } = ev {
-                // Detener apenas empieza el PRIMERO: debe terminar, y el
-                // segundo no debe arrancar nunca.
+                // Stop as soon as the FIRST one starts: it must finish,
+                // and the second one must never start.
                 if paquete == "context-mode" {
                     parar.store(true, Ordering::Relaxed);
                 }
@@ -301,7 +303,7 @@ mod tests {
 
     #[test]
     fn un_fallo_puntual_no_detiene_a_los_demas() {
-        // Runner con memoria: falla solo el PRIMER install, acierta el resto.
+        // Stateful runner: only the FIRST install fails, the rest succeed.
         struct FlaquezaDelPrimero {
             intentos: std::cell::Cell<usize>,
         }

@@ -4,20 +4,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PanelGestor from "./PanelGestor.vue";
 import { crearLog } from "./store";
+import { useI18n } from "./i18n";
 
-// Pestañas: solo gestores soportados E instalados; siempre abre en el
-// primero (npm). El orden lo da el backend.
+// Tabs: only supported AND installed managers; always opens on the first
+// one (npm). The backend sets the order.
 const gestores = ref(["npm"]);
 const activo = ref("npm");
-// Un único log para toda la app: sobrevive a los cambios de pestaña.
+// A single log for the whole app: survives tab switches.
 const log = crearLog();
+
+const { t, destino, alternar } = useI18n();
 
 let desubscribir = null;
 
 onMounted(async () => {
-  // El listener de streaming vive AQUÍ (App nunca se desmonta): las
-  // líneas de una actualización en curso llegan al log compartido aunque
-  // el usuario esté cambiando de pestaña — nada se pierde en remontajes.
+  // The streaming listener lives HERE (App never unmounts): the lines of
+  // an in-flight update reach the shared log even while the user switches
+  // tabs — nothing is lost in remounts.
   desubscribir = await listen("pm-output", (e) => {
     const { gestor, package: paquete, line } = e.payload;
     log.appendLine(gestor, paquete, line);
@@ -29,7 +32,7 @@ onMounted(async () => {
       activo.value = instalados[0];
     }
   } catch {
-    // sin detección: npm solo — el panel mostrará su propio error si falla
+    // no detection: npm only — the panel will show its own error if it fails
   }
 });
 
@@ -37,8 +40,8 @@ onUnmounted(() => desubscribir?.());
 </script>
 
 <template>
-  <!-- Sprite de iconos (una sola instancia, oculto): los <use> de los
-       paneles lo referencian por id. -->
+  <!-- Icon sprite (a single instance, hidden): the panels' <use> elements
+       reference it by id. -->
   <svg width="0" height="0" style="position: absolute" aria-hidden="true">
     <defs>
       <symbol id="ic-refrescar" viewBox="0 0 24 24">
@@ -67,7 +70,7 @@ onUnmounted(() => desubscribir?.());
   <main>
     <header class="barra">
       <h1 class="wordmark">nuupa</h1>
-      <nav class="pestanas" aria-label="Gestores instalados">
+      <nav class="pestanas" :aria-label="t('gestoresInstalados')">
         <button
           v-for="g in gestores"
           :key="g"
@@ -78,6 +81,16 @@ onUnmounted(() => desubscribir?.());
           {{ g }}
         </button>
       </nav>
+      <!-- Language toggle: shows the language it switches TO; English is
+           the default on first launch. -->
+      <button
+        class="idioma"
+        :title="t('cambiarIdioma')"
+        :aria-label="t('cambiarIdioma')"
+        @click="alternar"
+      >
+        {{ destino }}
+      </button>
     </header>
 
     <PanelGestor :key="activo" :gestor="activo" :log="log" />
@@ -85,7 +98,7 @@ onUnmounted(() => desubscribir?.());
 </template>
 
 <style>
-/* Reset + lienzo: la app es oscura de borde a borde. */
+/* Reset + canvas: the app is dark edge to edge. */
 html,
 body {
   margin: 0;
@@ -120,7 +133,6 @@ main {
 .barra {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
   flex-shrink: 0;
@@ -135,9 +147,12 @@ main {
   margin: 0;
 }
 
+/* Tabs sit pushed to the right; the language toggle is the true top-right
+   corner element, right after them. */
 .pestanas {
   display: flex;
   gap: 4px;
+  margin-left: auto;
 }
 
 .pestanas button {
@@ -163,12 +178,31 @@ main {
   background: var(--surface);
   border-color: var(--border);
   border-bottom: 1px solid var(--surface);
-  /* se "funde" con el contenido del panel activo */
+  /* "fuses" with the active panel's content */
   margin-bottom: -1px;
 }
 
-.pestanas button:focus-visible {
+.pestanas button:focus-visible,
+.idioma:focus-visible {
   outline: 1px solid var(--fg);
   outline-offset: 1px;
+}
+
+.idioma {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: color 120ms, background 120ms;
+}
+
+.idioma:hover {
+  color: var(--fg);
+  background: var(--surface);
 }
 </style>

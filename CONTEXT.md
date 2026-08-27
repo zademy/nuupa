@@ -17,6 +17,10 @@ _Avoid_: lista global (singular), store
 Paquete instalado con `-g`, perteneciente al espacio global de un gestor.
 _Avoid_: módulo, dependencia, librería
 
+**Paquete del gestor**:
+Paquete global cuyo nombre es el de un gestor (npm, pnpm, bun): se actualiza fuera de Nuupa (npm viene con node; pnpm y bun los instala su instalador oficial) y por eso nunca aparece en el espacio global de ningún gestor.
+_Avoid_: excluido (la actualización individual sigue disponible), bloqueado, especial
+
 **Versión activa**:
 La versión de node seleccionada por nvm; define qué paquetes globales existen.
 _Avoid_: node actual, node por defecto
