@@ -88,16 +88,30 @@ src-tauri/src/     Rust backend (one module per manager: npm, pnpm, bun)
 
 ## Building and releasing
 
-`cargo tauri build` produces local bundles. Releases are automated by CI:
+`cargo tauri build` produces local bundles. CI splits the work between the
+two long-lived branches — nobody pushes tags by hand:
 
-1. Push a tag `v*` matching the version in `src-tauri/tauri.conf.json`.
-2. A sanity job validates the tag against the project versions.
-3. Five platform builds run in parallel and upload their installers.
-4. A publish job validates that every installer family is present,
-   generates release notes with all commits since the last release,
-   adds checksums, and publishes.
+**`develop` — build and validate:**
 
-Tags containing `rc`, `beta` or `alpha` are published as pre-releases.
+1. A sanity job checks that `src-tauri/tauri.conf.json` and
+   `src-tauri/Cargo.toml` carry the same version.
+2. The Rust and frontend test suites run.
+3. Five platform builds run in parallel and upload their installers as
+   artifacts.
+
+**`master` — publish (no rebuild):**
+
+1. Sanity also verifies that the tag `v{version}` about to be created does
+   not exist yet — bump the version **in `develop`** before merging.
+2. The publish job downloads the installers built by the `develop` run of
+   the exact commit that was merged, validates that every installer family
+   is present, and adds checksums.
+3. It creates the tag at the merge commit and publishes the release with
+   notes of all commits since the last release.
+
+Merges must be regular merges or fast-forwards (not squash merges), so the
+`develop` commit's artifacts can be resolved. Versions containing `rc`,
+`beta` or `alpha` are published as pre-releases.
 
 ## Contributing
 
