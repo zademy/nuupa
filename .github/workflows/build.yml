@@ -82,11 +82,14 @@ jobs:
       - name: Rust (cargo test)
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-  # Construye los bundles por plataforma (solo develop) y los deja como
-  # artefactos: la release en master los REUTILIZA, no se reconstruye nada.
+  # Construye los bundles por plataforma. En develop valida antes de
+  # mergear; en master reconstruye para publicar: la release usa LOS
+  # instaladores de su propio run (predecible, sin saltos entre runs).
   build:
     needs: tests
-    if: github.ref == 'refs/heads/develop'
+    # Corre en develop y master (tests se salta en master: con este guard
+    # el skip no detiene la cadena).
+    if: ${{ !failure() && !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -158,45 +161,17 @@ jobs:
             src-tauri/target/**/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
-  # Merge a master = publicar. NO construye: descarga los instaladores del
-  # run de develop que construyó exactamente el commit fusionado, crea el
-  # tag v{versión} en este SHA y publica la release con notas y checksums.
+  # Merge a master = publicar. Usa los instaladores que ESTE run acaba de
+  # construir, crea el tag v{versión} en este SHA y publica la release con
+  # notas y checksums.
   publicar-release:
-    needs: sanidad
+    needs: build
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # historial completo: padres del merge y notas
-
-      # El commit de develop que se fusionó: si es fast-forward, el propio
-      # HEAD; si es merge commit, su segundo padre (la punta de develop).
-      # NOTA: merge normal o fast-forward — un squash-merge rompería esta
-      # resolución (y el job fallaría ruidosamente, que es lo correcto).
-      - name: Resolver el commit de develop fusionado
-        run: |
-          if git rev-parse --verify -q HEAD^2 >/dev/null; then
-            SHA=$(git rev-parse HEAD^2)
-          else
-            SHA=$(git rev-parse HEAD)
-          fi
-          echo "SHA_DEVELOP=$SHA" >> "$GITHUB_ENV"
-          echo "Artefactos del run de develop para: $SHA"
-
-      - name: Hallar el run de build que construyó ese commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          RUN_ID=$(gh api --paginate \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?branch=develop&status=success" \
-            --jq ".workflow_runs | map(select(.head_sha == \"$SHA_DEVELOP\")) | .[0].id")
-          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-            echo "::error::No hay run exitoso de build en develop para $SHA_DEVELOP. Todo cambio debe pasar por develop antes de master."
-            exit 1
-          fi
-          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
-          echo "Run de develop: $RUN_ID"
+          fetch-depth: 0 # historial completo para las notas
 
       - name: Descargar instaladores
         uses: actions/download-artifact@v8
@@ -204,8 +179,6 @@ jobs:
           pattern: nuupa-*
           merge-multiple: true
           path: instaladores
-          run-id: ${{ env.RUN_ID }}
-          github-token: ${{ github.token }}
 
       - name: Preparar assets (aplanar, validar y checksums)
         run: |
