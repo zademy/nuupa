@@ -158,9 +158,16 @@ pub fn snapshot(runner: &dyn Runner) -> std::io::Result<Snapshot> {
         ));
     }
     let out = runner.run(&["outdated", "-g"])?;
-    // Salida vacía con exit 0 = nada desactualizado (bun puede omitir la
-    // tabla); sin tabla reconocible el resto de casos es error visible.
-    let tabla = if out.exit_code == 0 && out.stdout.trim().is_empty() {
+    // Salida vacía —o solo el banner "bun outdated vX (hash)"— con
+    // exit 0 = nada desactualizado: bun omite la tabla cuando todo
+    // está al día. Cualquier otra salida sin tabla reconocible es
+    // error visible.
+    let todo_al_dia = out.exit_code == 0
+        && out
+            .stdout
+            .lines()
+            .all(|l| l.trim().is_empty() || l.trim_start().starts_with("bun outdated v"));
+    let tabla = if todo_al_dia {
         Some(BTreeMap::new())
     } else {
         parse_tabla(&out.stdout)
@@ -315,6 +322,27 @@ mod tests {
         runner.outdated_exit = 0;
         let snap = snapshot(&runner).expect("vacío = al día");
         assert!(snap.packages.iter().all(|p| !p.outdated));
+    }
+
+    #[test]
+    fn snapshot_banner_solo_todo_al_dia() {
+        // bun 1.3.x omite la tabla cuando no hay desactualizados y deja
+        // únicamente el banner de versión en stdout (exit 0)
+        let mut runner = FakeBun::con_globales();
+        runner.outdated = "bun outdated v1.3.14 (0d9b296a)\n".into();
+        runner.outdated_exit = 0;
+        let snap = snapshot(&runner).expect("banner solo = al día");
+        assert!(snap.packages.iter().all(|p| !p.outdated));
+    }
+
+    #[test]
+    fn snapshot_banner_mas_ruido_desconocido_es_error_visible() {
+        // el banner es aceptable solo si es la ÚNICA línea: cualquier
+        // contenido extra sin tabla sigue siendo un formato cambiado
+        let mut runner = FakeBun::con_globales();
+        runner.outdated = "bun outdated v1.3.14 (0d9b296a)\nalgo nuevo\n".into();
+        runner.outdated_exit = 0;
+        assert!(snapshot(&runner).is_err());
     }
 
     #[test]
