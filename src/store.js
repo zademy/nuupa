@@ -137,13 +137,10 @@ export function createPackagesStore(
     try {
       const d = await invokeFn("diagnostico");
       const texto = armarDiagnostico({
-        version: d.version,
-        so: d.so,
-        gestores: d.gestores,
+        ...d,
         activo: gestor,
         conteo: conteo.value,
         lineas: logs.value,
-        home: d.home,
       });
       await navigator.clipboard.writeText(texto);
       diagnosticoCopiado.value = true;

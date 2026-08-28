@@ -8,6 +8,9 @@ export function redactar(texto, home) {
   return texto.replaceAll(home, "~");
 }
 
+/** How many log lines the diagnostics carry (#21). */
+export const LIMITE_LOG = 50;
+
 /** The diagnostics block: machine facts, the active gestor's situation
  *  and the LAST log lines — home-redacted, ready for the clipboard. */
 export function armarDiagnostico({
@@ -19,7 +22,7 @@ export function armarDiagnostico({
   lineas,
   home,
 }) {
-  const recorte = lineas.slice(-50);
+  const recorte = lineas.slice(-LIMITE_LOG);
   const r = (t) => redactar(t, home);
   return [
     `nuupa v${version}`,
