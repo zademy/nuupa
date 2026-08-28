@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PanelGestor from "./PanelGestor.vue";
 import Icono from "./Icono.vue";
+import AcercaDe from "./AcercaDe.vue";
 import { crearLog } from "./store";
 import { useI18n } from "./i18n";
 import { useTema } from "./tema";
@@ -14,6 +15,8 @@ const gestores = ref(["npm"]);
 const activo = ref("npm");
 // A single log for the whole app: survives tab switches.
 const log = crearLog();
+// About dialog: rendered on demand over everything else.
+const mostrarAcerca = ref(false);
 
 const { t, destino, alternar } = useI18n();
 const { destino: destinoTema, alternar: alternarTema } = useTema();
@@ -81,6 +84,15 @@ onUnmounted(() => desubscribir?.());
       <symbol id="ic-luna" viewBox="0 0 24 24">
         <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
       </symbol>
+      <symbol id="ic-info" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 16v-4" />
+        <path d="M12 8h.01" />
+      </symbol>
+      <symbol id="ic-cerrar" viewBox="0 0 24 24">
+        <path d="M18 6 6 18" />
+        <path d="m6 6 12 12" />
+      </symbol>
     </defs>
   </svg>
 
@@ -113,14 +125,30 @@ onUnmounted(() => desubscribir?.());
       <button
         class="tema"
         :title="destinoTema === 'oscuro' ? t('temaOscuro') : t('temaClaro')"
-        :aria-label="destinoTema === 'oscuro' ? t('temaOscuro') : t('temaClaro')"
+        :aria-label="
+          destinoTema === 'oscuro' ? t('temaOscuro') : t('temaClaro')
+        "
         @click="alternarTema"
       >
-        <Icono :nombre="destinoTema === 'oscuro' ? 'luna' : 'sol'" :tamano="12" />
+        <Icono
+          :nombre="destinoTema === 'oscuro' ? 'luna' : 'sol'"
+          :tamano="12"
+        />
+      </button>
+      <!-- About dialog: project, author, repository and license. -->
+      <button
+        class="acerca"
+        :title="t('acercaDe')"
+        :aria-label="t('acercaDe')"
+        @click="mostrarAcerca = true"
+      >
+        <Icono nombre="info" :tamano="12" />
       </button>
     </header>
 
     <PanelGestor :key="activo" :gestor="activo" :log="log" />
+
+    <AcercaDe v-if="mostrarAcerca" @cerrar="mostrarAcerca = false" />
   </main>
 </template>
 
@@ -139,6 +167,8 @@ onUnmounted(() => desubscribir?.());
   --fg: #111827;
   --fg-muted: #4b5563;
   --fg-faint: #6b7280;
+  /* Behind the About dialog; darkened canvas, per theme. */
+  --overlay: rgba(17, 24, 39, 0.45);
 }
 
 :root[data-tema="oscuro"] {
@@ -151,6 +181,7 @@ onUnmounted(() => desubscribir?.());
   --fg: #e6e8eb;
   --fg-muted: #9aa1ab;
   --fg-faint: #6b7280;
+  --overlay: rgba(0, 0, 0, 0.55);
 }
 
 /* Reset + canvas: the app is themed edge to edge (index.html pre-paints
@@ -213,7 +244,9 @@ main {
   border-radius: 5px 5px 0 0;
   padding: 4px 12px;
   cursor: pointer;
-  transition: color 120ms, background 120ms;
+  transition:
+    color 120ms,
+    background 120ms;
 }
 
 .pestanas button:hover {
@@ -231,13 +264,15 @@ main {
 
 .pestanas button:focus-visible,
 .idioma:focus-visible,
-.tema:focus-visible {
+.tema:focus-visible,
+.acerca:focus-visible {
   outline: 1px solid var(--fg);
   outline-offset: 1px;
 }
 
 .idioma,
-.tema {
+.tema,
+.acerca {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -250,11 +285,14 @@ main {
   border-radius: 5px;
   padding: 4px 10px;
   cursor: pointer;
-  transition: color 120ms, background 120ms;
+  transition:
+    color 120ms,
+    background 120ms;
 }
 
 .idioma:hover,
-.tema:hover {
+.tema:hover,
+.acerca:hover {
   color: var(--fg);
   background: var(--surface);
 }

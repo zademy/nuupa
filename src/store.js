@@ -25,7 +25,11 @@ export function crearLog(capacidad = 500) {
  * exercise loading, error, filtering, updates and exclusions without
  * touching Tauri. `gestor` travels in every invocation.
  */
-export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompartido = null) {
+export function createPackagesStore(
+  invokeFn = invoke,
+  gestor = "npm",
+  logCompartido = null,
+) {
   const { t } = useI18n();
   const state = reactive({
     snapshot: null,
@@ -72,7 +76,10 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
         if (refrescar) await refresh();
         return true;
       }
-      markFailed(name, `${t("actualizacionFallo")}\n${res?.output ?? ""}`.trim());
+      markFailed(
+        name,
+        `${t("actualizacionFallo")}\n${res?.output ?? ""}`.trim(),
+      );
       return false;
     } catch (e) {
       markFailed(name, String(e));
@@ -121,8 +128,8 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
   // feeds the button and the queue.
   const desactualizables = computed(() =>
     (state.snapshot?.packages ?? []).filter(
-      (p) => p.outdated && !isExcluded(p.name)
-    )
+      (p) => p.outdated && !isExcluded(p.name),
+    ),
   );
 
   // Is there anything "Update all" can do? Looks at the full list (not
@@ -158,7 +165,9 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
     queue.stopped = false;
     queue.summary = null;
     try {
-      const { resumen, snapshot } = await invokeFn("actualizar_todo", { gestor });
+      const { resumen, snapshot } = await invokeFn("actualizar_todo", {
+        gestor,
+      });
       state.snapshot = snapshot;
       queue.summary = resumen;
       // The summary also lives in the log: if the user is on another tab,
@@ -166,7 +175,7 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
       appendLog(
         `${gestor}: ${t("colaTerminada", { ok: resumen.ok, total: resumen.total })}` +
           (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
-          (resumen.detenida ? ` · ${t("detenida")}` : "")
+          (resumen.detenida ? ` · ${t("detenida")}` : ""),
       );
     } catch (e) {
       appendLog(`${gestor}: ${t("colaFallo", { e })}`);
@@ -187,7 +196,11 @@ export function createPackagesStore(invokeFn = invoke, gestor = "npm", logCompar
       status[e.paquete] = ESTADO.ACTUALIZANDO;
     } else if (e.tipo === "resultado") {
       if (e.exito) delete status[e.paquete];
-      else markFailed(e.paquete, `${t("actualizacionFallo")}\n${e.salida ?? ""}`.trim());
+      else
+        markFailed(
+          e.paquete,
+          `${t("actualizacionFallo")}\n${e.salida ?? ""}`.trim(),
+        );
     }
   }
 

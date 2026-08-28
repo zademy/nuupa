@@ -6,8 +6,18 @@ const SNAPSHOT = {
   version_node: "26.2.0",
   comando_actualizar: "npm i -g",
   packages: [
-    { name: "@alibaba-group/open-code-review", installed: "1.10.2", latest: "1.10.2", outdated: false },
-    { name: "context-mode", installed: "1.0.169", latest: "1.0.170", outdated: true },
+    {
+      name: "@alibaba-group/open-code-review",
+      installed: "1.10.2",
+      latest: "1.10.2",
+      outdated: false,
+    },
+    {
+      name: "context-mode",
+      installed: "1.0.169",
+      latest: "1.0.170",
+      outdated: true,
+    },
     { name: "hunkdiff", installed: "0.17.2", latest: "0.18.0", outdated: true },
   ],
 };
@@ -83,7 +93,7 @@ describe("store de paquetes globales", () => {
   it("el filtro no interfiere con el estado de carga", async () => {
     let resolver;
     const store = createPackagesStore(
-      () => new Promise((r) => (resolver = () => r(SNAPSHOT)))
+      () => new Promise((r) => (resolver = () => r(SNAPSHOT))),
     );
     const carga = store.refresh();
     store.search.value = "hunk"; // typing during the load
@@ -163,7 +173,8 @@ describe("store de paquetes globales", () => {
   it("dos stores con gestores distintos aíslan su estado", async () => {
     const excluidosPorGestor = { npm: ["hunkdiff"], pnpm: [] };
     const fakePorGestor = (gestor) => async (cmd, args) => {
-      if (args?.gestor !== gestor) throw new Error(`crossed manager: ${args?.gestor}`);
+      if (args?.gestor !== gestor)
+        throw new Error(`crossed manager: ${args?.gestor}`);
       if (cmd === "get_excluded") return excluidosPorGestor[gestor];
       if (cmd === "list_globals") return SNAPSHOT;
       throw new Error(`unexpected command: ${cmd}`);
@@ -178,13 +189,10 @@ describe("store de paquetes globales", () => {
   });
 
   it("gestor no soportado produce error visible en la store", async () => {
-    const store = createPackagesStore(
-      async (cmd, args) => {
-        if (args?.gestor === "yarn") throw "unsupported manager: yarn";
-        return SNAPSHOT;
-      },
-      "yarn"
-    );
+    const store = createPackagesStore(async (cmd, args) => {
+      if (args?.gestor === "yarn") throw "unsupported manager: yarn";
+      return SNAPSHOT;
+    }, "yarn");
     await store.refresh();
     expect(store.state.snapshot).toBeNull();
     expect(store.state.error).toContain("unsupported manager");
@@ -205,12 +213,12 @@ describe("store de paquetes globales", () => {
     const storeNpm = createPackagesStore(
       async (cmd) => (cmd === "list_globals" ? SNAPSHOT : []),
       "npm",
-      log
+      log,
     );
     const storeBun = createPackagesStore(
       async (cmd) => (cmd === "list_globals" ? SNAPSHOT : []),
       "bun",
-      log
+      log,
     );
     log.appendLine("npm", "hunkdiff", "added 1 package");
     log.appendLine("bun", "headroom-ai", "installed");
@@ -248,12 +256,19 @@ describe("store de paquetes globales", () => {
     await store.updateAll();
     // a single invoke for the whole queue; the final snapshot comes with it
     expect(llamadas).toEqual(["list_globals", "actualizar_todo"]);
-    expect(store.queue.summary).toEqual({ total: 2, ok: 2, failed: 0, detenida: false });
+    expect(store.queue.summary).toEqual({
+      total: 2,
+      ok: 2,
+      failed: 0,
+      detenida: false,
+    });
     expect(store.queue.active).toBe(false);
     expect(store.state.snapshot).toEqual(SNAPSHOT);
     // the summary also lives in the log (visible even if you switch tabs)
     expect(
-      store.logs.value.some((l) => l.includes("queue finished — 2 of 2 updated"))
+      store.logs.value.some((l) =>
+        l.includes("queue finished — 2 of 2 updated"),
+      ),
     ).toBe(true);
   });
 
@@ -262,14 +277,22 @@ describe("store de paquetes globales", () => {
     store = createPackagesStore(async (cmd) => {
       if (cmd === "list_globals") return SNAPSHOT;
       if (cmd === "actualizar_todo") {
-        store.procesarEventoCola({ gestor: "npm", tipo: "empieza", paquete: "context-mode" });
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "empieza",
+          paquete: "context-mode",
+        });
         store.procesarEventoCola({
           gestor: "npm",
           tipo: "resultado",
           paquete: "context-mode",
           exito: true,
         });
-        store.procesarEventoCola({ gestor: "npm", tipo: "empieza", paquete: "hunkdiff" });
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "empieza",
+          paquete: "hunkdiff",
+        });
         store.procesarEventoCola({
           gestor: "npm",
           tipo: "resultado",
@@ -289,13 +312,19 @@ describe("store de paquetes globales", () => {
     expect(store.isUpdating("context-mode")).toBe(false); // success clears
     expect(store.queue.current).toBeNull();
     expect(
-      store.logs.value.some((l) => l.includes("npm/hunkdiff: the update failed"))
+      store.logs.value.some((l) =>
+        l.includes("npm/hunkdiff: the update failed"),
+      ),
     ).toBe(true);
   });
 
   it("los eventos de OTRO gestor no tocan esta store", async () => {
     const store = createPackagesStore(fakeInvoke());
-    store.procesarEventoCola({ gestor: "pnpm", tipo: "empieza", paquete: "cowsay" });
+    store.procesarEventoCola({
+      gestor: "pnpm",
+      tipo: "empieza",
+      paquete: "cowsay",
+    });
     expect(store.isUpdating("cowsay")).toBe(false);
     expect(store.queue.current).toBeNull();
   });
@@ -309,10 +338,16 @@ describe("store de paquetes globales", () => {
     });
     await store.refresh();
     await store.updateAll();
-    expect(llamadas).toEqual(["list_globals", "actualizar_todo", "list_globals"]);
+    expect(llamadas).toEqual([
+      "list_globals",
+      "actualizar_todo",
+      "list_globals",
+    ]);
     expect(store.queue.active).toBe(false);
     expect(store.queue.summary).toBeNull();
-    expect(store.logs.value.some((l) => l.includes("the queue failed"))).toBe(true);
+    expect(store.logs.value.some((l) => l.includes("the queue failed"))).toBe(
+      true,
+    );
   });
 
   it("updateAll sin desactualizados no hace nada", async () => {
@@ -357,10 +392,14 @@ describe("store de paquetes globales", () => {
       llamadas.push(cmd);
       if (cmd === "list_globals") return SNAPSHOT;
       if (cmd === "actualizar_todo")
-        return new Promise((r) => (resolver = () => r({
-          resumen: { total: 2, ok: 1, failed: 0, detenida: true },
-          snapshot: SNAPSHOT,
-        })));
+        return new Promise(
+          (r) =>
+            (resolver = () =>
+              r({
+                resumen: { total: 2, ok: 1, failed: 0, detenida: true },
+                snapshot: SNAPSHOT,
+              })),
+        );
       if (cmd === "detener_actualizar_todo") return {};
     });
     await store.refresh();
@@ -387,10 +426,7 @@ describe("store de paquetes globales", () => {
     store.toggleExcluded("context-mode"); // removes
     expect(store.isExcluded("hunkdiff")).toBe(true);
     expect(store.isExcluded("context-mode")).toBe(false);
-    expect(guardado).toEqual([
-      ["context-mode", "hunkdiff"],
-      ["hunkdiff"],
-    ]);
+    expect(guardado).toEqual([["context-mode", "hunkdiff"], ["hunkdiff"]]);
   });
 
   it("un excluido desactualizado desactiva 'Actualizar todo' si es el único", async () => {

@@ -1,7 +1,11 @@
-# Nuupa
+<h1 align="center">Nuupa</h1>
 
-[![build](https://github.com/zademy/nuupa/actions/workflows/build.yml/badge.svg)](https://github.com/zademy/nuupa/actions/workflows/build.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/zademy/nuupa/releases"><img src="https://img.shields.io/github/v/release/zademy/nuupa" alt="release"></a>
+  <a href="https://github.com/zademy/nuupa/actions/workflows/build.yml"><img src="https://github.com/zademy/nuupa/actions/workflows/build.yml/badge.svg" alt="build"></a>
+  <a href="https://github.com/zademy/nuupa/releases"><img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue" alt="platforms"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
+</p>
 
 A desktop app to see and update the global packages of your installed
 package managers (**npm**, **pnpm**, **bun**) — no commands required.
@@ -27,19 +31,20 @@ package managers (**npm**, **pnpm**, **bun**) — no commands required.
 
 Grab an installer from the [releases page](https://github.com/zademy/nuupa/releases):
 
-| Platform | Installers |
-| --- | --- |
-| macOS (universal) | `.dmg` |
-| Linux x64 / arm64 | `.deb`, `.rpm`, `.AppImage` |
-| Windows x64 / arm64 | `.msi`, `.exe` (NSIS) |
+| Platform            | Installers                  |
+| ------------------- | --------------------------- |
+| macOS (universal)   | `.dmg`                      |
+| Linux x64 / arm64   | `.deb`, `.rpm`, `.AppImage` |
+| Windows x64 / arm64 | `.msi`, `.exe` (NSIS)       |
 
 Every release ships a `SHASUMS256.txt` with the checksums of all artifacts.
 
 ### Unsigned builds
 
-> **IMPORTANT (UNSIGNED APPS)**: Nuupa releases are currently **not signed
-> or notarized** (Apple Developer ID and Windows code signing are still
-> pending), so your OS may block the app from running.
+> [!WARNING]
+> Nuupa releases are currently **not signed or notarized** (Apple Developer
+> ID and Windows code signing are still pending), so your OS may block the
+> app from running.
 
 You can still run it:
 
@@ -77,6 +82,19 @@ npm run dev       # frontend only (Vite)
 ```sh
 npm test          # store tests (Vitest)
 ```
+
+### Formatting and linting
+
+```sh
+npm run format    # frontend (Prettier)
+npm run lint      # frontend (ESLint)
+cargo fmt         # Rust (rustfmt)
+cargo clippy      # Rust lints
+```
+
+Prettier owns formatting; ESLint owns code quality (its stylistic rules are
+disabled via `eslint-config-prettier`, so they never conflict). CI checks
+all of the above on every push.
 
 ### Project layout
 

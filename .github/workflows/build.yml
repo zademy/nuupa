@@ -164,10 +164,23 @@ jobs:
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
-      - name: Frontend (vitest)
+      # Formato y lint ANTES de los tests: Prettier es el dueño del formato
+      # del frontend, ESLint de la calidad (sus reglas de estilo están
+      # apagadas vía eslint-config-prettier — jamás chocan). En Rust,
+      # rustfmt y clippy cumplen el mismo papel.
+      - name: Frontend (formato y lint)
         run: |
           npm ci
-          npm test
+          npm run format:check
+          npm run lint
+
+      - name: Frontend (vitest)
+        run: npm test
+
+      - name: Rust (formato y lint)
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Rust (cargo test)
         run: cargo test --manifest-path src-tauri/Cargo.toml
