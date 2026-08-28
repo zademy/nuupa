@@ -61,17 +61,29 @@ export function createPackagesStore(
   const logs = logCompartido ? logCompartido.lineas : logPropio.lineas;
   const appendLog = logCompartido ? logCompartido.append : logPropio.append;
 
+  // Refresh guard (#13): monotonic publication id — only the LATEST
+  // operation (a Refresh or the queue's final snapshot) may publish;
+  // stale answers are discarded, and what's in flight is never aborted.
+  let idPublicacion = 0;
+  // loading counts in-flight operations: the spinner stays until the
+  // LAST one finishes.
+  let cargasEnVuelo = 0;
+
   // Refresh: query the package list and its latest versions again
   // (glossary vocabulary; also serves the initial load).
   async function refresh() {
+    const id = ++idPublicacion;
+    cargasEnVuelo++;
     state.loading = true;
     state.error = "";
     try {
-      state.snapshot = await invokeFn("list_globals", { gestor });
+      const snapshot = await invokeFn("list_globals", { gestor });
+      if (id === idPublicacion) state.snapshot = snapshot;
     } catch (e) {
-      state.error = String(e);
+      if (id === idPublicacion) state.error = String(e);
     } finally {
-      state.loading = false;
+      cargasEnVuelo--;
+      if (cargasEnVuelo === 0) state.loading = false;
     }
   }
 
@@ -182,6 +194,9 @@ export function createPackagesStore(
   async function updateAll() {
     if (desactualizables.value.length === 0 || queue.active) return;
 
+    // The queue's final snapshot publishes through the same guard (#13):
+    // a Refresh that started later wins when it resolves.
+    const id = ++idPublicacion;
     queue.active = true;
     queue.stopped = false;
     queue.summary = null;
@@ -189,7 +204,7 @@ export function createPackagesStore(
       const { resumen, snapshot } = await invokeFn("actualizar_todo", {
         gestor,
       });
-      state.snapshot = snapshot;
+      if (id === idPublicacion) state.snapshot = snapshot;
       queue.summary = resumen;
       // The summary also lives in the log: if the user is on another tab,
       // the unmounted panel's statusbar would lose it… this one keeps it.

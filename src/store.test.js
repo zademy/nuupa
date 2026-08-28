@@ -104,6 +104,66 @@ describe("store de paquetes globales", () => {
     expect(store.packages.value.map((p) => p.name)).toEqual(["hunkdiff"]);
   });
 
+  it("respuestas cruzadas de refresco: gana el más nuevo aunque resuelva antes", async () => {
+    const pendientes = [];
+    const store = createPackagesStore(
+      () => new Promise((r) => pendientes.push(r)),
+    );
+    const carga1 = store.refresh();
+    const carga2 = store.refresh();
+    // counter: BOTH in flight → still loading
+    expect(store.state.loading).toBe(true);
+    const masNuevo = { ...SNAPSHOT, version_gestor: "nueva" };
+    pendientes[1](masNuevo); // newest resolves FIRST
+    await carga2;
+    pendientes[0](SNAPSHOT); // oldest resolves LAST: discarded
+    await carga1;
+    expect(store.state.snapshot.version_gestor).toBe("nueva");
+    expect(store.state.loading).toBe(false);
+  });
+
+  it("el error del refresco vigente no lo borra uno descartado exitoso", async () => {
+    const pendientes = [];
+    const store = createPackagesStore(
+      () => new Promise((r, rej) => pendientes.push({ r, rej })),
+    );
+    const carga1 = store.refresh();
+    const carga2 = store.refresh();
+    pendientes[1].rej("network failure"); // the current one FAILS
+    await carga2;
+    expect(store.state.error).toContain("network failure");
+    pendientes[0].r(SNAPSHOT); // the old one succeeds, too late
+    await carga1;
+    expect(store.state.error).toContain("network failure");
+    expect(store.state.snapshot).toBeNull();
+  });
+
+  it("el snapshot final de la cola pasa por el mismo guard", async () => {
+    let consultas = 0;
+    let resolverRefresco;
+    let resolverCola;
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") {
+        consultas++;
+        if (consultas === 1) return SNAPSHOT; // base: 2 outdated
+        return new Promise((r) => (resolverRefresco = r));
+      }
+      if (cmd === "actualizar_todo")
+        return new Promise((r) => (resolverCola = r));
+    });
+    await store.refresh(); // id 1
+    const refresco = store.refresh(); // id 2, hangs
+    const cola = store.updateAll(); // id 3: the current one
+    resolverCola({
+      resumen: { total: 2, ok: 2, failed: 0, detenidos: 0, detenida: false },
+      snapshot: { ...SNAPSHOT, version_gestor: "cola" },
+    });
+    await cola; // publishes (current)
+    resolverRefresco({ ...SNAPSHOT, version_gestor: "refresco" }); // stale
+    await refresco;
+    expect(store.state.snapshot.version_gestor).toBe("cola");
+  });
+
   it("update exitoso refresca la lista y limpia el estado del paquete", async () => {
     const calls = [];
     const store = createPackagesStore(async (cmd, args) => {
