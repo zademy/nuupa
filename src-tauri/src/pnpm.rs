@@ -83,7 +83,7 @@ impl Runner for RealPnpmRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(Self::command(&self.bin, args), &PLAZO_CONSULTA)
+        correr(Self::command(&self.bin, args), PLAZO_CONSULTA)
     }
 
     fn run_streaming(
@@ -91,7 +91,7 @@ impl Runner for RealPnpmRunner {
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(Self::command(&self.bin, args), on_line, &PLAZO_INSTALACION)
+        correr_streaming(Self::command(&self.bin, args), on_line, PLAZO_INSTALACION)
     }
 }
 

@@ -63,7 +63,7 @@ impl Runner for RealBunRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(self.command(args), &PLAZO_CONSULTA)
+        correr(self.command(args), PLAZO_CONSULTA)
     }
 
     fn run_streaming(
@@ -71,7 +71,7 @@ impl Runner for RealBunRunner {
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(self.command(args), on_line, &PLAZO_INSTALACION)
+        correr_streaming(self.command(args), on_line, PLAZO_INSTALACION)
     }
 }
 

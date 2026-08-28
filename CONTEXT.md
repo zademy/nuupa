@@ -45,6 +45,10 @@ _Avoid_: bloqueado, ignorado, pausado
 Volver a consultar la lista de paquetes y sus últimas versiones.
 _Avoid_: sincronizar, actualizar (reservado para versiones)
 
+**Plazo**:
+Tiempo máximo de espera de un comando de gestor. Al vencer, Nuupa finaliza su proceso de forma escalonada (cortés, tregua, forzosa) y muestra un error visible; nunca queda esperando para siempre. 60 s para consultas, 300 s para actualizaciones.
+_Avoid_: timeout, límite, expiración
+
 **Descubrimiento**:
 Hallar el binario de un gestor en esta máquina: el PATH y las ubicaciones habituales por sistema. Si no aparece, el gestor no está: su pestaña no existe y el error muestra dónde se buscó. Nunca exige al usuario configurar nada.
 _Avoid_: validación de instalación, chequeo de entorno

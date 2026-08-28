@@ -210,9 +210,9 @@ pub fn instalar(
     })
 }
 
-/// Deadline of a manager command: `total` until the escalation starts,
+/// Deadline of a gestor command: `total` until the escalation starts,
 /// `grace` between the courteous signal and the forced kill (#11). A hung
-/// manager becomes an error, never a frozen app.
+/// gestor becomes an error, never a frozen app.
 #[derive(Debug, Clone, Copy)]
 pub struct Plazo {
     pub total: Duration,
@@ -245,44 +245,61 @@ fn plazo_vencido(cmd: &std::process::Command, total: Duration) -> std::io::Error
 }
 
 /// Escalated termination of a hung child: courteous signal, `grace`, then
-/// forced kill — and the reaping that leaves no zombie. On Windows the
-/// only available termination IS the hard one.
+/// forced kill — and the reaping that leaves no zombie. Returns whether
+/// it had to escalate at all (the child was still alive when the deadline
+/// expired): a child that died on its own right at the boundary is NOT a
+/// timeout.
 ///
-/// Managers arrive through shims (`sh` → node) and the direct child is
-/// just the wrapper: a kill to it leaves the grandchildren alive holding
-/// the output pipe. The child runs in its OWN process group (see the
-/// spawn) and the escalation signals the whole group.
-fn finalizar(hijo: &Mutex<std::process::Child>, grace: Duration) {
-    let Ok(mut hijo) = hijo.lock() else { return };
+/// Gestors arrive through shims (`sh`/`npm.cmd` → node) and the direct
+/// child is just the wrapper: a kill to it leaves the grandchildren alive
+/// holding the output pipe. On unix the child runs in its OWN process
+/// group (see the spawn) and the escalation signals the whole group; on
+/// Windows `taskkill /T /F` ends the tree.
+fn finalizar(hijo: &Mutex<std::process::Child>, grace: Duration) -> bool {
+    let Ok(mut hijo) = hijo.lock() else {
+        return false;
+    };
     if hijo.try_wait().map(|t| t.is_some()).unwrap_or(false) {
-        return; // it died on its own while we armed the watch
+        return false; // it died on its own while we armed the watch
     }
     #[cfg(unix)]
     {
         let grupo = -(hijo.id() as i32);
-        // SIGTERM to the group lets the manager close its installation
+        // SIGTERM to the group lets the gestor close its installation
         // orderly.
-        unsafe { libc::kill(grupo, libc::SIGTERM) };
+        let ya_no_esta = unsafe { libc::kill(grupo, libc::SIGTERM) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if ya_no_esta {
+            return false; // the whole group was already gone
+        }
         let tope = std::time::Instant::now() + grace;
         while std::time::Instant::now() < tope {
             if hijo.try_wait().map(|t| t.is_some()).unwrap_or(true) {
-                return; // the courteous one was enough
+                return true; // the courteous one was enough
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         unsafe { libc::kill(grupo, libc::SIGKILL) };
         let _ = hijo.wait(); // reaps the wrapper: no zombies
+        true
     }
     #[cfg(windows)]
     {
-        let _ = hijo.kill(); // TerminateProcess
+        // Windows has no Unix signals and the only std termination hits
+        // the direct child alone: the shim's grandchildren keep the pipe
+        // open and the app stays hung. `taskkill /T /F` kills the tree.
+        let pid = hijo.id().to_string();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid])
+            .status();
         let _ = hijo.wait();
+        true
     }
 }
 
 /// Runs a command collecting all of its output (no streaming), under a
 /// deadline.
-pub fn correr(cmd: std::process::Command, plazo: &Plazo) -> std::io::Result<RunnerOutput> {
+pub fn correr(cmd: std::process::Command, plazo: Plazo) -> std::io::Result<RunnerOutput> {
     correr_streaming(cmd, &mut |_| {}, plazo)
 }
 
@@ -293,7 +310,7 @@ pub fn correr(cmd: std::process::Command, plazo: &Plazo) -> std::io::Result<Runn
 pub fn correr_streaming(
     mut cmd: std::process::Command,
     on_line: &mut dyn FnMut(&str),
-    plazo: &Plazo,
+    plazo: Plazo,
 ) -> std::io::Result<RunnerOutput> {
     use std::io::{BufRead, BufReader};
     // Own process group: the escalation can signal the whole family
@@ -327,13 +344,15 @@ pub fn correr_streaming(
     let vencio = Arc::new(AtomicBool::new(false));
     let (listo_tx, listo_rx) = mpsc::channel::<()>();
     let (vigia_hijo, vigia_vencio) = (Arc::clone(&hijo), Arc::clone(&vencio));
-    let vigia_plazo = *plazo; // Copy: el hilo vive más que la llamada
     let vigia = std::thread::spawn(move || {
-        if listo_rx.recv_timeout(vigia_plazo.total).is_ok() {
+        if listo_rx.recv_timeout(plazo.total).is_ok() {
             return; // the child finished in time
         }
-        vigia_vencio.store(true, Ordering::Release);
-        finalizar(&vigia_hijo, vigia_plazo.grace);
+        // Only a child that was still ALIVE at the deadline is a timeout:
+        // one that died on its own right at the boundary is not.
+        if finalizar(&vigia_hijo, plazo.grace) {
+            vigia_vencio.store(true, Ordering::Release);
+        }
     });
 
     let mut stdout_str = String::new();
@@ -514,7 +533,7 @@ pub fn no_encontrado(gestor: &str, buscadas: &[PathBuf]) -> std::io::Error {
 /// it ended well; `None` if it could not run. Under the query deadline:
 /// discovery cannot hang either.
 pub fn version_de(cmd: std::process::Command) -> Option<String> {
-    let out = correr(cmd, &PLAZO_CONSULTA).ok()?;
+    let out = correr(cmd, PLAZO_CONSULTA).ok()?;
     let salida = out.stdout.trim().to_string();
     (out.exit_code == 0)
         .then_some(salida)
@@ -845,7 +864,7 @@ mod tests {
             grace: Duration::from_millis(300),
         };
         let inicio = std::time::Instant::now();
-        let err = correr(dormilon(30), &plazo).unwrap_err();
+        let err = correr(dormilon(30), plazo).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert!(err.to_string().contains("no respondió"), "{err}");
         // cortó por el plazo, no porque `sleep 30` terminara
@@ -870,7 +889,7 @@ mod tests {
             grace: Duration::from_millis(300),
         };
         let inicio = std::time::Instant::now();
-        let err = correr(cmd, &plazo).unwrap_err();
+        let err = correr(cmd, plazo).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         // no murió con la señal cortés: esperó el grace y recibió KILL
         assert!(
@@ -895,7 +914,7 @@ mod tests {
             grace: Duration::from_millis(300),
         };
         let mut lineas = Vec::new();
-        let err = correr_streaming(cmd, &mut |l| lineas.push(l.to_string()), &plazo).unwrap_err();
+        let err = correr_streaming(cmd, &mut |l| lineas.push(l.to_string()), plazo).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         // la salida parcial emitida antes del corte llegó al log
         assert_eq!(lineas, vec!["linea1"]);
@@ -906,8 +925,21 @@ mod tests {
     fn correr_con_comando_rapido_termina_normal() {
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg("echo hola");
-        let out = correr(cmd, &PLAZO_CONSULTA).unwrap();
+        let out = correr(cmd, PLAZO_CONSULTA).unwrap();
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.contains("hola"), "{}", out.stdout);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_con_hijo_que_termina_antes_del_plazo_devuelve_ok() {
+        // Frontera del vigía: un hijo que murió solo justo cuando el plazo
+        // vence NO es un timeout (la bandera solo se marca si escaló).
+        let plazo = Plazo {
+            total: Duration::from_millis(1500),
+            grace: Duration::from_millis(300),
+        };
+        let out = correr(dormilon(1), plazo).unwrap();
+        assert_eq!(out.exit_code, 0);
     }
 }
