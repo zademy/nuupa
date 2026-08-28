@@ -72,11 +72,12 @@ fn excluidos_de(dir: &Path, gestor: &str) -> HashSet<String> {
 
 /// The queue's shared flags: Stop (#16: cuts the in-flight install),
 /// graceful abandonment (the panel went away: finish, don't start) and
-/// the ONE-active-queue guard (#12) — a second start is an explicit
-/// error, so it can never silently un-stop the first.
+/// the ONE-active-queue guard (#12) — app-wide (across tabs): a second
+/// start is an explicit error, so it can never silently un-stop the
+/// first. Stop and abandonment were ALREADY global; now it's explicit.
 pub struct Banderas {
-    pub parar: Arc<AtomicBool>,
-    pub suave: Arc<AtomicBool>,
+    parar: Arc<AtomicBool>,
+    suave: Arc<AtomicBool>,
     activa: Arc<AtomicBool>,
 }
 
@@ -97,6 +98,16 @@ impl Banderas {
             activa: Arc::clone(&self.activa),
         }
     }
+
+    /// Stop (#16): the in-flight install is CUT.
+    pub fn detener(&self) {
+        self.parar.store(true, Ordering::Relaxed);
+    }
+
+    /// The panel went away: finish the in-flight, start nothing new.
+    pub fn abandonar(&self) {
+        self.suave.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Runs the whole queue. Only ONE at a time (#12): while one runs, a
@@ -111,9 +122,16 @@ pub fn correr(
     if banderas.activa.swap(true, Ordering::AcqRel) {
         return Err("solo una Actualizar todo a la vez".to_string());
     }
-    let resultado = correr_activa(def, dir_config, banderas, emitir);
-    banderas.activa.store(false, Ordering::Release);
-    resultado
+    // Drop guard: the flag is released on return AND on a panic — a
+    // crashed queue must not block the next one forever.
+    struct SoltarActiva<'a>(&'a Arc<AtomicBool>);
+    impl Drop for SoltarActiva<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _soltar = SoltarActiva(&banderas.activa);
+    correr_activa(def, dir_config, banderas, emitir)
 }
 
 /// The accepted queue's body. `parar` is checked before each package AND
@@ -593,28 +611,27 @@ mod tests {
     }
 
     #[test]
-    fn segundo_arranque_con_una_cola_activa_es_rechazado_y_no_la_des_cancela() {
+    fn segundo_arranque_con_una_cola_activa_es_rechazado_y_conserva_el_detener() {
         // A second start (as if another tab raced) runs WHILE the first
         // queue is mid-package: it must be rejected AND leave the first
         // one's Stop intact.
         let dir = tempfile::tempdir().unwrap();
         let banderas = Banderas::nuevas();
         let def = def_de_prueba();
-        let anidado = std::cell::RefCell::new(None);
         let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| {
             if let EventoCola::Empieza { paquete } = ev {
                 if paquete == "context-mode" {
-                    banderas.parar.store(true, Ordering::Relaxed);
-                    *anidado.borrow_mut() = Some(correr(&def, dir.path(), &banderas, &mut |_| {}));
+                    banderas.detener();
+                    let err = correr(&def, dir.path(), &banderas, &mut |_| {}).unwrap_err();
+                    assert!(err.contains("solo una"));
+                    // DIRECT check: the rejected start never reset the
+                    // first queue's Stop.
+                    assert!(banderas.parar.load(Ordering::Relaxed));
                 }
             }
         })
         .unwrap();
-        let rechazo = anidado.into_inner().expect("nested start ran");
-        assert!(rechazo.is_err());
-        assert!(rechazo.unwrap_err().contains("solo una"));
-        // the first queue was still CUT: the rejected start never reset
-        // its Stop flag
+        // and the first queue was still CUT
         assert_eq!(
             resumen,
             Resumen {

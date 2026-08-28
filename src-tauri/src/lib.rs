@@ -17,7 +17,6 @@ use cola::{EventoCola, Motivo, ResultadoCola, Resumen};
 use kernel::{Runner, Snapshot, UpdateOutcome};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 
 /// A supported manager: visible command, install verb and how its
@@ -290,14 +289,14 @@ impl EventoPaquete {
 /// deadline, #16) and the pending ones never start.
 #[tauri::command]
 fn detener_actualizar_todo(estado: tauri::State<Contexto>) {
-    estado.banderas.parar.store(true, Ordering::Relaxed);
+    estado.banderas.detener();
 }
 
 /// The panel went away: the in-flight package FINISHES and the pending
 /// ones never start — nothing is cut.
 #[tauri::command]
 fn abandonar_actualizar_todo(estado: tauri::State<Contexto>) {
-    estado.banderas.suave.store(true, Ordering::Relaxed);
+    estado.banderas.abandonar();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
