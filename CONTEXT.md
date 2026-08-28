@@ -37,6 +37,10 @@ _Avoid_: upgradear, refrescar
 Cola secuencial que actualiza, de a uno, los paquetes desactualizados no excluidos.
 _Avoid_: actualizar en lote, bulk
 
+**Detenido**:
+Paquete cuya actualización fue cortada a pedido del usuario (Detener): no es un fallo; la fila vuelve a la normalidad y el resumen lo cuenta aparte de los fallidos.
+_Avoid_: cancelado, abortado, fallido
+
 **Excluido**:
 Paquete marcado para que "Actualizar todo" lo salte en SU gestor; la actualización individual sigue disponible. Persiste entre sesiones, por (gestor, paquete).
 _Avoid_: bloqueado, ignorado, pausado
@@ -44,6 +48,10 @@ _Avoid_: bloqueado, ignorado, pausado
 **Refrescar**:
 Volver a consultar la lista de paquetes y sus últimas versiones.
 _Avoid_: sincronizar, actualizar (reservado para versiones)
+
+**Plazo**:
+Tiempo máximo de espera de un comando de gestor. Al vencer, Nuupa finaliza su proceso de forma escalonada (cortés, tregua, forzosa) y muestra un error visible; nunca queda esperando para siempre. 60 s para consultas, 300 s para actualizaciones.
+_Avoid_: timeout, límite, expiración
 
 **Descubrimiento**:
 Hallar el binario de un gestor en esta máquina: el PATH y las ubicaciones habituales por sistema. Si no aparece, el gestor no está: su pestaña no existe y el error muestra dónde se buscó. Nunca exige al usuario configurar nada.

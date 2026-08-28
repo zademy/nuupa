@@ -10,14 +10,14 @@ mod cola;
 mod exclusiones;
 mod kernel;
 mod npm;
+mod plazo;
 mod pnpm;
 
-use cola::{EventoCola, Resumen};
+use cola::{EventoCola, Motivo, ResultadoCola, Resumen};
 use kernel::{Runner, Snapshot, UpdateOutcome};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 /// A supported manager: visible command, install verb and how its
@@ -106,33 +106,159 @@ fn correr_update(
     on_line: &mut dyn FnMut(&str),
 ) -> Result<UpdateOutcome, String> {
     let runner = (def.runner)().map_err(|e| e.to_string())?;
-    kernel::instalar(runner.as_ref(), def.verbo, name, on_line).map_err(|e| e.to_string())
+    // An individual update has no Stop: a flag that never fires.
+    let sin_parar = kernel::sin_parar();
+    kernel::instalar(runner.as_ref(), def.verbo, name, on_line, &sin_parar)
+        .map_err(|e| e.to_string())
 }
 
-/// A manager's excluded packages; the legacy-format migration runs here,
-/// once, while the file still is legacy.
-fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<Vec<String>, String> {
-    let (mapa, era_legado) = exclusiones::cargar(dir);
-    if era_legado {
-        exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())?;
+/// The exclusions file's state for the UI (#17): "corrupto" BLOCKS all
+/// writes until the user resolves; "ilegible" shows why it cannot read.
+#[derive(Serialize)]
+struct EstadoExclusiones {
+    estado: &'static str, // "ok" | "corrupto" | "ilegible"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detalle: Option<String>,
+    /// This gestor's excluded names — only meaningful with estado "ok".
+    nombres: Vec<String>,
+}
+
+/// A gestor's excluded packages AND the file's state (#17): a corrupt
+/// file is preserved as evidence and never silently treated as empty.
+fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<EstadoExclusiones, String> {
+    use exclusiones::Lectura;
+    Ok(match exclusiones::leer(dir) {
+        Lectura::Cargado { mapa, era_legado } => {
+            // the legacy-format migration runs here, once
+            if era_legado {
+                exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())?;
+            }
+            EstadoExclusiones {
+                estado: "ok",
+                detalle: None,
+                nombres: mapa.get(gestor).cloned().unwrap_or_default(),
+            }
+        }
+        Lectura::Inexistente => EstadoExclusiones {
+            estado: "ok",
+            detalle: None,
+            nombres: Vec::new(),
+        },
+        Lectura::Corrupto => {
+            // evidence FIRST: the damaged original is preserved; the
+            // writes below refuse until the user resolves (#17). A failed
+            // copy leaves a trace instead of silence.
+            let detalle = exclusiones::resguardar(dir)
+                .err()
+                .map(|e| format!("(no se pudo conservar la copia .corrupt: {e})"));
+            EstadoExclusiones {
+                estado: "corrupto",
+                detalle,
+                nombres: Vec::new(),
+            }
+        }
+        Lectura::Ilegible(e) => EstadoExclusiones {
+            estado: "ilegible",
+            detalle: Some(e.to_string()),
+            nombres: Vec::new(),
+        },
+    })
+}
+
+/// The map a granular op works on, or WHY writing is refused (#17): a
+/// file we cannot understand (corrupt) or cannot read is never
+/// overwritten by us.
+fn mapa_escriturable(
+    dir: &Path,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    use exclusiones::Lectura;
+    match exclusiones::leer(dir) {
+        Lectura::Cargado { mapa, .. } => Ok(mapa),
+        Lectura::Inexistente => Ok(std::collections::BTreeMap::new()),
+        Lectura::Corrupto => Err(
+            "el archivo de exclusiones está dañado (conservado como .corrupt): resuélvelo antes de escribir"
+                .to_string(),
+        ),
+        Lectura::Ilegible(e) => Err(format!("no se puede leer el archivo de exclusiones: {e}")),
     }
-    Ok(mapa.get(gestor).cloned().unwrap_or_default())
 }
 
-fn nucleo_set_excluded(dir: &Path, gestor: &str, nombres: Vec<String>) -> Result<(), String> {
-    let (mut mapa, _) = exclusiones::cargar(dir);
-    mapa.insert(gestor.to_string(), nombres);
+/// Excludes ONE package for ONE gestor (#14): the backend is the single
+/// writer, so concurrent toggles are idempotent granular ops — never a
+/// full-list replace that can lose a neighbor's exclusion. The lock
+/// serializes the file's read-modify-write: it must NOT depend on Tauri
+/// running sync commands on one thread.
+fn nucleo_excluir(
+    candado: &Mutex<()>,
+    dir: &Path,
+    gestor: &str,
+    paquete: &str,
+) -> Result<(), String> {
+    let _candado = candado.lock().unwrap();
+    let mut mapa = mapa_escriturable(dir)?;
+    exclusiones::excluir(&mut mapa, gestor, paquete);
     exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
+}
+
+/// Removes ONE package's exclusion. Idempotent; a legacy file migrates to
+/// the map format on the way (guardar always writes the map).
+fn nucleo_quitar(
+    candado: &Mutex<()>,
+    dir: &Path,
+    gestor: &str,
+    paquete: &str,
+) -> Result<(), String> {
+    let _candado = candado.lock().unwrap();
+    let mut mapa = mapa_escriturable(dir)?;
+    exclusiones::quitar(&mut mapa, gestor, paquete);
+    exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
+}
+
+/// Resolves the corrupt emergency by starting clean (#17): evidence
+/// (.corrupt) first, then a valid empty map. Only ever with the user's
+/// explicit choice.
+fn nucleo_empezar_de_cero(candado: &Mutex<()>, dir: &Path) -> Result<(), String> {
+    let _candado = candado.lock().unwrap();
+    exclusiones::empezar_de_cero(dir).map_err(|e| e.to_string())
 }
 
 // ---- Commands (thin wrappers over the cores) ----
 
+/// The machine facts a diagnostics copy needs (#21): version, OS and the
+/// installed gestores, plus the user's home (to redact it on the way out).
+#[derive(Serialize)]
+struct Diagnostico {
+    version: &'static str,
+    so: String,
+    gestores: Vec<String>,
+    home: Option<String>,
+}
+
+fn nucleo_diagnostico(gestores: Vec<String>) -> Diagnostico {
+    Diagnostico {
+        version: env!("CARGO_PKG_VERSION"),
+        so: format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH),
+        gestores,
+        home: kernel::home().map(|h| h.display().to_string()),
+    }
+}
+
+/// Copy-diagnostics facts (#21): nothing else leaves the machine.
+#[tauri::command]
+fn diagnostico() -> Diagnostico {
+    nucleo_diagnostico(gestores_instalados())
+}
+
 /// Command dependencies, resolved once at startup.
 struct Contexto {
     dir_config: PathBuf,
-    /// The "Stop" flag: shared with the active queue. Only one queue at
-    /// a time makes sense (panels stop theirs when unmounted).
-    parar: Arc<AtomicBool>,
+    /// The queue's shared flags: Stop (cuts, #16), graceful abandonment
+    /// (the panel went away) and the ONE-active-queue guard (#12).
+    banderas: cola::Banderas,
+    /// Serializes the exclusions file's read-modify-write (#14): two
+    /// granular commands (even from different gestores' stores) must
+    /// never interleave cargar/guardar — a lost update loses an exclusion.
+    candado_exclusiones: Arc<Mutex<()>>,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -191,19 +317,52 @@ async fn update_package(
 }
 
 #[tauri::command]
-fn get_excluded(gestor: String, estado: tauri::State<Contexto>) -> Result<Vec<String>, String> {
+fn get_excluded(
+    gestor: String,
+    estado: tauri::State<Contexto>,
+) -> Result<EstadoExclusiones, String> {
     validar_gestor(&gestor)?;
     nucleo_get_excluded(&estado.dir_config, &gestor)
 }
 
+/// Resolves the corrupt-exclusions emergency by starting clean (#17).
 #[tauri::command]
-fn set_excluded(
+fn exclusiones_de_cero(estado: tauri::State<Contexto>) -> Result<(), String> {
+    nucleo_empezar_de_cero(&estado.candado_exclusiones, &estado.dir_config)
+}
+
+/// Excludes one package from Actualizar todo in its gestor (#14).
+#[tauri::command]
+fn excluir_paquete(
     gestor: String,
-    nombres: Vec<String>,
+    paquete: String,
     estado: tauri::State<Contexto>,
 ) -> Result<(), String> {
     validar_gestor(&gestor)?;
-    nucleo_set_excluded(&estado.dir_config, &gestor, nombres)
+    kernel::validar_nombre(&paquete).map_err(|e| e.to_string())?;
+    nucleo_excluir(
+        &estado.candado_exclusiones,
+        &estado.dir_config,
+        &gestor,
+        &paquete,
+    )
+}
+
+/// Removes one package's exclusion in its gestor (#14).
+#[tauri::command]
+fn quitar_exclusion(
+    gestor: String,
+    paquete: String,
+    estado: tauri::State<Contexto>,
+) -> Result<(), String> {
+    validar_gestor(&gestor)?;
+    kernel::validar_nombre(&paquete).map_err(|e| e.to_string())?;
+    nucleo_quitar(
+        &estado.candado_exclusiones,
+        &estado.dir_config,
+        &gestor,
+        &paquete,
+    )
 }
 
 /// "Update all": sequential queue in Rust. Progress via `pm-cola`
@@ -223,9 +382,9 @@ async fn actualizar_todo(
 ) -> Result<ResultadoActualizarTodo, String> {
     let def = def_gestor_en(GESTORES, &gestor)?;
     let dir = estado.dir_config.clone();
-    let parar = estado.parar.clone();
+    let banderas = estado.banderas.compartidas();
     tauri::async_runtime::spawn_blocking(move || {
-        let (resumen, snapshot) = cola::correr(def, &dir, &parar, &mut |ev| match ev {
+        let (resumen, snapshot) = cola::correr(def, &dir, &banderas, &mut |ev| match ev {
             EventoCola::Linea { paquete, linea } => {
                 let _ = app.emit(
                     "pm-output",
@@ -239,15 +398,8 @@ async fn actualizar_todo(
             EventoCola::Empieza { paquete } => {
                 let _ = app.emit("pm-cola", EventoPaquete::empieza(&gestor, paquete));
             }
-            EventoCola::Resultado {
-                paquete,
-                exito,
-                salida,
-            } => {
-                let _ = app.emit(
-                    "pm-cola",
-                    EventoPaquete::resultado(&gestor, paquete, *exito, salida),
-                );
+            EventoCola::Resultado(r) => {
+                let _ = app.emit("pm-cola", EventoPaquete::resultado(&gestor, r));
             }
         })?;
         Ok(ResultadoActualizarTodo { resumen, snapshot })
@@ -256,16 +408,16 @@ async fn actualizar_todo(
     .map_err(|e| e.to_string())?
 }
 
-/// A queue event for a table row.
+/// A queue event for a table row. Success is derivable: `motivo === "ok"`.
 #[derive(Clone, Serialize)]
 struct EventoPaquete {
     gestor: String,
     tipo: &'static str, // "empieza" | "resultado"
     paquete: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    exito: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     salida: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    motivo: Option<Motivo>,
 }
 
 impl EventoPaquete {
@@ -274,26 +426,34 @@ impl EventoPaquete {
             gestor: gestor.into(),
             tipo: "empieza",
             paquete: paquete.into(),
-            exito: None,
             salida: None,
+            motivo: None,
         }
     }
 
-    fn resultado(gestor: &str, paquete: &str, exito: bool, salida: &str) -> Self {
+    fn resultado(gestor: &str, r: &ResultadoCola) -> Self {
         Self {
             gestor: gestor.into(),
             tipo: "resultado",
-            paquete: paquete.into(),
-            exito: Some(exito),
-            salida: Some(salida.to_string()),
+            paquete: r.paquete.clone(),
+            salida: Some(r.salida.clone()),
+            motivo: Some(r.motivo),
         }
     }
 }
 
-/// Stops the queue after the in-flight package (graceful).
+/// Stops the queue: the in-flight package is CUT (same escalation as the
+/// deadline, #16) and the pending ones never start.
 #[tauri::command]
 fn detener_actualizar_todo(estado: tauri::State<Contexto>) {
-    estado.parar.store(true, Ordering::Relaxed);
+    estado.banderas.detener();
+}
+
+/// The panel went away: the in-flight package FINISHES and the pending
+/// ones never start — nothing is cut.
+#[tauri::command]
+fn abandonar_actualizar_todo(estado: tauri::State<Contexto>) {
+    estado.banderas.abandonar();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -307,7 +467,8 @@ pub fn run() {
                 .map_err(|e| format!("no config directory: {e}"))?;
             app.manage(Contexto {
                 dir_config,
-                parar: Arc::new(AtomicBool::new(false)),
+                banderas: cola::Banderas::nuevas(),
+                candado_exclusiones: Arc::new(Mutex::new(())),
             });
             Ok(())
         })
@@ -315,10 +476,14 @@ pub fn run() {
             list_globals,
             update_package,
             get_excluded,
-            set_excluded,
+            excluir_paquete,
+            quitar_exclusion,
+            exclusiones_de_cero,
             gestores_instalados,
             actualizar_todo,
-            detener_actualizar_todo
+            detener_actualizar_todo,
+            abandonar_actualizar_todo,
+            diagnostico
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -404,29 +569,44 @@ mod tests {
     // ---- exclusions through their core ----
 
     #[test]
-    fn exclusiones_roundtrip_por_gestor_y_migracion_legada_una_vez() {
+    fn exclusiones_granulares_roundtrip_por_gestor_y_migracion_legada() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("exclusiones.json"), r#"["hunkdiff"]"#).unwrap();
-        // first read: legacy → migrated and returned as npm's
+        // legacy → the first read migrates once, as npm's
         assert_eq!(
-            nucleo_get_excluded(dir.path(), "npm").unwrap(),
+            nucleo_get_excluded(dir.path(), "npm").unwrap().nombres,
             ["hunkdiff"]
         );
-        // the file already rewritten in map format
         assert_eq!(
-            nucleo_get_excluded(dir.path(), "pnpm").unwrap(),
+            nucleo_get_excluded(dir.path(), "pnpm").unwrap().nombres,
             Vec::<String>::new()
         );
-        nucleo_set_excluded(dir.path(), "pnpm", vec!["cowsay".into()]).unwrap();
-        assert_eq!(nucleo_get_excluded(dir.path(), "pnpm").unwrap(), ["cowsay"]);
+        // granular, idempotent, per (gestor, paquete)
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "pnpm", "cowsay").unwrap();
+        nucleo_excluir(&candado, dir.path(), "pnpm", "cowsay").unwrap(); // no duplicate
+        nucleo_quitar(&candado, dir.path(), "npm", "hunkdiff").unwrap();
+        nucleo_quitar(&candado, dir.path(), "npm", "hunkdiff").unwrap(); // absent: fine
         assert_eq!(
-            nucleo_get_excluded(dir.path(), "npm").unwrap(),
-            ["hunkdiff"]
+            nucleo_get_excluded(dir.path(), "pnpm").unwrap().nombres,
+            ["cowsay"]
+        );
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "npm").unwrap().nombres,
+            Vec::<String>::new()
         );
     }
 
     #[test]
     fn exclusiones_gestor_desconocido_rechazado_por_el_wrapper() {
         assert!(validar_gestor("yarn").is_err());
+    }
+
+    #[test]
+    fn diagnostico_lleva_version_so_y_gestores() {
+        let d = nucleo_diagnostico(vec!["npm".to_string(), "pnpm".to_string()]);
+        assert_eq!(d.version, env!("CARGO_PKG_VERSION"));
+        assert!(d.so.contains(std::env::consts::OS));
+        assert_eq!(d.gestores, vec!["npm", "pnpm"]);
     }
 }

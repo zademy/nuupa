@@ -10,8 +10,8 @@
 #[cfg(windows)]
 use crate::kernel::program_files;
 use crate::kernel::{
-    armar, con_extension, correr, correr_streaming, find_in_path, guardar_path_nvm, home,
-    no_encontrado, resolve_nvm_bin_dir, version_de, EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, guardar_path_nvm,
+    home, no_encontrado, resolve_nvm_bin_dir, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
 use std::path::{Path, PathBuf};
 
@@ -81,11 +81,10 @@ impl RealRunner {
     fn de_bin_dir(bin_dir: PathBuf) -> Self {
         // npm's global space is defined by the active NODE version; the
         // manager version is the other fact the statusbar shows.
-        let node_version = version_de(
-            std::process::Command::new(bin_dir.join(con_extension("node"))).arg("--version"),
-        )
-        .map(|v| crate::kernel::sin_v(&v).to_string());
-        let npm_version = version_de(&mut comando_npm(&bin_dir, &["--version"]))
+        let mut probe_node = std::process::Command::new(bin_dir.join(con_extension("node")));
+        probe_node.arg("--version");
+        let node_version = version_de(probe_node).map(|v| crate::kernel::sin_v(&v).to_string());
+        let npm_version = version_de(comando_npm(&bin_dir, &["--version"]))
             .unwrap_or_else(|| "unknown".to_string());
         Self {
             bin_dir,
@@ -135,15 +134,16 @@ impl Runner for RealRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(&mut self.command(args))
+        correr_consulta(self.command(args))
     }
 
     fn run_streaming(
         &self,
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
+        parar: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(self.command(args), on_line)
+        correr_instalacion(self.command(args), on_line, parar)
     }
 }
 

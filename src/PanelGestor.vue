@@ -19,16 +19,26 @@ const {
   logs,
   queue,
   conteo,
+  anuncio,
+  anuncioError,
   hayDesactualizados,
   refresh,
   update,
   updateAll,
   stopAll,
+  abandonarCola,
+  copiarDiagnostico,
+  diagnosticoCopiado,
   procesarEventoCola,
   cargarExclusiones,
+  exclusionesDeCero,
+  estadoExclusiones,
+  detalleExclusiones,
   toggleExcluded,
+  excluyendoAhora,
   isUpdating,
   hasError,
+  detalleFallo,
   isExcluded,
 } = createPackagesStore(undefined, props.gestor, props.log);
 
@@ -61,17 +71,22 @@ onMounted(async () => {
   );
 });
 
-// Leaving the panel stops its queue gracefully: the backend finishes the
-// in-flight package and does not start the next one — an orphan queue
-// never remains, without a log or Stop button, on another tab.
+// Leaving the panel winds its queue down gracefully: the in-flight
+// update FINISHES (cutting an npm install mid-write leaves it broken)
+// and the pending ones never start — no orphan queue remains on another
+// tab. Only the Stop button cuts (#16).
 onUnmounted(() => {
   desuscribirCola?.();
-  stopAll();
+  abandonarCola();
 });
 </script>
 
 <template>
   <section class="panel">
+    <!-- Screen-reader announcements (#20): states polite, errors alert. -->
+    <p class="solo-lector" aria-live="polite">{{ anuncio }}</p>
+    <p class="solo-lector" role="alert">{{ anuncioError }}</p>
+
     <div class="barra">
       <div class="controles">
         <label class="busqueda" :title="t('filtrarTabla')">
@@ -84,7 +99,9 @@ onUnmounted(() => {
         </label>
         <button
           class="primario"
-          :disabled="!hayDesactualizados || queue.active"
+          :disabled="
+            !hayDesactualizados || queue.active || estadoExclusiones !== 'ok'
+          "
           :title="t('actualizarTodoTitulo')"
           @click="updateAll"
         >
@@ -95,7 +112,9 @@ onUnmounted(() => {
           v-if="queue.active"
           class="detener solo-icono"
           :disabled="queue.stopped"
-          :title="queue.stopped ? t('deteniendoTras') : t('detenerTras')"
+          :title="
+            queue.stopped ? t('deteniendoColaTitulo') : t('detenerColaTitulo')
+          "
           :aria-label="t('detenerCola')"
           @click="stopAll"
         >
@@ -160,6 +179,13 @@ onUnmounted(() => {
     <section class="log">
       <div class="log-cabecera">
         <span class="log-titulo mono">log</span>
+        <button
+          class="copiar mono"
+          :title="t('copiarDiagnostico')"
+          @click="copiarDiagnostico"
+        >
+          {{ diagnosticoCopiado ? t("copiado") : t("copiarDiagnosticoBreve") }}
+        </button>
       </div>
       <pre ref="logBox" class="mono">{{
         logs.length ? logs.join("\n") : t("sinActividad")
@@ -169,7 +195,9 @@ onUnmounted(() => {
     <p v-if="state.loading && !state.snapshot" class="estado mono">
       {{ t("consultando") }}
     </p>
-    <p v-else-if="state.error" class="error mono">{{ state.error }}</p>
+    <p v-else-if="state.error" class="error mono" role="alert">
+      {{ state.error }}
+    </p>
 
     <div
       v-if="state.snapshot && packages.length === 0 && search"
@@ -181,8 +209,40 @@ onUnmounted(() => {
       {{ t("sinPaquetes", { gestor }) }}
     </div>
 
-    <div v-if="state.snapshot" class="tabla-scroll">
+    <!-- #17: the exclusions file's emergency — writes blocked until the
+         user resolves it. -->
+    <div
+      v-if="
+        estadoExclusiones === 'corrupto' || estadoExclusiones === 'ilegible'
+      "
+      class="error emergencia"
+    >
+      <template v-if="estadoExclusiones === 'corrupto'">
+        {{ t("exclusionesCorruptas") }}
+      </template>
+      <template v-else>
+        {{ t("exclusionesIlegibles", { e: detalleExclusiones }) }}
+      </template>
+      <button @click="cargarExclusiones">{{ t("reintentar") }}</button>
+      <button
+        v-if="estadoExclusiones === 'corrupto'"
+        @click="exclusionesDeCero"
+      >
+        {{ t("exclusionesDeCero") }}
+      </button>
+    </div>
+
+    <div
+      v-if="state.snapshot"
+      class="tabla-scroll"
+      :aria-busy="state.loading || queue.active"
+    >
       <table>
+        <caption class="solo-lector">
+          {{
+            t("captionTabla", { gestor })
+          }}
+        </caption>
         <thead>
           <tr>
             <th>{{ t("columnaPaquete") }}</th>
@@ -200,6 +260,7 @@ onUnmounted(() => {
               error: hasError(p.name),
               excluido: isExcluded(p.name),
             }"
+            :title="hasError(p.name) ? detalleFallo(p.name) : undefined"
           >
             <td class="nombre mono">{{ p.name }}</td>
             <td class="version mono">{{ p.installed }}</td>
@@ -224,7 +285,11 @@ onUnmounted(() => {
                   <button
                     class="excluir"
                     :class="{ activo: isExcluded(p.name) }"
-                    :disabled="!p.outdated && !isExcluded(p.name)"
+                    :disabled="
+                      (!p.outdated && !isExcluded(p.name)) ||
+                      excluyendoAhora(p.name) ||
+                      estadoExclusiones !== 'ok'
+                    "
                     :title="
                       isExcluded(p.name) ? t('quitarExclusion') : t('excluir')
                     "
@@ -412,8 +477,35 @@ onUnmounted(() => {
 }
 
 .log-cabecera {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 4px 10px;
   border-bottom: 1px solid var(--border);
+}
+
+/* Copy-diagnostics (#21): a quiet ghost button in the log's header. */
+.copiar {
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    color 120ms,
+    background 120ms;
+}
+
+.copiar:hover {
+  color: var(--fg);
+  background: var(--surface-2);
+}
+
+.copiar:focus-visible {
+  outline: 1px solid var(--fg);
+  outline-offset: 1px;
 }
 
 .log-titulo {

@@ -104,6 +104,91 @@ describe("store de paquetes globales", () => {
     expect(store.packages.value.map((p) => p.name)).toEqual(["hunkdiff"]);
   });
 
+  it("respuestas cruzadas de refresco: gana el más nuevo aunque resuelva antes", async () => {
+    const pendientes = [];
+    const store = createPackagesStore(
+      () => new Promise((r) => pendientes.push(r)),
+    );
+    const carga1 = store.refresh();
+    const carga2 = store.refresh();
+    // counter: BOTH in flight → still loading
+    expect(store.state.loading).toBe(true);
+    const masNuevo = { ...SNAPSHOT, version_gestor: "nueva" };
+    pendientes[1](masNuevo); // newest resolves FIRST
+    await carga2;
+    pendientes[0](SNAPSHOT); // oldest resolves LAST: discarded
+    await carga1;
+    expect(store.state.snapshot.version_gestor).toBe("nueva");
+    expect(store.state.loading).toBe(false);
+  });
+
+  it("el error del refresco vigente no lo borra uno descartado exitoso", async () => {
+    const pendientes = [];
+    const store = createPackagesStore(
+      () => new Promise((r, rej) => pendientes.push({ r, rej })),
+    );
+    const carga1 = store.refresh();
+    const carga2 = store.refresh();
+    pendientes[1].rej("network failure"); // the current one FAILS
+    await carga2;
+    expect(store.state.error).toContain("network failure");
+    pendientes[0].r(SNAPSHOT); // the old one succeeds, too late
+    await carga1;
+    expect(store.state.error).toContain("network failure");
+    expect(store.state.snapshot).toBeNull();
+  });
+
+  it("el snapshot final de la cola pasa por el mismo guard", async () => {
+    let consultas = 0;
+    let resolverRefresco;
+    let resolverCola;
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") {
+        consultas++;
+        if (consultas === 1) return SNAPSHOT; // base: 2 outdated
+        return new Promise((r) => (resolverRefresco = r));
+      }
+      if (cmd === "actualizar_todo")
+        return new Promise((r) => (resolverCola = r));
+    });
+    await store.refresh(); // id 1
+    const refresco = store.refresh(); // id 2, hangs
+    const cola = store.updateAll(); // id 3: the current one
+    resolverCola({
+      resumen: { total: 2, ok: 2, failed: 0, detenidos: 0, detenida: false },
+      snapshot: { ...SNAPSHOT, version_gestor: "cola" },
+    });
+    await cola; // publishes (current)
+    resolverRefresco({ ...SNAPSHOT, version_gestor: "refresco" }); // stale
+    await refresco;
+    expect(store.state.snapshot.version_gestor).toBe("cola");
+  });
+
+  it("caso inverso: el refresco más nuevo publica y la cola descarta su snapshot", async () => {
+    let consultas = 0;
+    let resolverCola;
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") {
+        consultas++;
+        return consultas === 1
+          ? SNAPSHOT
+          : { ...SNAPSHOT, version_gestor: "refresco" };
+      }
+      if (cmd === "actualizar_todo")
+        return new Promise((r) => (resolverCola = r));
+    });
+    await store.refresh(); // base: 2 outdated
+    const cola = store.updateAll(); // id 2, hangs
+    await store.refresh(); // id 3: resolves FIRST, publishes
+    expect(store.state.snapshot.version_gestor).toBe("refresco");
+    resolverCola({
+      resumen: { total: 2, ok: 2, failed: 0, detenidos: 0, detenida: false },
+      snapshot: { ...SNAPSHOT, version_gestor: "cola" },
+    });
+    await cola; // stale: discarded
+    expect(store.state.snapshot.version_gestor).toBe("refresco");
+  });
+
   it("update exitoso refresca la lista y limpia el estado del paquete", async () => {
     const calls = [];
     const store = createPackagesStore(async (cmd, args) => {
@@ -153,8 +238,8 @@ describe("store de paquetes globales", () => {
       vistos.push(cmd);
       if (args?.gestor !== "pnpm") throw new Error(`wrong manager in ${cmd}`);
       if (cmd === "list_globals") return SNAPSHOT;
-      if (cmd === "get_excluded") return [];
-      if (cmd === "set_excluded") return {};
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
+      if (cmd === "excluir_paquete") return {};
       if (cmd === "update_package") return { success: true };
     }, "pnpm");
     await store.cargarExclusiones();
@@ -166,7 +251,7 @@ describe("store de paquetes globales", () => {
       "list_globals",
       "update_package",
       "list_globals", // refresh after the successful update
-      "set_excluded",
+      "excluir_paquete",
     ]);
   });
 
@@ -175,7 +260,8 @@ describe("store de paquetes globales", () => {
     const fakePorGestor = (gestor) => async (cmd, args) => {
       if (args?.gestor !== gestor)
         throw new Error(`crossed manager: ${args?.gestor}`);
-      if (cmd === "get_excluded") return excluidosPorGestor[gestor];
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: excluidosPorGestor[gestor] };
       if (cmd === "list_globals") return SNAPSHOT;
       throw new Error(`unexpected command: ${cmd}`);
     };
@@ -246,7 +332,13 @@ describe("store de paquetes globales", () => {
       if (cmd === "actualizar_todo") {
         expect(args).toEqual({ gestor: "npm" });
         return {
-          resumen: { total: 2, ok: 2, failed: 0, detenida: false },
+          resumen: {
+            total: 2,
+            ok: 2,
+            failed: 0,
+            detenidos: 0,
+            detenida: false,
+          },
           snapshot: SNAPSHOT,
         };
       }
@@ -260,6 +352,7 @@ describe("store de paquetes globales", () => {
       total: 2,
       ok: 2,
       failed: 0,
+      detenidos: 0,
       detenida: false,
     });
     expect(store.queue.active).toBe(false);
@@ -286,7 +379,7 @@ describe("store de paquetes globales", () => {
           gestor: "npm",
           tipo: "resultado",
           paquete: "context-mode",
-          exito: true,
+          motivo: "ok",
         });
         store.procesarEventoCola({
           gestor: "npm",
@@ -297,7 +390,7 @@ describe("store de paquetes globales", () => {
           gestor: "npm",
           tipo: "resultado",
           paquete: "hunkdiff",
-          exito: false,
+          motivo: "fallo",
           salida: "EACCES",
         });
         return {
@@ -327,6 +420,60 @@ describe("store de paquetes globales", () => {
     });
     expect(store.isUpdating("cowsay")).toBe(false);
     expect(store.queue.current).toBeNull();
+  });
+
+  it("resultado de cola con motivo timeout marca la fila con el texto de plazo vencido", async () => {
+    const store = createPackagesStore(fakeInvoke());
+    await store.refresh();
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      motivo: "plazo",
+      salida: "npm no respondió en 300 s (proceso finalizado)",
+    });
+    expect(store.hasError("hunkdiff")).toBe(true);
+    expect(
+      store.logs.value.some((l) => l.includes("did not respond in time")),
+    ).toBe(true);
+  });
+
+  it("el detalle del fallo queda en la fila (tooltip) y se limpia al reintentar con éxito", async () => {
+    const store = createPackagesStore(fakeInvoke());
+    await store.refresh();
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      motivo: "plazo",
+      salida: "npm no respondió en 300 s (proceso finalizado)",
+    });
+    expect(store.detalleFallo("hunkdiff")).toContain("did not respond in time");
+    expect(store.detalleFallo("hunkdiff")).toContain("npm no respondió");
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      motivo: "ok",
+    });
+    expect(store.hasError("hunkdiff")).toBe(false);
+    expect(store.detalleFallo("hunkdiff")).toBeUndefined();
+  });
+
+  it("update que lanza excepción usa el prefijo de fallo igual que la cola", async () => {
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "update_package") throw "npm no respondió en 300 s";
+    });
+    await store.refresh();
+    await store.update("context-mode");
+    expect(store.detalleFallo("context-mode")).toContain("the update failed");
+    expect(store.detalleFallo("context-mode")).toContain("npm no respondió");
   });
 
   it("updateAll con fallo de comando deja el log y refresca", async () => {
@@ -369,7 +516,8 @@ describe("store de paquetes globales", () => {
   it("updateAll salta a los excluidos: la cola del backend los filtra", async () => {
     const store = createPackagesStore(async (cmd, args) => {
       if (cmd === "list_globals") return SNAPSHOT;
-      if (cmd === "get_excluded") return ["hunkdiff"];
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
       if (cmd === "actualizar_todo") {
         // the backend builds the queue without hunkdiff: it shows in the summary
         expect(args).toEqual({ gestor: "npm" });
@@ -396,7 +544,13 @@ describe("store de paquetes globales", () => {
           (r) =>
             (resolver = () =>
               r({
-                resumen: { total: 2, ok: 1, failed: 0, detenida: true },
+                resumen: {
+                  total: 2,
+                  ok: 1,
+                  failed: 0,
+                  detenidos: 0,
+                  detenida: true,
+                },
                 snapshot: SNAPSHOT,
               })),
         );
@@ -412,21 +566,66 @@ describe("store de paquetes globales", () => {
     expect(store.queue.summary.detenida).toBe(true); // the backend confirms
   });
 
-  it("toggleExcluded persiste la lista completa por ambos lados", async () => {
-    const guardado = [];
+  it("toggleExcluded usa comandos granulares y aplica lo confirmado", async () => {
+    const comandos = [];
     const store = createPackagesStore(async (cmd, args) => {
-      if (cmd === "get_excluded") return ["context-mode"];
-      if (cmd === "set_excluded") {
-        guardado.push(args.nombres);
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["context-mode"] };
+      if (cmd === "excluir_paquete" || cmd === "quitar_exclusion") {
+        comandos.push([cmd, args.paquete]);
         return {};
       }
     });
     await store.cargarExclusiones();
-    store.toggleExcluded("hunkdiff"); // adds
-    store.toggleExcluded("context-mode"); // removes
+    await store.toggleExcluded("hunkdiff"); // adds
+    await store.toggleExcluded("context-mode"); // removes
     expect(store.isExcluded("hunkdiff")).toBe(true);
     expect(store.isExcluded("context-mode")).toBe(false);
-    expect(guardado).toEqual([["context-mode", "hunkdiff"], ["hunkdiff"]]);
+    expect(comandos).toEqual([
+      ["excluir_paquete", "hunkdiff"],
+      ["quitar_exclusion", "context-mode"],
+    ]);
+  });
+
+  it("dos toggles en paquetes distintos con respuestas invertidas: ambos reflejados", async () => {
+    // The original race: full-list saves resolving in inverted order lost
+    // one exclusion. Granular ops cannot.
+    const pendientes = [];
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
+      if (cmd === "excluir_paquete")
+        return new Promise((r) => pendientes.push(r));
+    });
+    await store.cargarExclusiones();
+    const t1 = store.toggleExcluded("hunkdiff");
+    const t2 = store.toggleExcluded("context-mode");
+    expect(store.excluyendoAhora("hunkdiff")).toBe(true); // in flight
+    pendientes[1]({}); // the second confirms FIRST (inverted)
+    await t2;
+    pendientes[0]({}); // the first confirms LAST: still applies
+    await t1;
+    expect(store.isExcluded("hunkdiff")).toBe(true);
+    expect(store.isExcluded("context-mode")).toBe(true);
+  });
+
+  it("un segundo clic en el mismo paquete en vuelo es ignorado", async () => {
+    let resolver;
+    const comandos = [];
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
+      if (cmd === "excluir_paquete") {
+        comandos.push(cmd);
+        return new Promise((r) => (resolver = r));
+      }
+    });
+    await store.cargarExclusiones();
+    const t1 = store.toggleExcluded("hunkdiff");
+    await store.toggleExcluded("hunkdiff"); // in flight: no-op
+    expect(comandos).toEqual(["excluir_paquete"]);
+    resolver({});
+    await t1;
+    expect(store.isExcluded("hunkdiff")).toBe(true);
+    expect(store.excluyendoAhora("hunkdiff")).toBe(false);
   });
 
   it("un excluido desactualizado desactiva 'Actualizar todo' si es el único", async () => {
@@ -439,21 +638,120 @@ describe("store de paquetes globales", () => {
     };
     const store = createPackagesStore(async (cmd) => {
       if (cmd === "list_globals") return unSoloDesactualizadoExcluido;
-      if (cmd === "get_excluded") return ["hunkdiff"];
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
     });
     await store.cargarExclusiones();
     await store.refresh();
     expect(store.hayDesactualizados.value).toBe(false);
   });
 
-  it("toggleExcluded revierte el estado si falla el guardado", async () => {
+  it("un fallo del guardado no cambia el estado y queda en el log", async () => {
     const store = createPackagesStore(async (cmd) => {
-      if (cmd === "get_excluded") return [];
-      if (cmd === "set_excluded") throw "disk full";
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
+      if (cmd === "excluir_paquete") throw "disk full";
     });
     await store.cargarExclusiones();
     await store.toggleExcluded("hunkdiff");
-    expect(store.isExcluded("hunkdiff")).toBe(false); // reverted
+    expect(store.isExcluded("hunkdiff")).toBe(false); // nothing was applied
     expect(store.logs.value.some((l) => l.includes("exclusions"))).toBe(true);
+  });
+
+  it("resultado detenido limpia la fila sin marcar error y el resumen cuenta detenidos", async () => {
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "actualizar_todo") {
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "empieza",
+          paquete: "hunkdiff",
+        });
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "resultado",
+          paquete: "hunkdiff",
+          motivo: "detenido",
+          salida: "detenido a pedido (proceso finalizado)",
+        });
+        return {
+          resumen: {
+            total: 2,
+            ok: 0,
+            failed: 0,
+            detenidos: 1,
+            detenida: true,
+          },
+          snapshot: SNAPSHOT,
+        };
+      }
+    });
+    await store.refresh();
+    await store.updateAll();
+    // a user decision is not an error: the row just goes back to normal
+    expect(store.hasError("hunkdiff")).toBe(false);
+    expect(store.isUpdating("hunkdiff")).toBe(false);
+    expect(store.queue.summary.detenidos).toBe(1);
+    expect(store.logs.value.some((l) => l.includes("was stopped"))).toBe(true);
+  });
+
+  it("abandonarCola (desmonte) pide el alto suave sin marcar deteniendo", async () => {
+    const llamadas = [];
+    let resolver;
+    const store = createPackagesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "actualizar_todo") return new Promise((r) => (resolver = r));
+      if (cmd === "abandonar_actualizar_todo") return {};
+    });
+    await store.refresh();
+    const cola = store.updateAll();
+    store.abandonarCola();
+    expect(llamadas).toContain("abandonar_actualizar_todo");
+    // graceful: no "stopping" feedback (the panel is going away)
+    expect(store.queue.stopped).toBe(false);
+    resolver({
+      resumen: { total: 2, ok: 1, failed: 0, detenidos: 0, detenida: true },
+      snapshot: SNAPSHOT,
+    });
+    await cola;
+    expect(store.queue.active).toBe(false);
+  });
+
+  it("archivo corrupto: estado visible, escrituras bloqueadas y empezar de cero resuelve", async () => {
+    const llamadas = [];
+    let estado = "corrupto";
+    const store = createPackagesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "get_excluded")
+        return estado === "corrupto"
+          ? { estado: "corrupto", nombres: [] }
+          : { estado: "ok", nombres: [] };
+      if (cmd === "exclusiones_de_cero") {
+        estado = "ok";
+        return {};
+      }
+      if (cmd === "excluir_paquete") throw "bloqueado";
+    });
+    await store.cargarExclusiones();
+    expect(store.estadoExclusiones.value).toBe("corrupto");
+    // the toggle is a no-op while unresolved (nothing even reaches the
+    // backend)
+    await store.toggleExcluded("hunkdiff");
+    expect(llamadas).not.toContain("excluir_paquete");
+    expect(store.isExcluded("hunkdiff")).toBe(false);
+    // the user chooses to start clean → usable again
+    await store.exclusionesDeCero();
+    expect(llamadas).toContain("exclusiones_de_cero");
+    expect(store.estadoExclusiones.value).toBe("ok");
+  });
+
+  it("archivo ilegible muestra el detalle del error", async () => {
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "get_excluded")
+        return { estado: "ilegible", detalle: "Permission denied" };
+    });
+    await store.cargarExclusiones();
+    expect(store.estadoExclusiones.value).toBe("ilegible");
+    expect(store.detalleExclusiones.value).toContain("Permission denied");
   });
 });

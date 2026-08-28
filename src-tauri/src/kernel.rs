@@ -10,9 +10,16 @@
 //! process enters the system; everything above it is tested with
 //! [`testutil::FakeRunner`].
 
+use crate::plazo::{finalizar, plazo_vencido, Plazo, PLAZO_CONSULTA, PLAZO_INSTALACION};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 /// Global package: name, installed version, latest known version and
 /// whether it is outdated (computed in Rust: the UI never re-derives it).
@@ -69,6 +76,7 @@ pub struct UpdateOutcome {
 /// Contract: npm/pnpm `outdated` exits with code 1 when there ARE
 /// outdated packages — that is a valid result, not an error. Only a spawn
 /// failure (or a hard failure with no useful output) propagates as `Err`.
+#[derive(Debug)]
 pub struct RunnerOutput {
     pub stdout: String,
     pub stderr: String,
@@ -86,12 +94,18 @@ pub trait Runner {
 
     /// Like `run`, but streams each output line to `on_line` as it
     /// arrives. By default it runs `run` and emits the already-complete
-    /// lines — the real runner overrides it with pipes.
+    /// lines — the real runner overrides it with pipes. `parar` is Stop
+    /// (#16): faithful for the flag-already-set case — an immediate
+    /// Interrupted, exactly what the engine returns when Stop won.
     fn run_streaming(
         &self,
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
+        parar: &std::sync::Arc<AtomicBool>,
     ) -> std::io::Result<RunnerOutput> {
+        if parar.load(Ordering::Acquire) {
+            return Err(detenido_a_pedido());
+        }
         let out = self.run(args)?;
         for line in out.stdout.lines().chain(out.stderr.lines()) {
             on_line(line);
@@ -188,10 +202,11 @@ pub fn instalar(
     verbo: &str,
     name: &str,
     on_line: &mut dyn FnMut(&str),
+    parar: &std::sync::Arc<AtomicBool>,
 ) -> std::io::Result<UpdateOutcome> {
     validar_nombre(name)?;
     let spec = format!("{name}@latest");
-    let out = runner.run_streaming(&[verbo, "-g", &spec], on_line)?;
+    let out = runner.run_streaming(&[verbo, "-g", &spec], on_line, parar)?;
     let mut output = out.stdout;
     if !out.stderr.trim().is_empty() {
         output.push('\n');
@@ -203,24 +218,67 @@ pub fn instalar(
     })
 }
 
-/// Runs a command collecting all of its output (no streaming).
-pub fn correr(cmd: &mut std::process::Command) -> std::io::Result<RunnerOutput> {
-    let out = cmd.output()?;
-    Ok(RunnerOutput {
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        exit_code: out.status.code().unwrap_or(-1),
-    })
+/// A Stop flag that never fires: queries and individual updates.
+pub fn sin_parar() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
+
+/// Runs a command collecting all of its output (no streaming), under a
+/// deadline. Queries are never stopped: no Stop flag travels here.
+pub fn correr(cmd: std::process::Command, plazo: Plazo) -> std::io::Result<RunnerOutput> {
+    correr_streaming(cmd, &mut |_| {}, plazo, &sin_parar())
+}
+
+/// A gestor QUERY (ls/outdated/--version) under the query deadline: the
+/// only way adapters run queries, so the query→deadline mapping lives in
+/// ONE place.
+pub fn correr_consulta(cmd: std::process::Command) -> std::io::Result<RunnerOutput> {
+    correr(cmd, PLAZO_CONSULTA)
+}
+
+/// A gestor INSTALLATION under the installation deadline, streaming: the
+/// only way adapters run installs. `parar` is Stop (#16): it reaches the
+/// watchdog, which escalates the child's termination mid-flight.
+pub fn correr_instalacion(
+    cmd: std::process::Command,
+    on_line: &mut dyn FnMut(&str),
+    parar: &Arc<AtomicBool>,
+) -> std::io::Result<RunnerOutput> {
+    correr_streaming(cmd, on_line, PLAZO_INSTALACION, parar)
+}
+
+/// Why the watchdog escalated the child's termination: the deadline won
+/// or Stop arrived mid-flight (#16).
+#[derive(Debug, Clone, Copy)]
+enum Fin {
+    Plazo,
+    Detenido,
+}
+
+/// The Stop error: the engine cut the child at the user's request.
+fn detenido_a_pedido() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "detenido a pedido (proceso finalizado)",
+    )
 }
 
 /// Runs a command with pipes and streams each stdout line to `on_line` as
 /// it arrives; stderr is read on a separate thread (not streamed: manager
-/// progress output is polluted with control sequences).
+/// progress output is polluted with control sequences). Under `plazo`: a
+/// watchdog thread escalates the child's termination when it expires.
 pub fn correr_streaming(
     mut cmd: std::process::Command,
     on_line: &mut dyn FnMut(&str),
+    plazo: Plazo,
+    parar: &Arc<AtomicBool>,
 ) -> std::io::Result<RunnerOutput> {
     use std::io::{BufRead, BufReader};
+    // Own process group: the escalation can signal the whole family
+    // (shims leave grandchildren holding the pipe) and the child does not
+    // receive the app's terminal signals.
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -239,17 +297,78 @@ pub fn correr_streaming(
         buf
     });
 
+    // The watchdog polls: the child finishing first (channel), Stop
+    // (#16) or the deadline — in that order of precedence. The child
+    // travels in a mutex because killing it needs `&mut` — the wait
+    // below never holds the lock while blocking.
+    let hijo = Arc::new(Mutex::new(child));
+    let como_termino = Arc::new(Mutex::new(None::<Fin>));
+    let (listo_tx, listo_rx) = mpsc::channel::<()>();
+    let (vigia_hijo, vigia_fin) = (Arc::clone(&hijo), Arc::clone(&como_termino));
+    let vigia_parar = Arc::clone(parar);
+    let vigia = std::thread::spawn(move || {
+        let inicio = std::time::Instant::now();
+        loop {
+            if listo_rx.try_recv().is_ok() {
+                return; // the child finished in time
+            }
+            let fin = if vigia_parar.load(Ordering::Acquire) {
+                Some(Fin::Detenido)
+            } else if inicio.elapsed() >= plazo.total {
+                Some(Fin::Plazo)
+            } else {
+                None
+            };
+            let Some(fin) = fin else {
+                std::thread::sleep(Duration::from_millis(15));
+                continue;
+            };
+            // Only a child that was still ALIVE when the reason fired was
+            // cut: one that died on its own right at the boundary is not.
+            if finalizar(&vigia_hijo, plazo.grace) {
+                *vigia_fin.lock().unwrap() = Some(fin);
+            }
+            return;
+        }
+    });
+
     let mut stdout_str = String::new();
+    let mut fallo_lectura: Option<std::io::Error> = None;
     for line in BufReader::new(stdout).lines() {
-        let line = line?;
-        on_line(&line);
-        stdout_str.push_str(&line);
-        stdout_str.push('\n');
+        match line {
+            Ok(line) => {
+                on_line(&line);
+                stdout_str.push_str(&line);
+                stdout_str.push('\n');
+            }
+            Err(e) => {
+                fallo_lectura = Some(e);
+                break;
+            }
+        }
     }
+
+    // Polling wait: brief locks only, so the watchdog can always get in.
+    let status = loop {
+        if let Some(st) = hijo.lock().unwrap().try_wait()? {
+            break st;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = listo_tx.send(());
+    let _ = vigia.join();
     let stderr_str = stderr_handle
         .join()
         .map_err(|_| std::io::Error::other("stderr thread died"))?;
-    let status = child.wait()?;
+
+    match como_termino.lock().unwrap().take() {
+        Some(Fin::Plazo) => return Err(plazo_vencido(&cmd, plazo.total)),
+        Some(Fin::Detenido) => return Err(detenido_a_pedido()),
+        None => {}
+    }
+    if let Some(e) = fallo_lectura {
+        return Err(e);
+    }
     Ok(RunnerOutput {
         stdout: stdout_str,
         stderr: stderr_str,
@@ -390,12 +509,12 @@ pub fn no_encontrado(gestor: &str, buscadas: &[PathBuf]) -> std::io::Error {
 }
 
 /// Runs a probe command (`--version`) and returns its trimmed stdout if
-/// it ended well; `None` if it could not run.
-pub fn version_de(cmd: &mut std::process::Command) -> Option<String> {
-    let out = cmd.output().ok()?;
-    let salida = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    out.status
-        .success()
+/// it ended well; `None` if it could not run. Under the query deadline:
+/// discovery cannot hang either.
+pub fn version_de(cmd: std::process::Command) -> Option<String> {
+    let out = correr_consulta(cmd).ok()?;
+    let salida = out.stdout.trim().to_string();
+    (out.exit_code == 0)
         .then_some(salida)
         .filter(|s| !s.is_empty())
 }
@@ -568,9 +687,13 @@ mod tests {
     fn instalar_usa_el_verbo_del_gestor_y_streamea() {
         let runner = runner_npm();
         let mut lineas = Vec::new();
-        let out = instalar(&runner, "install", "hunkdiff", &mut |l| {
-            lineas.push(l.to_string())
-        })
+        let out = instalar(
+            &runner,
+            "install",
+            "hunkdiff",
+            &mut |l| lineas.push(l.to_string()),
+            &sin_parar(),
+        )
         .expect("valid install");
         assert!(runner.se_llamo_a("install -g hunkdiff@latest"));
         assert!(out.success);
@@ -580,7 +703,7 @@ mod tests {
     #[test]
     fn instalar_con_verbo_add_sirve_a_pnpm_y_bun() {
         let runner = FakeRunner::new("10.33.0").respuesta("add", "Done in 1.5s", 0);
-        let out = instalar(&runner, "add", "cowsay", &mut |_| {}).unwrap();
+        let out = instalar(&runner, "add", "cowsay", &mut |_| {}, &sin_parar()).unwrap();
         assert!(out.success);
         assert!(runner.se_llamo_a("add -g cowsay@latest"));
     }
@@ -588,15 +711,15 @@ mod tests {
     #[test]
     fn instalar_fallido_devuelve_success_false() {
         let runner = FakeRunner::new("11.4.2").respuesta("install", "EACCES", 1);
-        let out = instalar(&runner, "install", "hunkdiff", &mut |_| {}).unwrap();
+        let out = instalar(&runner, "install", "hunkdiff", &mut |_| {}, &sin_parar()).unwrap();
         assert!(!out.success);
     }
 
     #[test]
     fn instalar_rechaza_nombres_invalidos() {
         let runner = runner_npm();
-        assert!(instalar(&runner, "install", "", &mut |_| {}).is_err());
-        assert!(instalar(&runner, "install", "--force", &mut |_| {}).is_err());
+        assert!(instalar(&runner, "install", "", &mut |_| {}, &sin_parar()).is_err());
+        assert!(instalar(&runner, "install", "--force", &mut |_| {}, &sin_parar()).is_err());
     }
 
     #[test]
@@ -607,6 +730,7 @@ mod tests {
             "install",
             "@alibaba-group/open-code-review",
             &mut |_| {},
+            &sin_parar(),
         )
         .expect("valid scoped name");
         assert!(out.success);
@@ -699,5 +823,134 @@ mod tests {
         );
         assert!(msg.contains("/Users/ejemplo/Library/pnpm"), "{msg}");
         assert!(msg.contains("/opt/pnpm"), "{msg}");
+    }
+
+    // ---- Plazos: procesos REALES colgados (#11) ----
+    //
+    // Lo que se prueba es el manejo del hijo (escalada de finalización),
+    // por eso no hay mock: `sh`/`sleep` de verdad. Guardadas a unix porque
+    // CI corre `cargo test` en Linux; Windows compila el mismo mecanismo
+    // (allí la única terminación es la dura) pero no ejecuta estas.
+
+    /// Un comando que duerme `segundos` (el "gestor colgado").
+    #[cfg(unix)]
+    fn dormilon(segundos: u32) -> std::process::Command {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(format!("sleep {segundos}"));
+        c
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_con_proceso_colgado_corta_con_error_de_plazo() {
+        let plazo = Plazo {
+            total: Duration::from_millis(150),
+            grace: Duration::from_millis(300),
+        };
+        let inicio = std::time::Instant::now();
+        let err = correr(dormilon(30), plazo).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("no respondió"), "{err}");
+        // cortó por el plazo, no porque `sleep 30` terminara
+        assert!(
+            inicio.elapsed() < Duration::from_secs(5),
+            "tardó {:?}",
+            inicio.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_escalada_a_kill_si_ignora_la_senal_cortes() {
+        // `sh` ignora TERM (como un gestor atascado de verdad); sus
+        // `sleep` nietos mueren con el TERM del grupo pero el bucle
+        // sigue: solo el KILL del grupo posterior al grace lo corta.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("trap '' TERM; while :; do sleep 0.1; done");
+        let plazo = Plazo {
+            total: Duration::from_millis(150),
+            grace: Duration::from_millis(300),
+        };
+        let inicio = std::time::Instant::now();
+        let err = correr(cmd, plazo).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        // no murió con la señal cortés: esperó el grace y recibió KILL
+        assert!(
+            inicio.elapsed() >= plazo.total + plazo.grace,
+            "murió antes de la escalada: {:?}",
+            inicio.elapsed()
+        );
+        assert!(
+            inicio.elapsed() < Duration::from_secs(5),
+            "tardó {:?}",
+            inicio.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_streaming_entrega_lo_emitido_antes_del_corte() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("echo linea1; sleep 30");
+        let plazo = Plazo {
+            total: Duration::from_millis(150),
+            grace: Duration::from_millis(300),
+        };
+        let mut lineas = Vec::new();
+        let err = correr_streaming(
+            cmd,
+            &mut |l| lineas.push(l.to_string()),
+            plazo,
+            &sin_parar(),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        // la salida parcial emitida antes del corte llegó al log
+        assert_eq!(lineas, vec!["linea1"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_con_comando_rapido_termina_normal() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("echo hola");
+        let out = correr(cmd, PLAZO_CONSULTA).unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.contains("hola"), "{}", out.stdout);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_con_hijo_que_termina_antes_del_plazo_devuelve_ok() {
+        // Frontera del vigía: un hijo que murió solo justo cuando el plazo
+        // vence NO es un timeout (la bandera solo se marca si escaló).
+        let plazo = Plazo {
+            total: Duration::from_millis(1500),
+            grace: Duration::from_millis(300),
+        };
+        let out = correr(dormilon(1), plazo).unwrap();
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detener_corta_al_proceso_en_curso_en_segundos() {
+        // Stop arrives 80 ms into a `sleep 30`: the watchdog escalates on
+        // the flag, not the deadline, and the cut is Interrupted.
+        let parar = Arc::new(AtomicBool::new(false));
+        let bandera = Arc::clone(&parar);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            bandera.store(true, Ordering::Release);
+        });
+        let inicio = std::time::Instant::now();
+        let err = correr_instalacion(dormilon(30), &mut |_| {}, &parar).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert!(
+            inicio.elapsed() < Duration::from_secs(5),
+            "tardó {:?}",
+            inicio.elapsed()
+        );
     }
 }

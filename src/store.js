@@ -1,6 +1,7 @@
-import { computed, reactive, ref } from "vue";
+import { computed, nextTick, reactive, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useI18n } from "./i18n";
+import { armarDiagnostico } from "./diagnostico";
 
 /**
  * Log shared by all managers: a single history with `manager/package:`
@@ -17,6 +18,18 @@ export function crearLog(capacidad = 500) {
     append(`${gestor}/${paquete}: ${linea}`);
   return { lineas, append, appendLine };
 }
+
+/**
+ * Wire values of the queue result's reason (`Motivo` in Rust, serialized
+ * lowercase; "plazo" per the glossary — never "timeout"). Single source
+ * for store and tests.
+ */
+export const MOTIVO = {
+  OK: "ok",
+  FALLO: "fallo",
+  PLAZO: "plazo",
+  DETENIDO: "detenido",
+};
 
 /**
  * State of ONE manager's global package table.
@@ -39,6 +52,9 @@ export function createPackagesStore(
   const search = ref("");
   const ESTADO = { ACTUALIZANDO: "updating", ERROR: "error" };
   const status = reactive({});
+  // Failure detail per package (the row shows it as its tooltip): same
+  // text that markFailed writes to the log.
+  const detalle = reactive({});
   // Log: shared if the app passes one (single history across tabs);
   // own otherwise (tests and isolated use). No duplicated cap: crearLog
   // owns it.
@@ -46,17 +62,30 @@ export function createPackagesStore(
   const logs = logCompartido ? logCompartido.lineas : logPropio.lineas;
   const appendLog = logCompartido ? logCompartido.append : logPropio.append;
 
+  // Refresh guard (#13): monotonic publication id — only the LATEST
+  // operation (a Refresh or the queue's final snapshot) may publish;
+  // stale answers are discarded, and what's in flight is never aborted.
+  let idPublicacion = 0;
+  // loading counts in-flight REFRESHES. The queue is NOT one: it has its
+  // own flag (queue.active) and the UI combines both — a single counter
+  // would couple two unrelated lifecycles (#13 review decision).
+  let cargasEnVuelo = 0;
+
   // Refresh: query the package list and its latest versions again
   // (glossary vocabulary; also serves the initial load).
   async function refresh() {
+    const id = ++idPublicacion;
+    cargasEnVuelo++;
     state.loading = true;
     state.error = "";
     try {
-      state.snapshot = await invokeFn("list_globals", { gestor });
+      const snapshot = await invokeFn("list_globals", { gestor });
+      if (id === idPublicacion) state.snapshot = snapshot;
     } catch (e) {
-      state.error = String(e);
+      if (id === idPublicacion) state.error = String(e);
     } finally {
-      state.loading = false;
+      cargasEnVuelo--;
+      if (cargasEnVuelo === 0) state.loading = false;
     }
   }
 
@@ -73,6 +102,7 @@ export function createPackagesStore(
       const res = await invokeFn("update_package", { gestor, name });
       if (res?.success) {
         delete status[name];
+        delete detalle[name];
         if (refrescar) await refresh();
         return true;
       }
@@ -82,47 +112,113 @@ export function createPackagesStore(
       );
       return false;
     } catch (e) {
-      markFailed(name, String(e));
+      // Same shape as the queue path (e.g. an individual timeout): prefix
+      // + raw text, never the bare error.
+      markFailed(name, `${t("actualizacionFallo")}\n${String(e)}`.trim());
       return false;
     }
   }
 
   function markFailed(name, detail) {
     status[name] = ESTADO.ERROR;
+    detalle[name] = detail;
     appendLog(`${gestor}/${name}: ${detail}`);
   }
 
   const isUpdating = (name) => status[name] === ESTADO.ACTUALIZANDO;
   const hasError = (name) => status[name] === ESTADO.ERROR;
+  // The row's tooltip: why THIS package failed (motivo + gestor output).
+  const detalleFallo = (name) => detalle[name];
+
+  // Copy diagnostics (#21): version, OS, gestores, this gestor's counts
+  // and the last log lines — home-redacted — straight to the clipboard.
+  const diagnosticoCopiado = ref(false);
+  async function copiarDiagnostico() {
+    try {
+      const d = await invokeFn("diagnostico");
+      const texto = armarDiagnostico({
+        ...d,
+        activo: gestor,
+        conteo: conteo.value,
+        lineas: logs.value,
+      });
+      await navigator.clipboard.writeText(texto);
+      diagnosticoCopiado.value = true;
+      setTimeout(() => {
+        diagnosticoCopiado.value = false;
+      }, 2000);
+      anunciar(anuncio, t("diagnosticoCopiado"));
+      return true;
+    } catch (e) {
+      appendLog(`${gestor}: ${t("diagnosticoFallo", { e })}`);
+      return false;
+    }
+  }
 
   // Excluded: "Update all" skips them; the individual update stays
-  // available. Persisted in the backend (config JSON).
+  // available. The BACKEND is the single writer (#14): granular
+  // excluir/quitar per (gestor, paquete) — the store applies only what
+  // the backend confirms, so two fast clicks can never lose an exclusion.
   const excluded = ref([]);
   const isExcluded = (name) => excluded.value.includes(name);
+  // #17: the file's state — "corrupto"/"ilegible" block every write until
+  // the user resolves (the banner asks).
+  const estadoExclusiones = ref("ok");
+  const detalleExclusiones = ref("");
+  // Per-package in-flight: disables THAT row's toggle only.
+  const excluyendo = reactive({});
 
   async function cargarExclusiones() {
     try {
-      excluded.value = await invokeFn("get_excluded", { gestor });
+      const r = await invokeFn("get_excluded", { gestor });
+      // fail-closed: an unknown/absent estado BLOCKS writes — the whole
+      // point is not acting on what we do not understand (#17)
+      const e = r?.estado;
+      estadoExclusiones.value =
+        e === "ok" || e === "corrupto" || e === "ilegible" ? e : "ilegible";
+      detalleExclusiones.value = r?.detalle ?? "";
+      excluded.value = e === "ok" ? (r?.nombres ?? []) : [];
     } catch (e) {
       appendLog(`${gestor}: ${t("cargarExclusionesFallo", { e })}`);
     }
   }
 
-  // Optimistic with rollback: if the save fails, the UI goes back to the
-  // real on-disk state and the failure lands in the log.
-  async function toggleExcluded(name) {
-    const previos = excluded.value;
-    const next = isExcluded(name)
-      ? previos.filter((n) => n !== name)
-      : [...previos, name];
-    excluded.value = next;
+  // The user's explicit choice (#17): the damaged original is kept as
+  // evidence (.corrupt) and the file starts clean.
+  async function exclusionesDeCero() {
     try {
-      await invokeFn("set_excluded", { gestor, nombres: next });
+      await invokeFn("exclusiones_de_cero");
+      await cargarExclusiones();
     } catch (e) {
-      excluded.value = previos;
       appendLog(`${gestor}: ${t("guardarExclusionesFallo", { e })}`);
     }
   }
+
+  async function toggleExcluded(name) {
+    if (excluyendo[name]) return; // in flight: the second click is a no-op
+    if (estadoExclusiones.value !== "ok") return; // unresolved file: blocked
+    excluyendo[name] = true;
+    const quitar = isExcluded(name);
+    try {
+      await invokeFn(quitar ? "quitar_exclusion" : "excluir_paquete", {
+        gestor,
+        paquete: name,
+      });
+      // apply exactly what the backend confirmed (idempotent)
+      excluded.value = quitar
+        ? excluded.value.filter((n) => n !== name)
+        : excluded.value.includes(name)
+          ? excluded.value
+          : [...excluded.value, name];
+    } catch (e) {
+      // no optimism to roll back: the state stays as it was
+      appendLog(`${gestor}: ${t("guardarExclusionesFallo", { e })}`);
+    } finally {
+      delete excluyendo[name];
+    }
+  }
+
+  const excluyendoAhora = (name) => !!excluyendo[name];
 
   // Single rule for "updatable outdated": outdated and not excluded. It
   // feeds the button and the queue.
@@ -155,28 +251,55 @@ export function createPackagesStore(
     active: false,
     current: null,
     stopped: false,
-    summary: null, // { total, ok, failed, detenida }
+    summary: null, // { total, ok, failed, detenidos, detenida }
   });
+
+  // Screen-reader announcements (#20): states are polite, errors alert.
+  // aria-live only announces CHANGES: announce() clears first and sets on
+  // the next tick, so a REPEATED message still announces.
+  const anuncio = ref("");
+  const anuncioError = ref("");
+
+  function anunciar(region, texto) {
+    region.value = "";
+    nextTick(() => {
+      region.value = texto;
+    });
+  }
 
   async function updateAll() {
     if (desactualizables.value.length === 0 || queue.active) return;
 
+    // The queue's final snapshot publishes through the same guard (#13):
+    // a Refresh that started later wins when it resolves.
+    const id = ++idPublicacion;
     queue.active = true;
     queue.stopped = false;
     queue.summary = null;
+    anunciar(anuncio, t("actualizando"));
     try {
       const { resumen, snapshot } = await invokeFn("actualizar_todo", {
         gestor,
       });
-      state.snapshot = snapshot;
+      // Fresh data invalidates a stale refresh error. The summary and the
+      // log are the queue's accomplished fact: they publish regardless of
+      // the guard (the snapshot alone is global state).
+      if (id === idPublicacion) {
+        state.snapshot = snapshot;
+        state.error = "";
+      }
       queue.summary = resumen;
       // The summary also lives in the log: if the user is on another tab,
       // the unmounted panel's statusbar would lose it… this one keeps it.
-      appendLog(
-        `${gestor}: ${t("colaTerminada", { ok: resumen.ok, total: resumen.total })}` +
-          (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
-          (resumen.detenida ? ` · ${t("detenida")}` : ""),
-      );
+      const linea =
+        t("colaTerminada", { ok: resumen.ok, total: resumen.total }) +
+        (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
+        (resumen.detenidos
+          ? ` · ${resumen.detenidos} ${t("paquetesDetenidos")}`
+          : "") +
+        (resumen.detenida ? ` · ${t("detenida")}` : "");
+      appendLog(`${gestor}: ${linea}`);
+      anunciar(anuncio, linea);
     } catch (e) {
       appendLog(`${gestor}: ${t("colaFallo", { e })}`);
       await refresh();
@@ -188,19 +311,33 @@ export function createPackagesStore(
 
   // `pm-cola` event of THIS manager (starts/result): moves the table row.
   // Output lines arrive via `pm-output` straight to the shared log
-  // (App.vue, always mounted).
+  // (App.vue, always mounted). A deadline or a stop carries its own
+  // message — neither is a generic failure (#15, #16).
   function procesarEventoCola(e) {
     if (e.gestor !== gestor) return;
     if (e.tipo === "empieza") {
       queue.current = e.paquete;
       status[e.paquete] = ESTADO.ACTUALIZANDO;
+      anunciar(anuncio, `${e.paquete}: ${t("actualizando")}`);
     } else if (e.tipo === "resultado") {
-      if (e.exito) delete status[e.paquete];
-      else
-        markFailed(
-          e.paquete,
-          `${t("actualizacionFallo")}\n${e.salida ?? ""}`.trim(),
-        );
+      if (e.motivo === MOTIVO.OK || e.motivo === MOTIVO.DETENIDO) {
+        // OK clears the row; a stop is a user decision, not an error —
+        // the row goes back to normal, the log and the announcement say
+        // it was stopped.
+        delete status[e.paquete];
+        delete detalle[e.paquete];
+        if (e.motivo === MOTIVO.DETENIDO) {
+          appendLog(`${gestor}/${e.paquete}: ${t("actualizacionDetenida")}`);
+          anunciar(anuncio, `${e.paquete}: ${t("actualizacionDetenida")}`);
+        }
+      } else {
+        const prefijo =
+          e.motivo === MOTIVO.PLAZO
+            ? t("actualizacionPlazo")
+            : t("actualizacionFallo");
+        anunciar(anuncioError, `${e.paquete}: ${prefijo}`);
+        markFailed(e.paquete, `${prefijo}\n${e.salida ?? ""}`.trim());
+      }
     }
   }
 
@@ -208,6 +345,14 @@ export function createPackagesStore(
     if (!queue.active) return;
     queue.stopped = true;
     invokeFn("detener_actualizar_todo").catch(() => {});
+  }
+
+  // The panel went away: graceful — the in-flight update finishes, the
+  // next ones never start, nothing is cut. No UI feedback: the panel is
+  // being destroyed.
+  function abandonarCola() {
+    if (!queue.active) return;
+    invokeFn("abandonar_actualizar_todo").catch(() => {});
   }
 
   // Packages filtered by the search (substring, case-insensitive; scoped
@@ -224,17 +369,27 @@ export function createPackagesStore(
     packages,
     logs,
     queue,
+    anuncio,
+    anuncioError,
     hayDesactualizados,
     conteo,
     refresh,
     update,
     updateAll,
     stopAll,
+    abandonarCola,
+    copiarDiagnostico,
+    diagnosticoCopiado,
     procesarEventoCola,
     cargarExclusiones,
+    exclusionesDeCero,
+    estadoExclusiones,
+    detalleExclusiones,
     toggleExcluded,
+    excluyendoAhora,
     isUpdating,
     hasError,
+    detalleFallo,
     isExcluded,
   };
 }

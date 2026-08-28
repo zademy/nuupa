@@ -5,7 +5,7 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr, correr_streaming, find_in_path, home, no_encontrado,
+    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, home, no_encontrado,
     primer_existente, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
 use std::collections::BTreeMap;
@@ -43,8 +43,9 @@ impl RealBunRunner {
         let bin = find_in_path(&con_extension("bun"))
             .or_else(|| primer_existente(buscadas.clone()))
             .ok_or_else(|| no_encontrado("bun", &buscadas))?;
-        let bun_version = version_de(std::process::Command::new(&bin).arg("--version"))
-            .unwrap_or_else(|| "unknown".to_string());
+        let mut probe = std::process::Command::new(&bin);
+        probe.arg("--version");
+        let bun_version = version_de(probe).unwrap_or_else(|| "unknown".to_string());
         Ok(Self { bin, bun_version })
     }
 
@@ -61,15 +62,16 @@ impl Runner for RealBunRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(&mut self.command(args))
+        correr_consulta(self.command(args))
     }
 
     fn run_streaming(
         &self,
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
+        parar: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(self.command(args), on_line)
+        correr_instalacion(self.command(args), on_line, parar)
     }
 }
 
