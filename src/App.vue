@@ -48,7 +48,7 @@ onUnmounted(() => desubscribir?.());
 <template>
   <!-- Icon sprite (a single instance, hidden): the panels' <use> elements
        reference it by id. -->
-  <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+  <svg width="0" height="0" class="sprite" aria-hidden="true">
     <defs>
       <symbol id="ic-refrescar" viewBox="0 0 24 24">
         <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
@@ -153,6 +153,12 @@ onUnmounted(() => desubscribir?.());
 </template>
 
 <style>
+/* The hidden icon sprite: out of the flow, zero size (#18: as a class,
+   not an inline style attr). */
+.sprite {
+  position: absolute;
+}
+
 /* Theme palettes: the ONLY place hex colors live. Both ramps are the same
    cold-gray family (Monochrome; the light one is its "between gray and
    white" variant). A new theme is a new [data-tema] block — every
