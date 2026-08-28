@@ -35,6 +35,13 @@ function alPulsarTecla(e) {
   if (focos.length === 0) return;
   const primero = focos[0];
   const ultimo = focos[focos.length - 1];
+  const dentro = dialogo.value?.contains(document.activeElement) ?? false;
+  if (!dentro) {
+    // focus outside the dialog (blur, programmatic): bring it back in
+    e.preventDefault();
+    (e.shiftKey ? ultimo : primero).focus();
+    return;
+  }
   if (e.shiftKey && document.activeElement === primero) {
     e.preventDefault();
     ultimo.focus();

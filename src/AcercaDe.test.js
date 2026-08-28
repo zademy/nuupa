@@ -37,6 +37,15 @@ describe("AcercaDe", () => {
     expect(document.activeElement).toBe(ultimo); // back: first → last
   });
 
+  it("trae de vuelta el foco que estaba fuera del diálogo", async () => {
+    const c = mount(AcercaDe, { attachTo: document.body });
+    await flushPromises();
+    document.activeElement.blur(); // focus escapes (activeElement → body)
+    expect(document.activeElement).toBe(document.body);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    expect(document.activeElement).toBe(c.get("button.cerrar").element);
+  });
+
   it("restaura el foco al botón que abrió el diálogo", async () => {
     const disparador = document.createElement("button");
     document.body.appendChild(disparador);

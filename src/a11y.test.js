@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 import axe from "axe-core";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { tauri } from "./tauri-fake"; // the mocks register in tests-setup
 import PanelGestor from "./PanelGestor.vue";
 import AcercaDe from "./AcercaDe.vue";
 import { crearLog } from "./store";
 
-// #20: axe on the mounted components. jsdom cannot run layout-dependent
-// rules (color-contrast arrives as "incomplete", not a violation): the
-// gate is SERIOUS+CRITICAL; everything else is a warning, not a failure.
+// #20: axe on the mounted components, as a reproducible LOCAL check.
+// Per the spec this first iteration is WARNING-ONLY (no blocking gate):
+// every violation lands in the console; nothing fails the suite. jsdom
+// cannot run layout-dependent rules (color-contrast arrives as
+// "incomplete", not a violation).
 
 const SNAPSHOT = {
   version_gestor: "11.4.2",
@@ -23,19 +25,22 @@ const SNAPSHOT = {
 
 beforeEach(() => tauri.reiniciar());
 
-async function sinViolacionesGraves() {
+async function avisarViolaciones() {
   const resultado = await axe.run(document.body);
-  const graves = resultado.violations.filter((v) =>
-    ["serious", "critical"].includes(v.impact ?? ""),
+  for (const v of resultado.violations) {
+    console.warn(
+      `[axe ${v.impact ?? "?"}] ${v.id}: ${v.help} (${v.nodes.length} nodos)`,
+    );
+  }
+  if (resultado.violations.length === 0) return true;
+  console.warn(
+    `[axe] ${resultado.violations.length} violacion(es) — ver arriba; primera iteración sin gate (#20)`,
   );
-  resultado.violations
-    .filter((v) => !["serious", "critical"].includes(v.impact ?? ""))
-    .forEach((v) => console.warn(`[axe aviso] ${v.id}: ${v.help}`));
-  expect(graves.map((v) => `${v.id} (${v.impact})`)).toEqual([]);
+  return false;
 }
 
 describe("axe (accesibilidad)", () => {
-  it("el panel cargado no tiene violaciones serias ni críticas", async () => {
+  it("chequea el panel cargado (avisos por consola, sin gate)", async () => {
     tauri.responder("get_excluded", { estado: "ok", nombres: [] });
     tauri.responder("list_globals", SNAPSHOT);
     mount(PanelGestor, {
@@ -43,12 +48,12 @@ describe("axe (accesibilidad)", () => {
       attachTo: document.body,
     });
     await flushPromises();
-    await sinViolacionesGraves();
+    await avisarViolaciones();
   });
 
-  it("el modal Acerca de tampoco", async () => {
+  it("chequea el modal Acerca de (avisos por consola, sin gate)", async () => {
     mount(AcercaDe, { attachTo: document.body });
     await flushPromises();
-    await sinViolacionesGraves();
+    await avisarViolaciones();
   });
 });

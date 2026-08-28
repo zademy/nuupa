@@ -1,4 +1,4 @@
-import { computed, reactive, ref } from "vue";
+import { computed, nextTick, reactive, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useI18n } from "./i18n";
 
@@ -229,9 +229,17 @@ export function createPackagesStore(
   });
 
   // Screen-reader announcements (#20): states are polite, errors alert.
-  // aria-live only announces CHANGES, so the last message staying is fine.
+  // aria-live only announces CHANGES: announce() clears first and sets on
+  // the next tick, so a REPEATED message still announces.
   const anuncio = ref("");
   const anuncioError = ref("");
+
+  function anunciar(region, texto) {
+    region.value = "";
+    nextTick(() => {
+      region.value = texto;
+    });
+  }
 
   async function updateAll() {
     if (desactualizables.value.length === 0 || queue.active) return;
@@ -242,7 +250,7 @@ export function createPackagesStore(
     queue.active = true;
     queue.stopped = false;
     queue.summary = null;
-    anuncio.value = t("actualizarTodo");
+    anunciar(anuncio, t("actualizando"));
     try {
       const { resumen, snapshot } = await invokeFn("actualizar_todo", {
         gestor,
@@ -265,7 +273,7 @@ export function createPackagesStore(
           : "") +
         (resumen.detenida ? ` · ${t("detenida")}` : "");
       appendLog(`${gestor}: ${linea}`);
-      anuncio.value = linea;
+      anunciar(anuncio, linea);
     } catch (e) {
       appendLog(`${gestor}: ${t("colaFallo", { e })}`);
       await refresh();
@@ -284,7 +292,7 @@ export function createPackagesStore(
     if (e.tipo === "empieza") {
       queue.current = e.paquete;
       status[e.paquete] = ESTADO.ACTUALIZANDO;
-      anuncio.value = `${e.paquete}: ${t("actualizando")}`;
+      anunciar(anuncio, `${e.paquete}: ${t("actualizando")}`);
     } else if (e.tipo === "resultado") {
       if (e.motivo === MOTIVO.OK || e.motivo === MOTIVO.DETENIDO) {
         // OK clears the row; a stop is a user decision, not an error —
@@ -294,14 +302,14 @@ export function createPackagesStore(
         delete detalle[e.paquete];
         if (e.motivo === MOTIVO.DETENIDO) {
           appendLog(`${gestor}/${e.paquete}: ${t("actualizacionDetenida")}`);
-          anuncio.value = `${e.paquete}: ${t("actualizacionDetenida")}`;
+          anunciar(anuncio, `${e.paquete}: ${t("actualizacionDetenida")}`);
         }
       } else {
         const prefijo =
           e.motivo === MOTIVO.PLAZO
             ? t("actualizacionPlazo")
             : t("actualizacionFallo");
-        anuncioError.value = `${e.paquete}: ${prefijo}`;
+        anunciar(anuncioError, `${e.paquete}: ${prefijo}`);
         markFailed(e.paquete, `${prefijo}\n${e.salida ?? ""}`.trim());
       }
     }
