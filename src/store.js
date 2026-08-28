@@ -65,8 +65,9 @@ export function createPackagesStore(
   // operation (a Refresh or the queue's final snapshot) may publish;
   // stale answers are discarded, and what's in flight is never aborted.
   let idPublicacion = 0;
-  // loading counts in-flight operations: the spinner stays until the
-  // LAST one finishes.
+  // loading counts in-flight REFRESHES. The queue is NOT one: it has its
+  // own flag (queue.active) and the UI combines both — a single counter
+  // would couple two unrelated lifecycles (#13 review decision).
   let cargasEnVuelo = 0;
 
   // Refresh: query the package list and its latest versions again
@@ -204,7 +205,13 @@ export function createPackagesStore(
       const { resumen, snapshot } = await invokeFn("actualizar_todo", {
         gestor,
       });
-      if (id === idPublicacion) state.snapshot = snapshot;
+      // Fresh data invalidates a stale refresh error. The summary and the
+      // log are the queue's accomplished fact: they publish regardless of
+      // the guard (the snapshot alone is global state).
+      if (id === idPublicacion) {
+        state.snapshot = snapshot;
+        state.error = "";
+      }
       queue.summary = resumen;
       // The summary also lives in the log: if the user is on another tab,
       // the unmounted panel's statusbar would lose it… this one keeps it.

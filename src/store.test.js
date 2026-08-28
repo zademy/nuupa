@@ -164,6 +164,31 @@ describe("store de paquetes globales", () => {
     expect(store.state.snapshot.version_gestor).toBe("cola");
   });
 
+  it("caso inverso: el refresco más nuevo publica y la cola descarta su snapshot", async () => {
+    let consultas = 0;
+    let resolverCola;
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") {
+        consultas++;
+        return consultas === 1
+          ? SNAPSHOT
+          : { ...SNAPSHOT, version_gestor: "refresco" };
+      }
+      if (cmd === "actualizar_todo")
+        return new Promise((r) => (resolverCola = r));
+    });
+    await store.refresh(); // base: 2 outdated
+    const cola = store.updateAll(); // id 2, hangs
+    await store.refresh(); // id 3: resolves FIRST, publishes
+    expect(store.state.snapshot.version_gestor).toBe("refresco");
+    resolverCola({
+      resumen: { total: 2, ok: 2, failed: 0, detenidos: 0, detenida: false },
+      snapshot: { ...SNAPSHOT, version_gestor: "cola" },
+    });
+    await cola; // stale: discarded
+    expect(store.state.snapshot.version_gestor).toBe("refresco");
+  });
+
   it("update exitoso refresca la lista y limpia el estado del paquete", async () => {
     const calls = [];
     const store = createPackagesStore(async (cmd, args) => {
