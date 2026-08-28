@@ -130,9 +130,13 @@ export function createPackagesStore(
   const detalleFallo = (name) => detalle[name];
 
   // Excluded: "Update all" skips them; the individual update stays
-  // available. Persisted in the backend (config JSON).
+  // available. The BACKEND is the single writer (#14): granular
+  // excluir/quitar per (gestor, paquete) — the store applies only what
+  // the backend confirms, so two fast clicks can never lose an exclusion.
   const excluded = ref([]);
   const isExcluded = (name) => excluded.value.includes(name);
+  // Per-package in-flight: disables THAT row's toggle only.
+  const excluyendo = reactive({});
 
   async function cargarExclusiones() {
     try {
@@ -142,21 +146,30 @@ export function createPackagesStore(
     }
   }
 
-  // Optimistic with rollback: if the save fails, the UI goes back to the
-  // real on-disk state and the failure lands in the log.
   async function toggleExcluded(name) {
-    const previos = excluded.value;
-    const next = isExcluded(name)
-      ? previos.filter((n) => n !== name)
-      : [...previos, name];
-    excluded.value = next;
+    if (excluyendo[name]) return; // in flight: the second click is a no-op
+    excluyendo[name] = true;
+    const quitar = isExcluded(name);
     try {
-      await invokeFn("set_excluded", { gestor, nombres: next });
+      await invokeFn(quitar ? "quitar_exclusion" : "excluir_paquete", {
+        gestor,
+        paquete: name,
+      });
+      // apply exactly what the backend confirmed (idempotent)
+      excluded.value = quitar
+        ? excluded.value.filter((n) => n !== name)
+        : excluded.value.includes(name)
+          ? excluded.value
+          : [...excluded.value, name];
     } catch (e) {
-      excluded.value = previos;
+      // no optimism to roll back: the state stays as it was
       appendLog(`${gestor}: ${t("guardarExclusionesFallo", { e })}`);
+    } finally {
+      delete excluyendo[name];
     }
   }
+
+  const excluyendoAhora = (name) => !!excluyendo[name];
 
   // Single rule for "updatable outdated": outdated and not excluded. It
   // feeds the button and the queue.
@@ -297,6 +310,7 @@ export function createPackagesStore(
     procesarEventoCola,
     cargarExclusiones,
     toggleExcluded,
+    excluyendoAhora,
     isUpdating,
     hasError,
     detalleFallo,

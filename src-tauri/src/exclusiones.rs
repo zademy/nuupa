@@ -43,6 +43,23 @@ pub fn guardar(dir: &Path, mapa: &Mapa) -> std::io::Result<()> {
     fs::rename(&temporal, &destino)
 }
 
+/// Excludes one package for one gestor (#14): the granular op the UI
+/// asks for — idempotent, repeating it never duplicates.
+pub fn excluir(mapa: &mut Mapa, gestor: &str, paquete: &str) {
+    let lista = mapa.entry(gestor.to_string()).or_default();
+    if !lista.iter().any(|n| n == paquete) {
+        lista.push(paquete.to_string());
+    }
+}
+
+/// Removes one package's exclusion — idempotent: an absent package (or an
+/// unknown gestor) is a no-op.
+pub fn quitar(mapa: &mut Mapa, gestor: &str, paquete: &str) {
+    if let Some(lista) = mapa.get_mut(gestor) {
+        lista.retain(|n| n != paquete);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +148,26 @@ mod tests {
         let (mapa, era_legado) = cargar(dir.path());
         assert!(mapa.is_empty());
         assert!(!era_legado); // corrupt does not trigger migration: starts clean
+    }
+
+    #[test]
+    fn excluir_es_idempotente_y_por_gestor() {
+        let mut mapa = Mapa::new();
+        excluir(&mut mapa, "npm", "hunkdiff");
+        excluir(&mut mapa, "npm", "hunkdiff"); // repeated: no duplicate
+        excluir(&mut mapa, "pnpm", "hunkdiff"); // same name, other gestor
+        assert_eq!(mapa.get("npm"), Some(&vec!["hunkdiff".to_string()]));
+        assert_eq!(mapa.get("pnpm"), Some(&vec!["hunkdiff".to_string()]));
+    }
+
+    #[test]
+    fn quitar_es_idempotente_y_no_toca_a_los_demas() {
+        let mut mapa = Mapa::new();
+        excluir(&mut mapa, "npm", "hunkdiff");
+        excluir(&mut mapa, "npm", "context-mode");
+        quitar(&mut mapa, "npm", "hunkdiff");
+        quitar(&mut mapa, "npm", "hunkdiff"); // already absent: fine
+        quitar(&mut mapa, "bun", "cualquiera"); // unknown gestor: fine
+        assert_eq!(mapa.get("npm"), Some(&vec!["context-mode".to_string()]));
     }
 }

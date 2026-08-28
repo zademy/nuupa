@@ -121,9 +121,20 @@ fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<Vec<String>, String> 
     Ok(mapa.get(gestor).cloned().unwrap_or_default())
 }
 
-fn nucleo_set_excluded(dir: &Path, gestor: &str, nombres: Vec<String>) -> Result<(), String> {
+/// Excludes ONE package for ONE gestor (#14): the backend is the single
+/// writer, so concurrent toggles are idempotent granular ops — never a
+/// full-list replace that can lose a neighbor's exclusion.
+fn nucleo_excluir(dir: &Path, gestor: &str, paquete: &str) -> Result<(), String> {
     let (mut mapa, _) = exclusiones::cargar(dir);
-    mapa.insert(gestor.to_string(), nombres);
+    exclusiones::excluir(&mut mapa, gestor, paquete);
+    exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
+}
+
+/// Removes ONE package's exclusion. Idempotent; a legacy file migrates to
+/// the map format on the way (guardar always writes the map).
+fn nucleo_quitar(dir: &Path, gestor: &str, paquete: &str) -> Result<(), String> {
+    let (mut mapa, _) = exclusiones::cargar(dir);
+    exclusiones::quitar(&mut mapa, gestor, paquete);
     exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
 }
 
@@ -198,14 +209,26 @@ fn get_excluded(gestor: String, estado: tauri::State<Contexto>) -> Result<Vec<St
     nucleo_get_excluded(&estado.dir_config, &gestor)
 }
 
+/// Excludes one package from "Update all" in its gestor (#14).
 #[tauri::command]
-fn set_excluded(
+fn excluir_paquete(
     gestor: String,
-    nombres: Vec<String>,
+    paquete: String,
     estado: tauri::State<Contexto>,
 ) -> Result<(), String> {
     validar_gestor(&gestor)?;
-    nucleo_set_excluded(&estado.dir_config, &gestor, nombres)
+    nucleo_excluir(&estado.dir_config, &gestor, &paquete)
+}
+
+/// Removes one package's exclusion in its gestor (#14).
+#[tauri::command]
+fn quitar_exclusion(
+    gestor: String,
+    paquete: String,
+    estado: tauri::State<Contexto>,
+) -> Result<(), String> {
+    validar_gestor(&gestor)?;
+    nucleo_quitar(&estado.dir_config, &gestor, &paquete)
 }
 
 /// "Update all": sequential queue in Rust. Progress via `pm-cola`
@@ -318,7 +341,8 @@ pub fn run() {
             list_globals,
             update_package,
             get_excluded,
-            set_excluded,
+            excluir_paquete,
+            quitar_exclusion,
             gestores_instalados,
             actualizar_todo,
             detener_actualizar_todo,
@@ -408,24 +432,27 @@ mod tests {
     // ---- exclusions through their core ----
 
     #[test]
-    fn exclusiones_roundtrip_por_gestor_y_migracion_legada_una_vez() {
+    fn exclusiones_granulares_roundtrip_por_gestor_y_migracion_legada() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("exclusiones.json"), r#"["hunkdiff"]"#).unwrap();
-        // first read: legacy → migrated and returned as npm's
+        // legacy → the first read migrates once, as npm's
         assert_eq!(
             nucleo_get_excluded(dir.path(), "npm").unwrap(),
             ["hunkdiff"]
         );
-        // the file already rewritten in map format
         assert_eq!(
             nucleo_get_excluded(dir.path(), "pnpm").unwrap(),
             Vec::<String>::new()
         );
-        nucleo_set_excluded(dir.path(), "pnpm", vec!["cowsay".into()]).unwrap();
+        // granular, idempotent, per (gestor, paquete)
+        nucleo_excluir(dir.path(), "pnpm", "cowsay").unwrap();
+        nucleo_excluir(dir.path(), "pnpm", "cowsay").unwrap(); // no duplicate
+        nucleo_quitar(dir.path(), "npm", "hunkdiff").unwrap();
+        nucleo_quitar(dir.path(), "npm", "hunkdiff").unwrap(); // absent: fine
         assert_eq!(nucleo_get_excluded(dir.path(), "pnpm").unwrap(), ["cowsay"]);
         assert_eq!(
             nucleo_get_excluded(dir.path(), "npm").unwrap(),
-            ["hunkdiff"]
+            Vec::<String>::new()
         );
     }
 

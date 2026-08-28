@@ -239,7 +239,7 @@ describe("store de paquetes globales", () => {
       if (args?.gestor !== "pnpm") throw new Error(`wrong manager in ${cmd}`);
       if (cmd === "list_globals") return SNAPSHOT;
       if (cmd === "get_excluded") return [];
-      if (cmd === "set_excluded") return {};
+      if (cmd === "excluir_paquete") return {};
       if (cmd === "update_package") return { success: true };
     }, "pnpm");
     await store.cargarExclusiones();
@@ -251,7 +251,7 @@ describe("store de paquetes globales", () => {
       "list_globals",
       "update_package",
       "list_globals", // refresh after the successful update
-      "set_excluded",
+      "excluir_paquete",
     ]);
   });
 
@@ -564,21 +564,65 @@ describe("store de paquetes globales", () => {
     expect(store.queue.summary.detenida).toBe(true); // the backend confirms
   });
 
-  it("toggleExcluded persiste la lista completa por ambos lados", async () => {
-    const guardado = [];
+  it("toggleExcluded usa comandos granulares y aplica lo confirmado", async () => {
+    const comandos = [];
     const store = createPackagesStore(async (cmd, args) => {
       if (cmd === "get_excluded") return ["context-mode"];
-      if (cmd === "set_excluded") {
-        guardado.push(args.nombres);
+      if (cmd === "excluir_paquete" || cmd === "quitar_exclusion") {
+        comandos.push([cmd, args.paquete]);
         return {};
       }
     });
     await store.cargarExclusiones();
-    store.toggleExcluded("hunkdiff"); // adds
-    store.toggleExcluded("context-mode"); // removes
+    await store.toggleExcluded("hunkdiff"); // adds
+    await store.toggleExcluded("context-mode"); // removes
     expect(store.isExcluded("hunkdiff")).toBe(true);
     expect(store.isExcluded("context-mode")).toBe(false);
-    expect(guardado).toEqual([["context-mode", "hunkdiff"], ["hunkdiff"]]);
+    expect(comandos).toEqual([
+      ["excluir_paquete", "hunkdiff"],
+      ["quitar_exclusion", "context-mode"],
+    ]);
+  });
+
+  it("dos toggles en paquetes distintos con respuestas invertidas: ambos reflejados", async () => {
+    // The original race: full-list saves resolving in inverted order lost
+    // one exclusion. Granular ops cannot.
+    const pendientes = [];
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "get_excluded") return [];
+      if (cmd === "excluir_paquete")
+        return new Promise((r) => pendientes.push(r));
+    });
+    await store.cargarExclusiones();
+    const t1 = store.toggleExcluded("hunkdiff");
+    const t2 = store.toggleExcluded("context-mode");
+    expect(store.excluyendoAhora("hunkdiff")).toBe(true); // in flight
+    pendientes[1]({}); // the second confirms FIRST (inverted)
+    await t2;
+    pendientes[0]({}); // the first confirms LAST: still applies
+    await t1;
+    expect(store.isExcluded("hunkdiff")).toBe(true);
+    expect(store.isExcluded("context-mode")).toBe(true);
+  });
+
+  it("un segundo clic en el mismo paquete en vuelo es ignorado", async () => {
+    let resolver;
+    const comandos = [];
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "get_excluded") return [];
+      if (cmd === "excluir_paquete") {
+        comandos.push(cmd);
+        return new Promise((r) => (resolver = r));
+      }
+    });
+    await store.cargarExclusiones();
+    const t1 = store.toggleExcluded("hunkdiff");
+    await store.toggleExcluded("hunkdiff"); // in flight: no-op
+    expect(comandos).toEqual(["excluir_paquete"]);
+    resolver({});
+    await t1;
+    expect(store.isExcluded("hunkdiff")).toBe(true);
+    expect(store.excluyendoAhora("hunkdiff")).toBe(false);
   });
 
   it("un excluido desactualizado desactiva 'Actualizar todo' si es el único", async () => {
@@ -598,14 +642,14 @@ describe("store de paquetes globales", () => {
     expect(store.hayDesactualizados.value).toBe(false);
   });
 
-  it("toggleExcluded revierte el estado si falla el guardado", async () => {
+  it("un fallo del guardado no cambia el estado y queda en el log", async () => {
     const store = createPackagesStore(async (cmd) => {
       if (cmd === "get_excluded") return [];
-      if (cmd === "set_excluded") throw "disk full";
+      if (cmd === "excluir_paquete") throw "disk full";
     });
     await store.cargarExclusiones();
     await store.toggleExcluded("hunkdiff");
-    expect(store.isExcluded("hunkdiff")).toBe(false); // reverted
+    expect(store.isExcluded("hunkdiff")).toBe(false); // nothing was applied
     expect(store.logs.value.some((l) => l.includes("exclusions"))).toBe(true);
   });
 

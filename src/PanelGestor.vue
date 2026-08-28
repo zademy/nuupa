@@ -28,6 +28,7 @@ const {
   procesarEventoCola,
   cargarExclusiones,
   toggleExcluded,
+  excluyendoAhora,
   isUpdating,
   hasError,
   detalleFallo,
@@ -230,7 +231,10 @@ onUnmounted(() => {
                   <button
                     class="excluir"
                     :class="{ activo: isExcluded(p.name) }"
-                    :disabled="!p.outdated && !isExcluded(p.name)"
+                    :disabled="
+                      (!p.outdated && !isExcluded(p.name)) ||
+                      excluyendoAhora(p.name)
+                    "
                     :title="
                       isExcluded(p.name) ? t('quitarExclusion') : t('excluir')
                     "
