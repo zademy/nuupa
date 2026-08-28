@@ -279,6 +279,14 @@ pub fn correr_streaming(
     // receive the app's terminal signals.
     #[cfg(unix)]
     cmd.process_group(0);
+    // Windows: the commands are the app's business, not the user's — no
+    // console window flashing on every gestor run (#23).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

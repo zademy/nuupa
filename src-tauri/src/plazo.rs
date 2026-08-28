@@ -86,10 +86,14 @@ pub(crate) fn finalizar(hijo: &Mutex<std::process::Child>, grace: Duration) -> b
     {
         // Windows has no Unix signals and the only std termination hits
         // the direct child alone: the shim's grandchildren keep the pipe
-        // open and the app stays hung. `taskkill /T /F` kills the tree.
+        // open and the app stays hung. `taskkill /T /F` kills the tree —
+        // quietly too (#23: no console window when a deadline/Stop fires).
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let pid = hijo.id().to_string();
         let _ = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid])
+            .creation_flags(CREATE_NO_WINDOW)
             .status();
         let _ = hijo.wait();
         true
