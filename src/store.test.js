@@ -560,4 +560,27 @@ describe("store de paquetes globales", () => {
     expect(store.queue.summary.detenidos).toBe(1);
     expect(store.logs.value.some((l) => l.includes("was stopped"))).toBe(true);
   });
+
+  it("abandonarCola (desmonte) pide el alto suave sin marcar deteniendo", async () => {
+    const llamadas = [];
+    let resolver;
+    const store = createPackagesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "actualizar_todo") return new Promise((r) => (resolver = r));
+      if (cmd === "abandonar_actualizar_todo") return {};
+    });
+    await store.refresh();
+    const cola = store.updateAll();
+    store.abandonarCola();
+    expect(llamadas).toContain("abandonar_actualizar_todo");
+    // graceful: no "stopping" feedback (the panel is going away)
+    expect(store.queue.stopped).toBe(false);
+    resolver({
+      resumen: { total: 2, ok: 1, failed: 0, detenidos: 0, detenida: true },
+      snapshot: SNAPSHOT,
+    });
+    await cola;
+    expect(store.queue.active).toBe(false);
+  });
 });

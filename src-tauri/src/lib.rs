@@ -108,7 +108,7 @@ fn correr_update(
 ) -> Result<UpdateOutcome, String> {
     let runner = (def.runner)().map_err(|e| e.to_string())?;
     // An individual update has no Stop: a flag that never fires.
-    let sin_parar = Arc::new(AtomicBool::new(false));
+    let sin_parar = kernel::sin_parar();
     kernel::instalar(runner.as_ref(), def.verbo, name, on_line, &sin_parar)
         .map_err(|e| e.to_string())
 }
@@ -134,9 +134,13 @@ fn nucleo_set_excluded(dir: &Path, gestor: &str, nombres: Vec<String>) -> Result
 /// Command dependencies, resolved once at startup.
 struct Contexto {
     dir_config: PathBuf,
-    /// The "Stop" flag: shared with the active queue. Only one queue at
-    /// a time makes sense (panels stop theirs when unmounted).
+    /// Stop (#16): the queue's in-flight package is CUT. Only one queue
+    /// at a time makes sense.
     parar: Arc<AtomicBool>,
+    /// The panel going away: the in-flight package FINISHES (cutting an
+    /// npm install mid-write leaves it broken), the next ones never
+    /// start.
+    suave: Arc<AtomicBool>,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -228,8 +232,9 @@ async fn actualizar_todo(
     let def = def_gestor_en(GESTORES, &gestor)?;
     let dir = estado.dir_config.clone();
     let parar = estado.parar.clone();
+    let suave = estado.suave.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (resumen, snapshot) = cola::correr(def, &dir, &parar, &mut |ev| match ev {
+        let (resumen, snapshot) = cola::correr(def, &dir, &parar, &suave, &mut |ev| match ev {
             EventoCola::Linea { paquete, linea } => {
                 let _ = app.emit(
                     "pm-output",
@@ -294,6 +299,13 @@ fn detener_actualizar_todo(estado: tauri::State<Contexto>) {
     estado.parar.store(true, Ordering::Relaxed);
 }
 
+/// The panel went away: the in-flight package FINISHES and the pending
+/// ones never start — nothing is cut.
+#[tauri::command]
+fn abandonar_actualizar_todo(estado: tauri::State<Contexto>) {
+    estado.suave.store(true, Ordering::Relaxed);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -306,6 +318,7 @@ pub fn run() {
             app.manage(Contexto {
                 dir_config,
                 parar: Arc::new(AtomicBool::new(false)),
+                suave: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -316,7 +329,8 @@ pub fn run() {
             set_excluded,
             gestores_instalados,
             actualizar_todo,
-            detener_actualizar_todo
+            detener_actualizar_todo,
+            abandonar_actualizar_todo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

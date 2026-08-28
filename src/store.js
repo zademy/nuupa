@@ -19,6 +19,18 @@ export function crearLog(capacidad = 500) {
 }
 
 /**
+ * Wire values of the queue result's reason (`Motivo` in Rust, serialized
+ * lowercase; "plazo" per the glossary — never "timeout"). Single source
+ * for store and tests.
+ */
+export const MOTIVO = {
+  OK: "ok",
+  FALLO: "fallo",
+  PLAZO: "plazo",
+  DETENIDO: "detenido",
+};
+
+/**
  * State of ONE manager's global package table.
  *
  * Testing seam B: injectable `invokeFn` — tests pass a fake invoke and
@@ -164,7 +176,7 @@ export function createPackagesStore(
     active: false,
     current: null,
     stopped: false,
-    summary: null, // { total, ok, failed, detenida }
+    summary: null, // { total, ok, failed, detenidos, detenida }
   });
 
   async function updateAll() {
@@ -200,26 +212,24 @@ export function createPackagesStore(
 
   // `pm-cola` event of THIS manager (starts/result): moves the table row.
   // Output lines arrive via `pm-output` straight to the shared log
-  // (App.vue, always mounted). A timeout carries its own message — it is
-  // not a generic failure (#15).
+  // (App.vue, always mounted). A deadline or a stop carries its own
+  // message — neither is a generic failure (#15, #16).
   function procesarEventoCola(e) {
     if (e.gestor !== gestor) return;
     if (e.tipo === "empieza") {
       queue.current = e.paquete;
       status[e.paquete] = ESTADO.ACTUALIZANDO;
     } else if (e.tipo === "resultado") {
-      if (e.motivo === "detenido") {
-        // A user decision is not an error: the row goes back to normal
-        // and the log says it was stopped.
+      if (e.motivo === MOTIVO.OK || e.motivo === MOTIVO.DETENIDO) {
+        // OK clears the row; a stop is a user decision, not an error —
+        // the row goes back to normal and the log says it was stopped.
         delete status[e.paquete];
         delete detalle[e.paquete];
-        appendLog(`${gestor}/${e.paquete}: ${t("actualizacionDetenida")}`);
-      } else if (e.motivo === "ok") {
-        delete status[e.paquete];
-        delete detalle[e.paquete];
+        if (e.motivo === MOTIVO.DETENIDO)
+          appendLog(`${gestor}/${e.paquete}: ${t("actualizacionDetenida")}`);
       } else {
         const prefijo =
-          e.motivo === "plazo"
+          e.motivo === MOTIVO.PLAZO
             ? t("actualizacionPlazo")
             : t("actualizacionFallo");
         markFailed(e.paquete, `${prefijo}\n${e.salida ?? ""}`.trim());
@@ -231,6 +241,14 @@ export function createPackagesStore(
     if (!queue.active) return;
     queue.stopped = true;
     invokeFn("detener_actualizar_todo").catch(() => {});
+  }
+
+  // The panel went away: graceful — the in-flight update finishes, the
+  // next ones never start, nothing is cut. No UI feedback: the panel is
+  // being destroyed.
+  function abandonarCola() {
+    if (!queue.active) return;
+    invokeFn("abandonar_actualizar_todo").catch(() => {});
   }
 
   // Packages filtered by the search (substring, case-insensitive; scoped
@@ -253,6 +271,7 @@ export function createPackagesStore(
     update,
     updateAll,
     stopAll,
+    abandonarCola,
     procesarEventoCola,
     cargarExclusiones,
     toggleExcluded,

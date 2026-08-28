@@ -70,16 +70,20 @@ fn excluidos_de(dir: &Path, gestor: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Runs the whole queue. `parar` is checked before each package and —
-/// via the engine's watchdog — CUTS the in-flight one (#16). It is reset
-/// at the start: every new queue starts clean.
+/// Runs the whole queue. `parar` is Stop (#16): checked before each
+/// package AND carried to the engine's watchdog, which CUTS the in-flight
+/// one. `suave` is the panel going away: the in-flight package FINISHES
+/// (an `npm i -g` cut mid-write leaves a broken install) and the next
+/// ones never start. Both reset at the start: every queue starts clean.
 pub fn correr(
     def: &DefinicionGestor,
     dir_config: &Path,
     parar: &Arc<AtomicBool>,
+    suave: &Arc<AtomicBool>,
     emitir: &mut dyn FnMut(&EventoCola),
 ) -> Result<(Resumen, Snapshot), String> {
     parar.store(false, Ordering::Relaxed);
+    suave.store(false, Ordering::Relaxed);
     let runner = (def.runner)().map_err(|e| e.to_string())?;
 
     // The queue is built on the real state at start: outdated, not
@@ -95,7 +99,7 @@ pub fn correr(
     let (mut ok, mut failed, mut detenidos, mut saltados) = (0usize, 0usize, 0usize, 0usize);
 
     for name in &pendientes {
-        if parar.load(Ordering::Relaxed) {
+        if parar.load(Ordering::Relaxed) || suave.load(Ordering::Relaxed) {
             break;
         }
         // Re-read from disk: an exclusion marked mid-queue skips the
@@ -120,8 +124,9 @@ pub fn correr(
             parar,
         );
         // The engine's error kind carries WHY an install died: TimedOut
-        // is the deadline winning (#15), Interrupted is Stop cutting it
-        // mid-flight (#16).
+        // is the deadline winning (#15); the engine's own Stop error
+        // (matched by message — a genuine EINTR from the pipe must not
+        // pass as a user decision) is Stop cutting it mid-flight (#16).
         let (salida, motivo) = match resultado {
             Ok(out) => (
                 out.output,
@@ -135,7 +140,11 @@ pub fn correr(
                 e.to_string(),
                 match e.kind() {
                     std::io::ErrorKind::TimedOut => Motivo::PlazoVencido,
-                    std::io::ErrorKind::Interrupted => Motivo::Detenido,
+                    std::io::ErrorKind::Interrupted
+                        if e.to_string().starts_with("detenido a pedido") =>
+                    {
+                        Motivo::Detenido
+                    }
                     _ => Motivo::Fallo,
                 },
             ),
@@ -203,8 +212,11 @@ mod tests {
     }
 
     fn cola_con(def: &DefinicionGestor, dir: &Path) -> (Resumen, Snapshot) {
-        let parar = Arc::new(AtomicBool::new(false));
-        correr(def, dir, &parar, &mut |_| {}).unwrap()
+        let (parar, suave) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        correr(def, dir, &parar, &suave, &mut |_| {}).unwrap()
     }
 
     #[test]
@@ -289,10 +301,13 @@ mod tests {
     #[test]
     fn detener_finaliza_el_en_curso_como_detenido_y_no_toca_los_pendientes() {
         let dir = tempfile::tempdir().unwrap();
-        let parar = Arc::new(AtomicBool::new(false));
+        let (parar, suave) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
         let def = def_de_prueba();
         let mut eventos = Vec::new();
-        let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| match ev {
+        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| match ev {
             EventoCola::Empieza { paquete } => {
                 // Stop requested AS the first package starts: the engine
                 // cuts it mid-flight (the fake runner is faithful to
@@ -323,6 +338,74 @@ mod tests {
                 ok: 0,
                 failed: 0,
                 detenidos: 1,
+                detenida: true
+            }
+        );
+    }
+
+    #[test]
+    fn detener_entre_paquetes_deja_a_los_pendientes_intactos() {
+        // Stop AFTER the first result, BEFORE the second start: nothing
+        // was in flight, so nothing gets cut — same as it always was.
+        let dir = tempfile::tempdir().unwrap();
+        let (parar, suave) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let def = def_de_prueba();
+        let mut actualizados = Vec::new();
+        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| {
+            if let EventoCola::Resultado(_) = ev {
+                parar.store(true, Ordering::Relaxed);
+            }
+            if let EventoCola::Empieza { paquete } = ev {
+                actualizados.push(paquete.clone());
+            }
+        })
+        .unwrap();
+        assert_eq!(actualizados, vec!["context-mode"]);
+        assert_eq!(
+            resumen,
+            Resumen {
+                total: 2,
+                ok: 1,
+                failed: 0,
+                detenidos: 0,
+                detenida: true
+            }
+        );
+    }
+
+    #[test]
+    fn abandonar_deja_terminar_el_actual_y_no_empieza_el_siguiente() {
+        // The panel going away (`suave`): the in-flight package FINISHES —
+        // cutting an npm install mid-write leaves it broken — and the
+        // next ones never start.
+        let dir = tempfile::tempdir().unwrap();
+        let (parar, suave) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let def = def_de_prueba();
+        let mut actualizados = Vec::new();
+        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| {
+            if let EventoCola::Empieza { paquete } = ev {
+                if paquete == "context-mode" {
+                    suave.store(true, Ordering::Relaxed);
+                }
+                actualizados.push(paquete.clone());
+            }
+        })
+        .unwrap();
+        // the first one ran to completion; the second never started
+        assert_eq!(actualizados, vec!["context-mode"]);
+        assert_eq!(
+            resumen,
+            Resumen {
+                total: 2,
+                ok: 1,
+                failed: 0,
+                detenidos: 0,
                 detenida: true
             }
         );
@@ -447,8 +530,9 @@ mod tests {
             ..def_de_prueba()
         };
         let parar = Arc::new(AtomicBool::new(false));
+        let suave = Arc::new(AtomicBool::new(false));
         let mut resultados = Vec::new();
-        let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| {
+        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| {
             if let EventoCola::Resultado(r) = ev {
                 resultados.push((r.paquete.clone(), r.motivo));
             }

@@ -24,6 +24,7 @@ const {
   update,
   updateAll,
   stopAll,
+  abandonarCola,
   procesarEventoCola,
   cargarExclusiones,
   toggleExcluded,
@@ -62,12 +63,13 @@ onMounted(async () => {
   );
 });
 
-// Leaving the panel stops its queue: the backend CUTS the in-flight
-// package (#16) and the pending ones never start — an orphan queue never
-// remains, without a log or Stop button, on another tab.
+// Leaving the panel winds its queue down gracefully: the in-flight
+// update FINISHES (cutting an npm install mid-write leaves it broken)
+// and the pending ones never start — no orphan queue remains on another
+// tab. Only the Stop button cuts (#16).
 onUnmounted(() => {
   desuscribirCola?.();
-  stopAll();
+  abandonarCola();
 });
 </script>
 
@@ -96,7 +98,9 @@ onUnmounted(() => {
           v-if="queue.active"
           class="detener solo-icono"
           :disabled="queue.stopped"
-          :title="queue.stopped ? t('deteniendoTras') : t('detenerTras')"
+          :title="
+            queue.stopped ? t('deteniendoColaTitulo') : t('detenerColaTitulo')
+          "
           :aria-label="t('detenerCola')"
           @click="stopAll"
         >

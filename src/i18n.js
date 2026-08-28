@@ -25,8 +25,8 @@ export const MENSAJES = {
     actualizarTodo: "Update all",
     actualizarTodoTitulo:
       "Update all non-excluded outdated packages, one at a time",
-    detenerTras: "Stop the queue (cuts the in-flight update)",
-    deteniendoTras: "Stopping the in-flight update…",
+    detenerColaTitulo: "Stop the queue (cuts the in-flight update)",
+    deteniendoColaTitulo: "Stopping the in-flight update…",
     detenerCola: "Stop queue",
     refrescarBreve: "Refresh",
     refrescando: "Refreshing…",
@@ -82,8 +82,8 @@ export const MENSAJES = {
     actualizarTodo: "Actualizar todo",
     actualizarTodoTitulo:
       "Actualizar, de a uno, todos los desactualizados no excluidos",
-    detenerTras: "Detener la cola (corta la actualización en curso)",
-    deteniendoTras: "Deteniendo la actualización en curso…",
+    detenerColaTitulo: "Detener la cola (corta la actualización en curso)",
+    deteniendoColaTitulo: "Deteniendo la actualización en curso…",
     detenerCola: "Detener cola",
     refrescarBreve: "Refrescar",
     refrescando: "Refrescando…",

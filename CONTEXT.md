@@ -37,6 +37,10 @@ _Avoid_: upgradear, refrescar
 Cola secuencial que actualiza, de a uno, los paquetes desactualizados no excluidos.
 _Avoid_: actualizar en lote, bulk
 
+**Detenido**:
+Paquete cuya actualización fue cortada a pedido del usuario (Detener): no es un fallo; la fila vuelve a la normalidad y el resumen lo cuenta aparte de los fallidos.
+_Avoid_: cancelado, abortado, fallido
+
 **Excluido**:
 Paquete marcado para que "Actualizar todo" lo salte en SU gestor; la actualización individual sigue disponible. Persiste entre sesiones, por (gestor, paquete).
 _Avoid_: bloqueado, ignorado, pausado

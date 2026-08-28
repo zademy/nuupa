@@ -95,8 +95,8 @@ pub trait Runner {
     /// Like `run`, but streams each output line to `on_line` as it
     /// arrives. By default it runs `run` and emits the already-complete
     /// lines — the real runner overrides it with pipes. `parar` is Stop
-    /// (#16): a set flag cuts the install exactly like the real engine
-    /// would (the default is faithful to it).
+    /// (#16): faithful for the flag-already-set case — an immediate
+    /// Interrupted, exactly what the engine returns when Stop won.
     fn run_streaming(
         &self,
         args: &[&str],
@@ -218,11 +218,15 @@ pub fn instalar(
     })
 }
 
+/// A Stop flag that never fires: queries and individual updates.
+pub fn sin_parar() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
+
 /// Runs a command collecting all of its output (no streaming), under a
 /// deadline. Queries are never stopped: no Stop flag travels here.
 pub fn correr(cmd: std::process::Command, plazo: Plazo) -> std::io::Result<RunnerOutput> {
-    let nada = Arc::new(AtomicBool::new(false));
-    correr_streaming(cmd, &mut |_| {}, plazo, &nada)
+    correr_streaming(cmd, &mut |_| {}, plazo, &sin_parar())
 }
 
 /// A gestor QUERY (ls/outdated/--version) under the query deadline: the
@@ -606,11 +610,6 @@ mod tests {
             .respuesta("ls", LS_JSON, 0)
             .respuesta("outdated", OUTDATED_JSON, 0)
             .respuesta("install", "added 1 package in 2s", 0)
-    }
-
-    /// A Stop flag that never fires: individual installs and probes.
-    fn sin_parar() -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(false))
     }
 
     #[test]
