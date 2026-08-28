@@ -133,7 +133,7 @@ mod tests {
         let mut mapa = Mapa::new();
         mapa.insert("npm".to_string(), vec!["hunkdiff".to_string()]);
         mapa.insert("pnpm".to_string(), vec!["otro".to_string()]);
-        // simulates set_excluded("pnpm", [])
+        // simulates removing pnpm's last exclusion (an empty list)
         mapa.insert("pnpm".to_string(), vec![]);
         guardar(dir.path(), &mapa).unwrap();
         let (cargado, _) = cargar(dir.path());

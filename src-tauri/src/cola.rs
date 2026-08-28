@@ -168,7 +168,8 @@ fn correr_activa(
             break;
         }
         // Re-read from disk: an exclusion marked mid-queue skips the
-        // already-enqueued package (set_excluded writes here).
+        // already-enqueued package (the granular exclusion commands write
+        // here).
         if excluidos_de(dir_config, def.nombre).contains(name) {
             saltados += 1;
             continue;

@@ -17,6 +17,7 @@ use cola::{EventoCola, Motivo, ResultadoCola, Resumen};
 use kernel::{Runner, Snapshot, UpdateOutcome};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 /// A supported manager: visible command, install verb and how its
@@ -123,8 +124,16 @@ fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<Vec<String>, String> 
 
 /// Excludes ONE package for ONE gestor (#14): the backend is the single
 /// writer, so concurrent toggles are idempotent granular ops — never a
-/// full-list replace that can lose a neighbor's exclusion.
-fn nucleo_excluir(dir: &Path, gestor: &str, paquete: &str) -> Result<(), String> {
+/// full-list replace that can lose a neighbor's exclusion. The lock
+/// serializes the file's read-modify-write: it must NOT depend on Tauri
+/// running sync commands on one thread.
+fn nucleo_excluir(
+    candado: &Mutex<()>,
+    dir: &Path,
+    gestor: &str,
+    paquete: &str,
+) -> Result<(), String> {
+    let _candado = candado.lock().unwrap();
     let (mut mapa, _) = exclusiones::cargar(dir);
     exclusiones::excluir(&mut mapa, gestor, paquete);
     exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
@@ -132,7 +141,13 @@ fn nucleo_excluir(dir: &Path, gestor: &str, paquete: &str) -> Result<(), String>
 
 /// Removes ONE package's exclusion. Idempotent; a legacy file migrates to
 /// the map format on the way (guardar always writes the map).
-fn nucleo_quitar(dir: &Path, gestor: &str, paquete: &str) -> Result<(), String> {
+fn nucleo_quitar(
+    candado: &Mutex<()>,
+    dir: &Path,
+    gestor: &str,
+    paquete: &str,
+) -> Result<(), String> {
+    let _candado = candado.lock().unwrap();
     let (mut mapa, _) = exclusiones::cargar(dir);
     exclusiones::quitar(&mut mapa, gestor, paquete);
     exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
@@ -146,6 +161,10 @@ struct Contexto {
     /// The queue's shared flags: Stop (cuts, #16), graceful abandonment
     /// (the panel went away) and the ONE-active-queue guard (#12).
     banderas: cola::Banderas,
+    /// Serializes the exclusions file's read-modify-write (#14): two
+    /// granular commands (even from different gestores' stores) must
+    /// never interleave cargar/guardar — a lost update loses an exclusion.
+    candado_exclusiones: Arc<Mutex<()>>,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -209,7 +228,7 @@ fn get_excluded(gestor: String, estado: tauri::State<Contexto>) -> Result<Vec<St
     nucleo_get_excluded(&estado.dir_config, &gestor)
 }
 
-/// Excludes one package from "Update all" in its gestor (#14).
+/// Excludes one package from Actualizar todo in its gestor (#14).
 #[tauri::command]
 fn excluir_paquete(
     gestor: String,
@@ -217,7 +236,13 @@ fn excluir_paquete(
     estado: tauri::State<Contexto>,
 ) -> Result<(), String> {
     validar_gestor(&gestor)?;
-    nucleo_excluir(&estado.dir_config, &gestor, &paquete)
+    kernel::validar_nombre(&paquete).map_err(|e| e.to_string())?;
+    nucleo_excluir(
+        &estado.candado_exclusiones,
+        &estado.dir_config,
+        &gestor,
+        &paquete,
+    )
 }
 
 /// Removes one package's exclusion in its gestor (#14).
@@ -228,7 +253,13 @@ fn quitar_exclusion(
     estado: tauri::State<Contexto>,
 ) -> Result<(), String> {
     validar_gestor(&gestor)?;
-    nucleo_quitar(&estado.dir_config, &gestor, &paquete)
+    kernel::validar_nombre(&paquete).map_err(|e| e.to_string())?;
+    nucleo_quitar(
+        &estado.candado_exclusiones,
+        &estado.dir_config,
+        &gestor,
+        &paquete,
+    )
 }
 
 /// "Update all": sequential queue in Rust. Progress via `pm-cola`
@@ -334,6 +365,7 @@ pub fn run() {
             app.manage(Contexto {
                 dir_config,
                 banderas: cola::Banderas::nuevas(),
+                candado_exclusiones: Arc::new(Mutex::new(())),
             });
             Ok(())
         })
@@ -445,10 +477,11 @@ mod tests {
             Vec::<String>::new()
         );
         // granular, idempotent, per (gestor, paquete)
-        nucleo_excluir(dir.path(), "pnpm", "cowsay").unwrap();
-        nucleo_excluir(dir.path(), "pnpm", "cowsay").unwrap(); // no duplicate
-        nucleo_quitar(dir.path(), "npm", "hunkdiff").unwrap();
-        nucleo_quitar(dir.path(), "npm", "hunkdiff").unwrap(); // absent: fine
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "pnpm", "cowsay").unwrap();
+        nucleo_excluir(&candado, dir.path(), "pnpm", "cowsay").unwrap(); // no duplicate
+        nucleo_quitar(&candado, dir.path(), "npm", "hunkdiff").unwrap();
+        nucleo_quitar(&candado, dir.path(), "npm", "hunkdiff").unwrap(); // absent: fine
         assert_eq!(nucleo_get_excluded(dir.path(), "pnpm").unwrap(), ["cowsay"]);
         assert_eq!(
             nucleo_get_excluded(dir.path(), "npm").unwrap(),
