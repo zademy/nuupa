@@ -39,6 +39,9 @@ export function createPackagesStore(
   const search = ref("");
   const ESTADO = { ACTUALIZANDO: "updating", ERROR: "error" };
   const status = reactive({});
+  // Failure detail per package (the row shows it as its tooltip): same
+  // text that markFailed writes to the log.
+  const detalle = reactive({});
   // Log: shared if the app passes one (single history across tabs);
   // own otherwise (tests and isolated use). No duplicated cap: crearLog
   // owns it.
@@ -73,6 +76,7 @@ export function createPackagesStore(
       const res = await invokeFn("update_package", { gestor, name });
       if (res?.success) {
         delete status[name];
+        delete detalle[name];
         if (refrescar) await refresh();
         return true;
       }
@@ -82,18 +86,23 @@ export function createPackagesStore(
       );
       return false;
     } catch (e) {
-      markFailed(name, String(e));
+      // Same shape as the queue path (e.g. an individual timeout): prefix
+      // + raw text, never the bare error.
+      markFailed(name, `${t("actualizacionFallo")}\n${String(e)}`.trim());
       return false;
     }
   }
 
   function markFailed(name, detail) {
     status[name] = ESTADO.ERROR;
+    detalle[name] = detail;
     appendLog(`${gestor}/${name}: ${detail}`);
   }
 
   const isUpdating = (name) => status[name] === ESTADO.ACTUALIZANDO;
   const hasError = (name) => status[name] === ESTADO.ERROR;
+  // The row's tooltip: why THIS package failed (motivo + gestor output).
+  const detalleFallo = (name) => detalle[name];
 
   // Excluded: "Update all" skips them; the individual update stays
   // available. Persisted in the backend (config JSON).
@@ -196,8 +205,10 @@ export function createPackagesStore(
       queue.current = e.paquete;
       status[e.paquete] = ESTADO.ACTUALIZANDO;
     } else if (e.tipo === "resultado") {
-      if (e.exito) delete status[e.paquete];
-      else {
+      if (e.exito) {
+        delete status[e.paquete];
+        delete detalle[e.paquete];
+      } else {
         const prefijo =
           e.motivo === "timeout"
             ? t("actualizacionPlazo")
@@ -238,6 +249,7 @@ export function createPackagesStore(
     toggleExcluded,
     isUpdating,
     hasError,
+    detalleFallo,
     isExcluded,
   };
 }

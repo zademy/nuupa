@@ -29,6 +29,7 @@ const {
   toggleExcluded,
   isUpdating,
   hasError,
+  detalleFallo,
   isExcluded,
 } = createPackagesStore(undefined, props.gestor, props.log);
 
@@ -200,6 +201,7 @@ onUnmounted(() => {
               error: hasError(p.name),
               excluido: isExcluded(p.name),
             }"
+            :title="hasError(p.name) ? detalleFallo(p.name) : undefined"
           >
             <td class="nombre mono">{{ p.name }}</td>
             <td class="version mono">{{ p.installed }}</td>

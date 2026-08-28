@@ -351,6 +351,40 @@ describe("store de paquetes globales", () => {
     ).toBe(true);
   });
 
+  it("el detalle del fallo queda en la fila (tooltip) y se limpia al reintentar con éxito", async () => {
+    const store = createPackagesStore(fakeInvoke());
+    await store.refresh();
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      exito: false,
+      motivo: "timeout",
+      salida: "npm no respondió en 300 s (proceso finalizado)",
+    });
+    expect(store.detalleFallo("hunkdiff")).toContain("did not respond in time");
+    expect(store.detalleFallo("hunkdiff")).toContain("npm no respondió");
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      exito: true,
+    });
+    expect(store.hasError("hunkdiff")).toBe(false);
+    expect(store.detalleFallo("hunkdiff")).toBeUndefined();
+  });
+
+  it("update que lanza excepción usa el prefijo de fallo igual que la cola", async () => {
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "update_package") throw "npm no respondió en 300 s";
+    });
+    await store.refresh();
+    await store.update("context-mode");
+    expect(store.detalleFallo("context-mode")).toContain("the update failed");
+    expect(store.detalleFallo("context-mode")).toContain("npm no respondió");
+  });
+
   it("updateAll con fallo de comando deja el log y refresca", async () => {
     const llamadas = [];
     const store = createPackagesStore(async (cmd) => {
