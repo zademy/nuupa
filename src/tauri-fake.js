@@ -1,8 +1,9 @@
 import { vi } from "vitest";
 
 // Programmable fake of the Tauri bridge for COMPONENT tests (#19): one
-// place, shared by every component test. vi.mock is hoisted above the
-// imports, so the shared state travels inside vi.hoisted.
+// place, shared by every component test. Registered by tests-setup.js
+// (before any test file resolves the real modules). vi.mock is hoisted
+// above the imports, so the shared state travels inside vi.hoisted.
 const puente = vi.hoisted(() => ({
   invocaciones: [],
   respuestas: new Map(),
@@ -33,7 +34,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
-/// The handle over the fake for the tests.
+// The handle over the fake for the tests.
 export const tauri = {
   /** Every invoke the components made, in order. */
   registradas: (cmd) => puente.invocaciones.filter((i) => i.cmd === cmd),

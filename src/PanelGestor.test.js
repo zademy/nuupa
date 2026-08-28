@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-// The fake bridge MUST be imported BEFORE the components: its vi.mock
-// registrations have to run before they resolve the real Tauri modules.
-import { tauri } from "./tauri-fake";
+import { tauri } from "./tauri-fake"; // the mocks register in tests-setup
 import PanelGestor from "./PanelGestor.vue";
 import { crearLog } from "./store";
 
@@ -55,9 +53,10 @@ describe("PanelGestor montado", () => {
     expect(c.get(".statusbar").text()).toContain("npm v11.4.2");
   });
 
-  it("los eventos pm-cola mueven las filas: empieza y resultado", async () => {
+  it("los eventos pm-cola mueven las fila por los cuatro motivos", async () => {
     const c = await montarCargado();
     const fila = filaDe(c, "hunkdiff");
+    // empieza → the row shows the updating state
     tauri.emitir("pm-cola", {
       gestor: "npm",
       tipo: "empieza",
@@ -65,6 +64,7 @@ describe("PanelGestor montado", () => {
     });
     await flushPromises();
     expect(fila.text()).toContain("updating");
+    // fallo → error with the manager's output
     tauri.emitir("pm-cola", {
       gestor: "npm",
       tipo: "resultado",
@@ -74,6 +74,84 @@ describe("PanelGestor montado", () => {
     });
     await flushPromises();
     expect(fila.classes()).toContain("error");
+    // plazo → error with its own message (the row's tooltip)
+    tauri.emitir("pm-cola", {
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    tauri.emitir("pm-cola", {
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      motivo: "plazo",
+      salida: "npm no respondió en 300 s",
+    });
+    await flushPromises();
+    expect(fila.classes()).toContain("error");
+    expect(fila.attributes("title")).toContain("did not respond in time");
+    // detenido → a user decision: the row goes back to normal
+    tauri.emitir("pm-cola", {
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    tauri.emitir("pm-cola", {
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      motivo: "detenido",
+    });
+    await flushPromises();
+    expect(fila.classes()).not.toContain("error");
+    expect(fila.attributes("title")).toBeUndefined();
+  });
+
+  it("quitar la exclusión usa quitar_exclusion y la fila pierde el estado", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: ["hunkdiff"] });
+    tauri.responder("list_globals", SNAPSHOT);
+    tauri.responder("quitar_exclusion", {});
+    const c = montar();
+    await flushPromises();
+    const fila = filaDe(c, "hunkdiff");
+    expect(fila.classes()).toContain("excluido");
+    await fila.get("button.excluir").trigger("click");
+    await flushPromises();
+    expect(tauri.ultima("quitar_exclusion").args).toEqual({
+      gestor: "npm",
+      paquete: "hunkdiff",
+    });
+    expect(fila.classes()).not.toContain("excluido");
+  });
+
+  it("el cambio de gestor abandona la cola saliente y filtra eventos por gestor", async () => {
+    tauri.responder("abandonar_actualizar_todo", {});
+    tauri.responder("actualizar_todo", () => new Promise(() => {})); // hangs
+    const npm = await montarCargado();
+    await npm.get("button.primario").trigger("click");
+    await flushPromises();
+    npm.unmount(); // tab switch: graceful abandonment
+    expect(tauri.registradas("abandonar_actualizar_todo")).toHaveLength(1);
+
+    // the incoming panel only reacts to ITS OWN gestor's events
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    const pnpm = montar("pnpm");
+    await flushPromises();
+    const fila = filaDe(pnpm, "hunkdiff");
+    tauri.emitir("pm-cola", {
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    await flushPromises();
+    expect(fila.text()).not.toContain("updating"); // foreign gestor
+    tauri.emitir("pm-cola", {
+      gestor: "pnpm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    await flushPromises();
+    expect(fila.text()).toContain("updating"); // its own
   });
 
   it("el toggle de Excluido pide el comando granular y se deshabilita solo en esa fila", async () => {

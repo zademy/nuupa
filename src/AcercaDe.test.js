@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-// The fake bridge MUST be imported BEFORE the components (see its file).
-import { tauri } from "./tauri-fake";
+import { tauri } from "./tauri-fake"; // the mocks register in tests-setup
 import AcercaDe from "./AcercaDe.vue";
 
 beforeEach(() => tauri.reiniciar());
