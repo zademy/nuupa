@@ -1,6 +1,6 @@
 [package]
 name = "nuupa"
-version = "0.3.4"
+version = "0.3.5"
 description = "Nuupa — app de escritorio para ver y actualizar los paquetes globales de npm, pnpm y bun"
 license = "AGPL-3.0-or-later"
 authors = ["you"]
