@@ -94,12 +94,18 @@ pub trait Runner {
 
     /// Like `run`, but streams each output line to `on_line` as it
     /// arrives. By default it runs `run` and emits the already-complete
-    /// lines — the real runner overrides it with pipes.
+    /// lines — the real runner overrides it with pipes. `parar` is Stop
+    /// (#16): a set flag cuts the install exactly like the real engine
+    /// would (the default is faithful to it).
     fn run_streaming(
         &self,
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
+        parar: &std::sync::Arc<AtomicBool>,
     ) -> std::io::Result<RunnerOutput> {
+        if parar.load(Ordering::Acquire) {
+            return Err(detenido_a_pedido());
+        }
         let out = self.run(args)?;
         for line in out.stdout.lines().chain(out.stderr.lines()) {
             on_line(line);
@@ -196,10 +202,11 @@ pub fn instalar(
     verbo: &str,
     name: &str,
     on_line: &mut dyn FnMut(&str),
+    parar: &std::sync::Arc<AtomicBool>,
 ) -> std::io::Result<UpdateOutcome> {
     validar_nombre(name)?;
     let spec = format!("{name}@latest");
-    let out = runner.run_streaming(&[verbo, "-g", &spec], on_line)?;
+    let out = runner.run_streaming(&[verbo, "-g", &spec], on_line, parar)?;
     let mut output = out.stdout;
     if !out.stderr.trim().is_empty() {
         output.push('\n');
@@ -212,9 +219,10 @@ pub fn instalar(
 }
 
 /// Runs a command collecting all of its output (no streaming), under a
-/// deadline.
+/// deadline. Queries are never stopped: no Stop flag travels here.
 pub fn correr(cmd: std::process::Command, plazo: Plazo) -> std::io::Result<RunnerOutput> {
-    correr_streaming(cmd, &mut |_| {}, plazo)
+    let nada = Arc::new(AtomicBool::new(false));
+    correr_streaming(cmd, &mut |_| {}, plazo, &nada)
 }
 
 /// A gestor QUERY (ls/outdated/--version) under the query deadline: the
@@ -225,12 +233,30 @@ pub fn correr_consulta(cmd: std::process::Command) -> std::io::Result<RunnerOutp
 }
 
 /// A gestor INSTALLATION under the installation deadline, streaming: the
-/// only way adapters run installs.
+/// only way adapters run installs. `parar` is Stop (#16): it reaches the
+/// watchdog, which escalates the child's termination mid-flight.
 pub fn correr_instalacion(
     cmd: std::process::Command,
     on_line: &mut dyn FnMut(&str),
+    parar: &Arc<AtomicBool>,
 ) -> std::io::Result<RunnerOutput> {
-    correr_streaming(cmd, on_line, PLAZO_INSTALACION)
+    correr_streaming(cmd, on_line, PLAZO_INSTALACION, parar)
+}
+
+/// Why the watchdog escalated the child's termination: the deadline won
+/// or Stop arrived mid-flight (#16).
+#[derive(Debug, Clone, Copy)]
+enum Fin {
+    Plazo,
+    Detenido,
+}
+
+/// The Stop error: the engine cut the child at the user's request.
+fn detenido_a_pedido() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "detenido a pedido (proceso finalizado)",
+    )
 }
 
 /// Runs a command with pipes and streams each stdout line to `on_line` as
@@ -241,6 +267,7 @@ pub fn correr_streaming(
     mut cmd: std::process::Command,
     on_line: &mut dyn FnMut(&str),
     plazo: Plazo,
+    parar: &Arc<AtomicBool>,
 ) -> std::io::Result<RunnerOutput> {
     use std::io::{BufRead, BufReader};
     // Own process group: the escalation can signal the whole family
@@ -266,22 +293,38 @@ pub fn correr_streaming(
         buf
     });
 
-    // The watchdog sleeps the whole `total` unless the child finishes
-    // first (then the channel wakes it up). The child travels in a mutex
-    // because killing it needs `&mut` — the wait below never holds the
-    // lock while blocking.
+    // The watchdog polls: the child finishing first (channel), Stop
+    // (#16) or the deadline — in that order of precedence. The child
+    // travels in a mutex because killing it needs `&mut` — the wait
+    // below never holds the lock while blocking.
     let hijo = Arc::new(Mutex::new(child));
-    let vencio = Arc::new(AtomicBool::new(false));
+    let como_termino = Arc::new(Mutex::new(None::<Fin>));
     let (listo_tx, listo_rx) = mpsc::channel::<()>();
-    let (vigia_hijo, vigia_vencio) = (Arc::clone(&hijo), Arc::clone(&vencio));
+    let (vigia_hijo, vigia_fin) = (Arc::clone(&hijo), Arc::clone(&como_termino));
+    let vigia_parar = Arc::clone(parar);
     let vigia = std::thread::spawn(move || {
-        if listo_rx.recv_timeout(plazo.total).is_ok() {
-            return; // the child finished in time
-        }
-        // Only a child that was still ALIVE at the deadline is a timeout:
-        // one that died on its own right at the boundary is not.
-        if finalizar(&vigia_hijo, plazo.grace) {
-            vigia_vencio.store(true, Ordering::Release);
+        let inicio = std::time::Instant::now();
+        loop {
+            if listo_rx.try_recv().is_ok() {
+                return; // the child finished in time
+            }
+            let fin = if vigia_parar.load(Ordering::Acquire) {
+                Some(Fin::Detenido)
+            } else if inicio.elapsed() >= plazo.total {
+                Some(Fin::Plazo)
+            } else {
+                None
+            };
+            let Some(fin) = fin else {
+                std::thread::sleep(Duration::from_millis(15));
+                continue;
+            };
+            // Only a child that was still ALIVE when the reason fired was
+            // cut: one that died on its own right at the boundary is not.
+            if finalizar(&vigia_hijo, plazo.grace) {
+                *vigia_fin.lock().unwrap() = Some(fin);
+            }
+            return;
         }
     });
 
@@ -314,8 +357,10 @@ pub fn correr_streaming(
         .join()
         .map_err(|_| std::io::Error::other("stderr thread died"))?;
 
-    if vencio.load(Ordering::Acquire) {
-        return Err(plazo_vencido(&cmd, plazo.total));
+    match como_termino.lock().unwrap().take() {
+        Some(Fin::Plazo) => return Err(plazo_vencido(&cmd, plazo.total)),
+        Some(Fin::Detenido) => return Err(detenido_a_pedido()),
+        None => {}
     }
     if let Some(e) = fallo_lectura {
         return Err(e);
@@ -563,6 +608,11 @@ mod tests {
             .respuesta("install", "added 1 package in 2s", 0)
     }
 
+    /// A Stop flag that never fires: individual installs and probes.
+    fn sin_parar() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
     #[test]
     fn parse_outdated_mapea_nombre_a_latest() {
         let map = parse_outdated(OUTDATED_JSON);
@@ -638,9 +688,13 @@ mod tests {
     fn instalar_usa_el_verbo_del_gestor_y_streamea() {
         let runner = runner_npm();
         let mut lineas = Vec::new();
-        let out = instalar(&runner, "install", "hunkdiff", &mut |l| {
-            lineas.push(l.to_string())
-        })
+        let out = instalar(
+            &runner,
+            "install",
+            "hunkdiff",
+            &mut |l| lineas.push(l.to_string()),
+            &sin_parar(),
+        )
         .expect("valid install");
         assert!(runner.se_llamo_a("install -g hunkdiff@latest"));
         assert!(out.success);
@@ -650,7 +704,7 @@ mod tests {
     #[test]
     fn instalar_con_verbo_add_sirve_a_pnpm_y_bun() {
         let runner = FakeRunner::new("10.33.0").respuesta("add", "Done in 1.5s", 0);
-        let out = instalar(&runner, "add", "cowsay", &mut |_| {}).unwrap();
+        let out = instalar(&runner, "add", "cowsay", &mut |_| {}, &sin_parar()).unwrap();
         assert!(out.success);
         assert!(runner.se_llamo_a("add -g cowsay@latest"));
     }
@@ -658,15 +712,15 @@ mod tests {
     #[test]
     fn instalar_fallido_devuelve_success_false() {
         let runner = FakeRunner::new("11.4.2").respuesta("install", "EACCES", 1);
-        let out = instalar(&runner, "install", "hunkdiff", &mut |_| {}).unwrap();
+        let out = instalar(&runner, "install", "hunkdiff", &mut |_| {}, &sin_parar()).unwrap();
         assert!(!out.success);
     }
 
     #[test]
     fn instalar_rechaza_nombres_invalidos() {
         let runner = runner_npm();
-        assert!(instalar(&runner, "install", "", &mut |_| {}).is_err());
-        assert!(instalar(&runner, "install", "--force", &mut |_| {}).is_err());
+        assert!(instalar(&runner, "install", "", &mut |_| {}, &sin_parar()).is_err());
+        assert!(instalar(&runner, "install", "--force", &mut |_| {}, &sin_parar()).is_err());
     }
 
     #[test]
@@ -677,6 +731,7 @@ mod tests {
             "install",
             "@alibaba-group/open-code-review",
             &mut |_| {},
+            &sin_parar(),
         )
         .expect("valid scoped name");
         assert!(out.success);
@@ -844,7 +899,13 @@ mod tests {
             grace: Duration::from_millis(300),
         };
         let mut lineas = Vec::new();
-        let err = correr_streaming(cmd, &mut |l| lineas.push(l.to_string()), plazo).unwrap_err();
+        let err = correr_streaming(
+            cmd,
+            &mut |l| lineas.push(l.to_string()),
+            plazo,
+            &sin_parar(),
+        )
+        .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         // la salida parcial emitida antes del corte llegó al log
         assert_eq!(lineas, vec!["linea1"]);
@@ -871,5 +932,26 @@ mod tests {
         };
         let out = correr(dormilon(1), plazo).unwrap();
         assert_eq!(out.exit_code, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detener_corta_al_proceso_en_curso_en_segundos() {
+        // Stop arrives 80 ms into a `sleep 30`: the watchdog escalates on
+        // the flag, not the deadline, and the cut is Interrupted.
+        let parar = Arc::new(AtomicBool::new(false));
+        let bandera = Arc::clone(&parar);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            bandera.store(true, Ordering::Release);
+        });
+        let inicio = std::time::Instant::now();
+        let err = correr_instalacion(dormilon(30), &mut |_| {}, &parar).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert!(
+            inicio.elapsed() < Duration::from_secs(5),
+            "tardó {:?}",
+            inicio.elapsed()
+        );
     }
 }

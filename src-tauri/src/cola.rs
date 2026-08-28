@@ -6,8 +6,8 @@
 //! * list order, one at a time, a failure does not stop the queue;
 //! * Excluded packages are ALWAYS skipped, even when marked mid-queue
 //!   (exclusions are re-read from disk at every step);
-//! * "Stop" lets the in-flight package finish and does not start the
-//!   next one;
+//! * "Stop" CUTS the in-flight package (#16: same escalation as the
+//!   deadline) and never starts the next one;
 //! * on finish it returns summary + final snapshot (a single refresh).
 
 use crate::kernel::Snapshot;
@@ -16,6 +16,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Queue accounting: what it ran against, how it ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -23,15 +24,17 @@ pub struct Resumen {
     pub total: usize,
     pub ok: usize,
     pub failed: usize,
+    /// Packages CUT mid-flight by Stop (#16): a user decision, not a
+    /// failure.
+    pub detenidos: usize,
     /// Queue left unrun (stopping during the last package leaves nothing
     /// pending; excluded ones met their fate too: being skipped is not
     /// being stopped).
     pub detenida: bool,
 }
 
-/// Why a package's queue result ended the way it did ("detenido" arrives
-/// with a real Stop, #16: today Stop lets the in-flight package finish).
-/// The wire value is the glossary term ("plazo", never "timeout").
+/// Why a package's queue result ended the way it did. The wire value is
+/// the glossary term ("plazo", never "timeout").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Motivo {
@@ -39,23 +42,22 @@ pub enum Motivo {
     Fallo,
     #[serde(rename = "plazo")]
     PlazoVencido,
+    Detenido,
+}
+
+/// A package's final queue result: its output and why it ended.
+pub struct ResultadoCola {
+    pub paquete: String,
+    pub salida: String,
+    pub motivo: Motivo,
 }
 
 /// What the queue reports as it advances. Output lines go to the log
 /// (`pm-output`); starts/result move the table row.
 pub enum EventoCola {
-    Empieza {
-        paquete: String,
-    },
-    Linea {
-        paquete: String,
-        linea: String,
-    },
-    Resultado {
-        paquete: String,
-        salida: String,
-        motivo: Motivo,
-    },
+    Empieza { paquete: String },
+    Linea { paquete: String, linea: String },
+    Resultado(ResultadoCola),
 }
 
 fn excluidos_de(dir: &Path, gestor: &str) -> HashSet<String> {
@@ -68,12 +70,13 @@ fn excluidos_de(dir: &Path, gestor: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Runs the whole queue. `parar` is checked before each package (and
-/// reset at the start: every new queue starts clean).
+/// Runs the whole queue. `parar` is checked before each package and —
+/// via the engine's watchdog — CUTS the in-flight one (#16). It is reset
+/// at the start: every new queue starts clean.
 pub fn correr(
     def: &DefinicionGestor,
     dir_config: &Path,
-    parar: &AtomicBool,
+    parar: &Arc<AtomicBool>,
     emitir: &mut dyn FnMut(&EventoCola),
 ) -> Result<(Resumen, Snapshot), String> {
     parar.store(false, Ordering::Relaxed);
@@ -89,7 +92,7 @@ pub fn correr(
         .map(|p| p.name.clone())
         .collect();
     let total = pendientes.len();
-    let (mut ok, mut failed, mut saltados) = (0usize, 0usize, 0usize);
+    let (mut ok, mut failed, mut detenidos, mut saltados) = (0usize, 0usize, 0usize, 0usize);
 
     for name in &pendientes {
         if parar.load(Ordering::Relaxed) {
@@ -104,14 +107,21 @@ pub fn correr(
         emitir(&EventoCola::Empieza {
             paquete: name.clone(),
         });
-        let resultado = crate::kernel::instalar(runner.as_ref(), def.verbo, name, &mut |linea| {
-            emitir(&EventoCola::Linea {
-                paquete: name.clone(),
-                linea: linea.to_string(),
-            })
-        });
-        // A deadlined install is a failure WITH its reason — not a generic
-        // one (#15): the engine's TimedOut error is the deadline winning.
+        let resultado = crate::kernel::instalar(
+            runner.as_ref(),
+            def.verbo,
+            name,
+            &mut |linea| {
+                emitir(&EventoCola::Linea {
+                    paquete: name.clone(),
+                    linea: linea.to_string(),
+                })
+            },
+            parar,
+        );
+        // The engine's error kind carries WHY an install died: TimedOut
+        // is the deadline winning (#15), Interrupted is Stop cutting it
+        // mid-flight (#16).
         let (salida, motivo) = match resultado {
             Ok(out) => (
                 out.output,
@@ -123,23 +133,23 @@ pub fn correr(
             ),
             Err(e) => (
                 e.to_string(),
-                if e.kind() == std::io::ErrorKind::TimedOut {
-                    Motivo::PlazoVencido
-                } else {
-                    Motivo::Fallo
+                match e.kind() {
+                    std::io::ErrorKind::TimedOut => Motivo::PlazoVencido,
+                    std::io::ErrorKind::Interrupted => Motivo::Detenido,
+                    _ => Motivo::Fallo,
                 },
             ),
         };
-        if motivo == Motivo::Ok {
-            ok += 1;
-        } else {
-            failed += 1;
+        match motivo {
+            Motivo::Ok => ok += 1,
+            Motivo::Detenido => detenidos += 1,
+            _ => failed += 1,
         }
-        emitir(&EventoCola::Resultado {
+        emitir(&EventoCola::Resultado(ResultadoCola {
             paquete: name.clone(),
             salida,
             motivo,
-        });
+        }));
     }
 
     // A single refresh at the end: the final photo already comes with the
@@ -149,7 +159,8 @@ pub fn correr(
         total,
         ok,
         failed,
-        detenida: ok + failed + saltados < total,
+        detenidos,
+        detenida: ok + failed + detenidos + saltados < total,
     };
     Ok((resumen, snapshot_final.con_comando(def.comando)))
 }
@@ -192,7 +203,7 @@ mod tests {
     }
 
     fn cola_con(def: &DefinicionGestor, dir: &Path) -> (Resumen, Snapshot) {
-        let parar = AtomicBool::new(false);
+        let parar = Arc::new(AtomicBool::new(false));
         correr(def, dir, &parar, &mut |_| {}).unwrap()
     }
 
@@ -206,6 +217,7 @@ mod tests {
                 total: 2,
                 ok: 2,
                 failed: 0,
+                detenidos: 0,
                 detenida: false
             }
         );
@@ -275,29 +287,42 @@ mod tests {
     }
 
     #[test]
-    fn detener_deja_terminar_el_actual_y_no_empieza_el_siguiente() {
+    fn detener_finaliza_el_en_curso_como_detenido_y_no_toca_los_pendientes() {
         let dir = tempfile::tempdir().unwrap();
-        let parar = AtomicBool::new(false);
+        let parar = Arc::new(AtomicBool::new(false));
         let def = def_de_prueba();
-        let mut actualizados = Vec::new();
-        let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| {
-            if let EventoCola::Empieza { paquete } = ev {
-                // Stop as soon as the FIRST one starts: it must finish,
-                // and the second one must never start.
+        let mut eventos = Vec::new();
+        let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| match ev {
+            EventoCola::Empieza { paquete } => {
+                // Stop requested AS the first package starts: the engine
+                // cuts it mid-flight (the fake runner is faithful to
+                // that), the second one never starts.
                 if paquete == "context-mode" {
                     parar.store(true, Ordering::Relaxed);
                 }
-                actualizados.push(paquete.clone());
+                eventos.push(format!("empieza {paquete}"));
             }
+            EventoCola::Resultado(r) => {
+                eventos.push(format!("resultado {} {:?}", r.paquete, r.motivo))
+            }
+            EventoCola::Linea { .. } => {}
         })
         .unwrap();
-        assert_eq!(actualizados, vec!["context-mode"]);
+        // the in-flight one was CUT (not failed), the pending one intact
+        assert_eq!(
+            eventos,
+            vec![
+                "empieza context-mode".to_string(),
+                "resultado context-mode Detenido".to_string(),
+            ]
+        );
         assert_eq!(
             resumen,
             Resumen {
                 total: 2,
-                ok: 1,
+                ok: 0,
                 failed: 0,
+                detenidos: 1,
                 detenida: true
             }
         );
@@ -323,6 +348,7 @@ mod tests {
                 total: 0,
                 ok: 0,
                 failed: 0,
+                detenidos: 0,
                 detenida: false
             }
         );
@@ -368,6 +394,7 @@ mod tests {
                 total: 2,
                 ok: 1,
                 failed: 1,
+                detenidos: 0,
                 detenida: false
             }
         );
@@ -390,6 +417,7 @@ mod tests {
             &self,
             _args: &[&str],
             _on_line: &mut dyn FnMut(&str),
+            _parar: &Arc<AtomicBool>,
         ) -> io::Result<RunnerOutput> {
             let n = self.intentos.get();
             self.intentos.set(n + 1);
@@ -418,14 +446,11 @@ mod tests {
             },
             ..def_de_prueba()
         };
-        let parar = AtomicBool::new(false);
+        let parar = Arc::new(AtomicBool::new(false));
         let mut resultados = Vec::new();
         let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| {
-            if let EventoCola::Resultado {
-                paquete, motivo, ..
-            } = ev
-            {
-                resultados.push((paquete.clone(), *motivo));
+            if let EventoCola::Resultado(r) = ev {
+                resultados.push((r.paquete.clone(), r.motivo));
             }
         })
         .unwrap();
@@ -436,6 +461,7 @@ mod tests {
                 total: 2,
                 ok: 1,
                 failed: 1,
+                detenidos: 0,
                 detenida: false
             }
         );

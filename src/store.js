@@ -184,6 +184,9 @@ export function createPackagesStore(
       appendLog(
         `${gestor}: ${t("colaTerminada", { ok: resumen.ok, total: resumen.total })}` +
           (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
+          (resumen.detenidos
+            ? ` · ${resumen.detenidos} ${t("paquetesDetenidos")}`
+            : "") +
           (resumen.detenida ? ` · ${t("detenida")}` : ""),
       );
     } catch (e) {
@@ -205,7 +208,13 @@ export function createPackagesStore(
       queue.current = e.paquete;
       status[e.paquete] = ESTADO.ACTUALIZANDO;
     } else if (e.tipo === "resultado") {
-      if (e.motivo === "ok") {
+      if (e.motivo === "detenido") {
+        // A user decision is not an error: the row goes back to normal
+        // and the log says it was stopped.
+        delete status[e.paquete];
+        delete detalle[e.paquete];
+        appendLog(`${gestor}/${e.paquete}: ${t("actualizacionDetenida")}`);
+      } else if (e.motivo === "ok") {
         delete status[e.paquete];
         delete detalle[e.paquete];
       } else {

@@ -246,7 +246,13 @@ describe("store de paquetes globales", () => {
       if (cmd === "actualizar_todo") {
         expect(args).toEqual({ gestor: "npm" });
         return {
-          resumen: { total: 2, ok: 2, failed: 0, detenida: false },
+          resumen: {
+            total: 2,
+            ok: 2,
+            failed: 0,
+            detenidos: 0,
+            detenida: false,
+          },
           snapshot: SNAPSHOT,
         };
       }
@@ -260,6 +266,7 @@ describe("store de paquetes globales", () => {
       total: 2,
       ok: 2,
       failed: 0,
+      detenidos: 0,
       detenida: false,
     });
     expect(store.queue.active).toBe(false);
@@ -450,7 +457,13 @@ describe("store de paquetes globales", () => {
           (r) =>
             (resolver = () =>
               r({
-                resumen: { total: 2, ok: 1, failed: 0, detenida: true },
+                resumen: {
+                  total: 2,
+                  ok: 1,
+                  failed: 0,
+                  detenidos: 0,
+                  detenida: true,
+                },
                 snapshot: SNAPSHOT,
               })),
         );
@@ -509,5 +522,42 @@ describe("store de paquetes globales", () => {
     await store.toggleExcluded("hunkdiff");
     expect(store.isExcluded("hunkdiff")).toBe(false); // reverted
     expect(store.logs.value.some((l) => l.includes("exclusions"))).toBe(true);
+  });
+
+  it("resultado detenido limpia la fila sin marcar error y el resumen cuenta detenidos", async () => {
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "actualizar_todo") {
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "empieza",
+          paquete: "hunkdiff",
+        });
+        store.procesarEventoCola({
+          gestor: "npm",
+          tipo: "resultado",
+          paquete: "hunkdiff",
+          motivo: "detenido",
+          salida: "detenido a pedido (proceso finalizado)",
+        });
+        return {
+          resumen: {
+            total: 2,
+            ok: 0,
+            failed: 0,
+            detenidos: 1,
+            detenida: true,
+          },
+          snapshot: SNAPSHOT,
+        };
+      }
+    });
+    await store.refresh();
+    await store.updateAll();
+    // a user decision is not an error: the row just goes back to normal
+    expect(store.hasError("hunkdiff")).toBe(false);
+    expect(store.isUpdating("hunkdiff")).toBe(false);
+    expect(store.queue.summary.detenidos).toBe(1);
+    expect(store.logs.value.some((l) => l.includes("was stopped"))).toBe(true);
   });
 });

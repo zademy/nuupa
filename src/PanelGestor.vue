@@ -62,9 +62,9 @@ onMounted(async () => {
   );
 });
 
-// Leaving the panel stops its queue gracefully: the backend finishes the
-// in-flight package and does not start the next one — an orphan queue
-// never remains, without a log or Stop button, on another tab.
+// Leaving the panel stops its queue: the backend CUTS the in-flight
+// package (#16) and the pending ones never start — an orphan queue never
+// remains, without a log or Stop button, on another tab.
 onUnmounted(() => {
   desuscribirCola?.();
   stopAll();

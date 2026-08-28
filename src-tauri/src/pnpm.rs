@@ -90,8 +90,9 @@ impl Runner for RealPnpmRunner {
         &self,
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
+        parar: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::io::Result<RunnerOutput> {
-        correr_instalacion(Self::command(&self.bin, args), on_line)
+        correr_instalacion(Self::command(&self.bin, args), on_line, parar)
     }
 }
 

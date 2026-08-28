@@ -13,7 +13,7 @@ mod npm;
 mod plazo;
 mod pnpm;
 
-use cola::{EventoCola, Motivo, Resumen};
+use cola::{EventoCola, Motivo, ResultadoCola, Resumen};
 use kernel::{Runner, Snapshot, UpdateOutcome};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -107,7 +107,10 @@ fn correr_update(
     on_line: &mut dyn FnMut(&str),
 ) -> Result<UpdateOutcome, String> {
     let runner = (def.runner)().map_err(|e| e.to_string())?;
-    kernel::instalar(runner.as_ref(), def.verbo, name, on_line).map_err(|e| e.to_string())
+    // An individual update has no Stop: a flag that never fires.
+    let sin_parar = Arc::new(AtomicBool::new(false));
+    kernel::instalar(runner.as_ref(), def.verbo, name, on_line, &sin_parar)
+        .map_err(|e| e.to_string())
 }
 
 /// A manager's excluded packages; the legacy-format migration runs here,
@@ -240,15 +243,8 @@ async fn actualizar_todo(
             EventoCola::Empieza { paquete } => {
                 let _ = app.emit("pm-cola", EventoPaquete::empieza(&gestor, paquete));
             }
-            EventoCola::Resultado {
-                paquete,
-                salida,
-                motivo,
-            } => {
-                let _ = app.emit(
-                    "pm-cola",
-                    EventoPaquete::resultado(&gestor, paquete, salida, *motivo),
-                );
+            EventoCola::Resultado(r) => {
+                let _ = app.emit("pm-cola", EventoPaquete::resultado(&gestor, r));
             }
         })?;
         Ok(ResultadoActualizarTodo { resumen, snapshot })
@@ -280,18 +276,19 @@ impl EventoPaquete {
         }
     }
 
-    fn resultado(gestor: &str, paquete: &str, salida: &str, motivo: Motivo) -> Self {
+    fn resultado(gestor: &str, r: &ResultadoCola) -> Self {
         Self {
             gestor: gestor.into(),
             tipo: "resultado",
-            paquete: paquete.into(),
-            salida: Some(salida.to_string()),
-            motivo: Some(motivo),
+            paquete: r.paquete.clone(),
+            salida: Some(r.salida.clone()),
+            motivo: Some(r.motivo),
         }
     }
 }
 
-/// Stops the queue after the in-flight package (graceful).
+/// Stops the queue: the in-flight package is CUT (same escalation as the
+/// deadline, #16) and the pending ones never start.
 #[tauri::command]
 fn detener_actualizar_todo(estado: tauri::State<Contexto>) {
     estado.parar.store(true, Ordering::Relaxed);

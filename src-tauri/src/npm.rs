@@ -141,8 +141,9 @@ impl Runner for RealRunner {
         &self,
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
+        parar: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::io::Result<RunnerOutput> {
-        correr_instalacion(self.command(args), on_line)
+        correr_instalacion(self.command(args), on_line, parar)
     }
 }
 
