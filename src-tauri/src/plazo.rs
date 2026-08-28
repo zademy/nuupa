@@ -13,25 +13,25 @@ use std::time::Duration;
 /// `grace` between the courteous signal and the forced kill (#11). A hung
 /// gestor becomes an error, never a frozen app.
 #[derive(Debug, Clone, Copy)]
-pub struct Plazo {
-    pub total: Duration,
-    pub grace: Duration,
+pub(crate) struct Plazo {
+    pub(crate) total: Duration,
+    pub(crate) grace: Duration,
 }
 
 /// Queries (`ls`, `outdated`, `--version`): seconds against the registry.
-pub const PLAZO_CONSULTA: Plazo = Plazo {
+pub(crate) const PLAZO_CONSULTA: Plazo = Plazo {
     total: Duration::from_secs(60),
     grace: Duration::from_secs(5),
 };
 
 /// Installations (`install`/`add -g`): they legitimately take minutes.
-pub const PLAZO_INSTALACION: Plazo = Plazo {
+pub(crate) const PLAZO_INSTALACION: Plazo = Plazo {
     total: Duration::from_secs(300),
     grace: Duration::from_secs(5),
 };
 
-/// The timeout error the UI will show, with the binary that never
-/// answered.
+/// The expired-deadline error the UI will show, with the binary that
+/// never answered.
 pub(crate) fn plazo_vencido(cmd: &std::process::Command, total: Duration) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::TimedOut,

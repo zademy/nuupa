@@ -31,12 +31,14 @@ pub struct Resumen {
 
 /// Why a package's queue result ended the way it did ("detenido" arrives
 /// with a real Stop, #16: today Stop lets the in-flight package finish).
+/// The wire value is the glossary term ("plazo", never "timeout").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Motivo {
     Ok,
     Fallo,
-    Timeout,
+    #[serde(rename = "plazo")]
+    PlazoVencido,
 }
 
 /// What the queue reports as it advances. Output lines go to the log
@@ -51,7 +53,6 @@ pub enum EventoCola {
     },
     Resultado {
         paquete: String,
-        exito: bool,
         salida: String,
         motivo: Motivo,
     },
@@ -109,11 +110,10 @@ pub fn correr(
                 linea: linea.to_string(),
             })
         });
-        // A timed-out install is a failure WITH its reason — not a generic
+        // A deadlined install is a failure WITH its reason — not a generic
         // one (#15): the engine's TimedOut error is the deadline winning.
-        let (exito, salida, motivo) = match resultado {
+        let (salida, motivo) = match resultado {
             Ok(out) => (
-                out.success,
                 out.output,
                 if out.success {
                     Motivo::Ok
@@ -121,19 +121,22 @@ pub fn correr(
                     Motivo::Fallo
                 },
             ),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                (false, e.to_string(), Motivo::Timeout)
-            }
-            Err(e) => (false, e.to_string(), Motivo::Fallo),
+            Err(e) => (
+                e.to_string(),
+                if e.kind() == std::io::ErrorKind::TimedOut {
+                    Motivo::PlazoVencido
+                } else {
+                    Motivo::Fallo
+                },
+            ),
         };
-        if exito {
+        if motivo == Motivo::Ok {
             ok += 1;
         } else {
             failed += 1;
         }
         emitir(&EventoCola::Resultado {
             paquete: name.clone(),
-            exito,
             salida,
             motivo,
         });
@@ -419,17 +422,14 @@ mod tests {
         let mut resultados = Vec::new();
         let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| {
             if let EventoCola::Resultado {
-                paquete,
-                exito,
-                motivo,
-                ..
+                paquete, motivo, ..
             } = ev
             {
-                resultados.push((paquete.clone(), *exito, *motivo));
+                resultados.push((paquete.clone(), *motivo));
             }
         })
         .unwrap();
-        // the timed-out one is failed WITH its reason; the next one ran
+        // the deadlined one is failed WITH its reason; the next one ran
         assert_eq!(
             resumen,
             Resumen {
@@ -442,8 +442,8 @@ mod tests {
         assert_eq!(
             resultados,
             vec![
-                ("context-mode".to_string(), false, Motivo::Timeout),
-                ("hunkdiff".to_string(), true, Motivo::Ok),
+                ("context-mode".to_string(), Motivo::PlazoVencido),
+                ("hunkdiff".to_string(), Motivo::Ok),
             ]
         );
     }

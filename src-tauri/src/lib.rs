@@ -242,13 +242,12 @@ async fn actualizar_todo(
             }
             EventoCola::Resultado {
                 paquete,
-                exito,
                 salida,
                 motivo,
             } => {
                 let _ = app.emit(
                     "pm-cola",
-                    EventoPaquete::resultado(&gestor, paquete, *exito, salida, *motivo),
+                    EventoPaquete::resultado(&gestor, paquete, salida, *motivo),
                 );
             }
         })?;
@@ -258,14 +257,12 @@ async fn actualizar_todo(
     .map_err(|e| e.to_string())?
 }
 
-/// A queue event for a table row.
+/// A queue event for a table row. Success is derivable: `motivo === "ok"`.
 #[derive(Clone, Serialize)]
 struct EventoPaquete {
     gestor: String,
     tipo: &'static str, // "empieza" | "resultado"
     paquete: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    exito: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     salida: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,18 +275,16 @@ impl EventoPaquete {
             gestor: gestor.into(),
             tipo: "empieza",
             paquete: paquete.into(),
-            exito: None,
             salida: None,
             motivo: None,
         }
     }
 
-    fn resultado(gestor: &str, paquete: &str, exito: bool, salida: &str, motivo: Motivo) -> Self {
+    fn resultado(gestor: &str, paquete: &str, salida: &str, motivo: Motivo) -> Self {
         Self {
             gestor: gestor.into(),
             tipo: "resultado",
             paquete: paquete.into(),
-            exito: Some(exito),
             salida: Some(salida.to_string()),
             motivo: Some(motivo),
         }

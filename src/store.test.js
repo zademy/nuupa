@@ -286,7 +286,7 @@ describe("store de paquetes globales", () => {
           gestor: "npm",
           tipo: "resultado",
           paquete: "context-mode",
-          exito: true,
+          motivo: "ok",
         });
         store.procesarEventoCola({
           gestor: "npm",
@@ -297,7 +297,7 @@ describe("store de paquetes globales", () => {
           gestor: "npm",
           tipo: "resultado",
           paquete: "hunkdiff",
-          exito: false,
+          motivo: "fallo",
           salida: "EACCES",
         });
         return {
@@ -341,8 +341,7 @@ describe("store de paquetes globales", () => {
       gestor: "npm",
       tipo: "resultado",
       paquete: "hunkdiff",
-      exito: false,
-      motivo: "timeout",
+      motivo: "plazo",
       salida: "npm no respondió en 300 s (proceso finalizado)",
     });
     expect(store.hasError("hunkdiff")).toBe(true);
@@ -358,8 +357,7 @@ describe("store de paquetes globales", () => {
       gestor: "npm",
       tipo: "resultado",
       paquete: "hunkdiff",
-      exito: false,
-      motivo: "timeout",
+      motivo: "plazo",
       salida: "npm no respondió en 300 s (proceso finalizado)",
     });
     expect(store.detalleFallo("hunkdiff")).toContain("did not respond in time");
@@ -368,7 +366,7 @@ describe("store de paquetes globales", () => {
       gestor: "npm",
       tipo: "resultado",
       paquete: "hunkdiff",
-      exito: true,
+      motivo: "ok",
     });
     expect(store.hasError("hunkdiff")).toBe(false);
     expect(store.detalleFallo("hunkdiff")).toBeUndefined();

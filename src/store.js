@@ -205,12 +205,12 @@ export function createPackagesStore(
       queue.current = e.paquete;
       status[e.paquete] = ESTADO.ACTUALIZANDO;
     } else if (e.tipo === "resultado") {
-      if (e.exito) {
+      if (e.motivo === "ok") {
         delete status[e.paquete];
         delete detalle[e.paquete];
       } else {
         const prefijo =
-          e.motivo === "timeout"
+          e.motivo === "plazo"
             ? t("actualizacionPlazo")
             : t("actualizacionFallo");
         markFailed(e.paquete, `${prefijo}\n${e.salida ?? ""}`.trim());
