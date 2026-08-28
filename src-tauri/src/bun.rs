@@ -5,9 +5,8 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr, correr_streaming, find_in_path, home, no_encontrado,
-    primer_existente, version_de, EspacioGlobal, Runner, RunnerOutput, PLAZO_CONSULTA,
-    PLAZO_INSTALACION,
+    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, home, no_encontrado,
+    primer_existente, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -63,7 +62,7 @@ impl Runner for RealBunRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(self.command(args), PLAZO_CONSULTA)
+        correr_consulta(self.command(args))
     }
 
     fn run_streaming(
@@ -71,7 +70,7 @@ impl Runner for RealBunRunner {
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(self.command(args), on_line, PLAZO_INSTALACION)
+        correr_instalacion(self.command(args), on_line)
     }
 }
 

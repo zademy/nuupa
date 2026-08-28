@@ -10,9 +10,10 @@ mod cola;
 mod exclusiones;
 mod kernel;
 mod npm;
+mod plazo;
 mod pnpm;
 
-use cola::{EventoCola, Resumen};
+use cola::{EventoCola, Motivo, Resumen};
 use kernel::{Runner, Snapshot, UpdateOutcome};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -243,10 +244,11 @@ async fn actualizar_todo(
                 paquete,
                 exito,
                 salida,
+                motivo,
             } => {
                 let _ = app.emit(
                     "pm-cola",
-                    EventoPaquete::resultado(&gestor, paquete, *exito, salida),
+                    EventoPaquete::resultado(&gestor, paquete, *exito, salida, *motivo),
                 );
             }
         })?;
@@ -266,6 +268,8 @@ struct EventoPaquete {
     exito: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     salida: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    motivo: Option<Motivo>,
 }
 
 impl EventoPaquete {
@@ -276,16 +280,18 @@ impl EventoPaquete {
             paquete: paquete.into(),
             exito: None,
             salida: None,
+            motivo: None,
         }
     }
 
-    fn resultado(gestor: &str, paquete: &str, exito: bool, salida: &str) -> Self {
+    fn resultado(gestor: &str, paquete: &str, exito: bool, salida: &str, motivo: Motivo) -> Self {
         Self {
             gestor: gestor.into(),
             tipo: "resultado",
             paquete: paquete.into(),
             exito: Some(exito),
             salida: Some(salida.to_string()),
+            motivo: Some(motivo),
         }
     }
 }

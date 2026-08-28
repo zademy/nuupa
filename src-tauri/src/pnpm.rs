@@ -4,9 +4,9 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr, correr_streaming, find_in_path, guardar_path_nvm, home,
-    local_app_data, no_encontrado, parse_outdated, primer_existente, version_de, EspacioGlobal,
-    Runner, RunnerOutput, PLAZO_CONSULTA, PLAZO_INSTALACION,
+    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, guardar_path_nvm,
+    home, local_app_data, no_encontrado, parse_outdated, primer_existente, version_de,
+    EspacioGlobal, Runner, RunnerOutput,
 };
 use std::path::{Path, PathBuf};
 
@@ -83,7 +83,7 @@ impl Runner for RealPnpmRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(Self::command(&self.bin, args), PLAZO_CONSULTA)
+        correr_consulta(Self::command(&self.bin, args))
     }
 
     fn run_streaming(
@@ -91,7 +91,7 @@ impl Runner for RealPnpmRunner {
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(Self::command(&self.bin, args), on_line, PLAZO_INSTALACION)
+        correr_instalacion(Self::command(&self.bin, args), on_line)
     }
 }
 

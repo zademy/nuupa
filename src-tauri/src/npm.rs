@@ -10,9 +10,8 @@
 #[cfg(windows)]
 use crate::kernel::program_files;
 use crate::kernel::{
-    armar, con_extension, correr, correr_streaming, find_in_path, guardar_path_nvm, home,
-    no_encontrado, resolve_nvm_bin_dir, version_de, EspacioGlobal, Runner, RunnerOutput,
-    PLAZO_CONSULTA, PLAZO_INSTALACION,
+    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, guardar_path_nvm,
+    home, no_encontrado, resolve_nvm_bin_dir, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
 use std::path::{Path, PathBuf};
 
@@ -135,7 +134,7 @@ impl Runner for RealRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(self.command(args), PLAZO_CONSULTA)
+        correr_consulta(self.command(args))
     }
 
     fn run_streaming(
@@ -143,7 +142,7 @@ impl Runner for RealRunner {
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(self.command(args), on_line, PLAZO_INSTALACION)
+        correr_instalacion(self.command(args), on_line)
     }
 }
 

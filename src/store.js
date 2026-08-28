@@ -188,7 +188,8 @@ export function createPackagesStore(
 
   // `pm-cola` event of THIS manager (starts/result): moves the table row.
   // Output lines arrive via `pm-output` straight to the shared log
-  // (App.vue, always mounted).
+  // (App.vue, always mounted). A timeout carries its own message — it is
+  // not a generic failure (#15).
   function procesarEventoCola(e) {
     if (e.gestor !== gestor) return;
     if (e.tipo === "empieza") {
@@ -196,11 +197,13 @@ export function createPackagesStore(
       status[e.paquete] = ESTADO.ACTUALIZANDO;
     } else if (e.tipo === "resultado") {
       if (e.exito) delete status[e.paquete];
-      else
-        markFailed(
-          e.paquete,
-          `${t("actualizacionFallo")}\n${e.salida ?? ""}`.trim(),
-        );
+      else {
+        const prefijo =
+          e.motivo === "timeout"
+            ? t("actualizacionPlazo")
+            : t("actualizacionFallo");
+        markFailed(e.paquete, `${prefijo}\n${e.salida ?? ""}`.trim());
+      }
     }
   }
 

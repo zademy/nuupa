@@ -329,6 +329,28 @@ describe("store de paquetes globales", () => {
     expect(store.queue.current).toBeNull();
   });
 
+  it("resultado de cola con motivo timeout marca la fila con el texto de plazo vencido", async () => {
+    const store = createPackagesStore(fakeInvoke());
+    await store.refresh();
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      exito: false,
+      motivo: "timeout",
+      salida: "npm no respondió en 300 s (proceso finalizado)",
+    });
+    expect(store.hasError("hunkdiff")).toBe(true);
+    expect(
+      store.logs.value.some((l) => l.includes("did not respond in time")),
+    ).toBe(true);
+  });
+
   it("updateAll con fallo de comando deja el log y refresca", async () => {
     const llamadas = [];
     const store = createPackagesStore(async (cmd) => {

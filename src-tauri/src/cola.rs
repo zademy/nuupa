@@ -29,6 +29,16 @@ pub struct Resumen {
     pub detenida: bool,
 }
 
+/// Why a package's queue result ended the way it did ("detenido" arrives
+/// with a real Stop, #16: today Stop lets the in-flight package finish).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Motivo {
+    Ok,
+    Fallo,
+    Timeout,
+}
+
 /// What the queue reports as it advances. Output lines go to the log
 /// (`pm-output`); starts/result move the table row.
 pub enum EventoCola {
@@ -43,6 +53,7 @@ pub enum EventoCola {
         paquete: String,
         exito: bool,
         salida: String,
+        motivo: Motivo,
     },
 }
 
@@ -98,9 +109,22 @@ pub fn correr(
                 linea: linea.to_string(),
             })
         });
-        let (exito, salida) = match resultado {
-            Ok(out) => (out.success, out.output),
-            Err(e) => (false, e.to_string()),
+        // A timed-out install is a failure WITH its reason — not a generic
+        // one (#15): the engine's TimedOut error is the deadline winning.
+        let (exito, salida, motivo) = match resultado {
+            Ok(out) => (
+                out.success,
+                out.output,
+                if out.success {
+                    Motivo::Ok
+                } else {
+                    Motivo::Fallo
+                },
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                (false, e.to_string(), Motivo::Timeout)
+            }
+            Err(e) => (false, e.to_string(), Motivo::Fallo),
         };
         if exito {
             ok += 1;
@@ -111,6 +135,7 @@ pub fn correr(
             paquete: name.clone(),
             exito,
             salida,
+            motivo,
         });
     }
 
@@ -342,6 +367,84 @@ mod tests {
                 failed: 1,
                 detenida: false
             }
+        );
+    }
+
+    /// Runner whose FIRST install hits the deadline: run_streaming errors
+    /// with TimedOut, exactly what the engine returns when the watchdog
+    /// wins (#15).
+    struct ColgadoEnElPrimero {
+        intentos: std::cell::Cell<usize>,
+    }
+    impl Runner for ColgadoEnElPrimero {
+        fn version_gestor(&self) -> String {
+            "11.4.2".into()
+        }
+        fn run(&self, args: &[&str]) -> io::Result<RunnerOutput> {
+            PROTOCOLO.with(|p| p.run(args))
+        }
+        fn run_streaming(
+            &self,
+            _args: &[&str],
+            _on_line: &mut dyn FnMut(&str),
+        ) -> io::Result<RunnerOutput> {
+            let n = self.intentos.get();
+            self.intentos.set(n + 1);
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "npm no respondió en 300 s (proceso finalizado)",
+                ));
+            }
+            Ok(RunnerOutput {
+                stdout: "added 1 package in 2s".into(),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+    }
+
+    #[test]
+    fn timeout_de_un_paquete_lo_marca_con_motivo_y_la_cola_sigue() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = DefinicionGestor {
+            runner: || {
+                Ok(Box::new(ColgadoEnElPrimero {
+                    intentos: std::cell::Cell::new(0),
+                }) as Box<dyn Runner>)
+            },
+            ..def_de_prueba()
+        };
+        let parar = AtomicBool::new(false);
+        let mut resultados = Vec::new();
+        let (resumen, _) = correr(&def, dir.path(), &parar, &mut |ev| {
+            if let EventoCola::Resultado {
+                paquete,
+                exito,
+                motivo,
+                ..
+            } = ev
+            {
+                resultados.push((paquete.clone(), *exito, *motivo));
+            }
+        })
+        .unwrap();
+        // the timed-out one is failed WITH its reason; the next one ran
+        assert_eq!(
+            resumen,
+            Resumen {
+                total: 2,
+                ok: 1,
+                failed: 1,
+                detenida: false
+            }
+        );
+        assert_eq!(
+            resultados,
+            vec![
+                ("context-mode".to_string(), false, Motivo::Timeout),
+                ("hunkdiff".to_string(), true, Motivo::Ok),
+            ]
         );
     }
 }
