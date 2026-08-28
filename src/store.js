@@ -228,6 +228,11 @@ export function createPackagesStore(
     summary: null, // { total, ok, failed, detenidos, detenida }
   });
 
+  // Screen-reader announcements (#20): states are polite, errors alert.
+  // aria-live only announces CHANGES, so the last message staying is fine.
+  const anuncio = ref("");
+  const anuncioError = ref("");
+
   async function updateAll() {
     if (desactualizables.value.length === 0 || queue.active) return;
 
@@ -237,6 +242,7 @@ export function createPackagesStore(
     queue.active = true;
     queue.stopped = false;
     queue.summary = null;
+    anuncio.value = t("actualizarTodo");
     try {
       const { resumen, snapshot } = await invokeFn("actualizar_todo", {
         gestor,
@@ -251,14 +257,15 @@ export function createPackagesStore(
       queue.summary = resumen;
       // The summary also lives in the log: if the user is on another tab,
       // the unmounted panel's statusbar would lose it… this one keeps it.
-      appendLog(
-        `${gestor}: ${t("colaTerminada", { ok: resumen.ok, total: resumen.total })}` +
-          (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
-          (resumen.detenidos
-            ? ` · ${resumen.detenidos} ${t("paquetesDetenidos")}`
-            : "") +
-          (resumen.detenida ? ` · ${t("detenida")}` : ""),
-      );
+      const linea =
+        t("colaTerminada", { ok: resumen.ok, total: resumen.total }) +
+        (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
+        (resumen.detenidos
+          ? ` · ${resumen.detenidos} ${t("paquetesDetenidos")}`
+          : "") +
+        (resumen.detenida ? ` · ${t("detenida")}` : "");
+      appendLog(`${gestor}: ${linea}`);
+      anuncio.value = linea;
     } catch (e) {
       appendLog(`${gestor}: ${t("colaFallo", { e })}`);
       await refresh();
@@ -277,19 +284,24 @@ export function createPackagesStore(
     if (e.tipo === "empieza") {
       queue.current = e.paquete;
       status[e.paquete] = ESTADO.ACTUALIZANDO;
+      anuncio.value = `${e.paquete}: ${t("actualizando")}`;
     } else if (e.tipo === "resultado") {
       if (e.motivo === MOTIVO.OK || e.motivo === MOTIVO.DETENIDO) {
         // OK clears the row; a stop is a user decision, not an error —
-        // the row goes back to normal and the log says it was stopped.
+        // the row goes back to normal, the log and the announcement say
+        // it was stopped.
         delete status[e.paquete];
         delete detalle[e.paquete];
-        if (e.motivo === MOTIVO.DETENIDO)
+        if (e.motivo === MOTIVO.DETENIDO) {
           appendLog(`${gestor}/${e.paquete}: ${t("actualizacionDetenida")}`);
+          anuncio.value = `${e.paquete}: ${t("actualizacionDetenida")}`;
+        }
       } else {
         const prefijo =
           e.motivo === MOTIVO.PLAZO
             ? t("actualizacionPlazo")
             : t("actualizacionFallo");
+        anuncioError.value = `${e.paquete}: ${prefijo}`;
         markFailed(e.paquete, `${prefijo}\n${e.salida ?? ""}`.trim());
       }
     }
@@ -323,6 +335,8 @@ export function createPackagesStore(
     packages,
     logs,
     queue,
+    anuncio,
+    anuncioError,
     hayDesactualizados,
     conteo,
     refresh,

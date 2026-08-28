@@ -20,12 +20,35 @@ const emit = defineEmits(["cerrar"]);
 const { t } = useI18n();
 const version = ref("");
 const botonCerrar = ref(null);
+const dialogo = ref(null);
+// Who opened us (#20): focus returns there when the dialog closes.
+const disparador = ref(null);
 
 function alPulsarTecla(e) {
   if (e.key === "Escape") emit("cerrar");
+  if (e.key !== "Tab") return;
+  // Focus trap: Tab cycles INSIDE the dialog, never escaping it (#20).
+  const focos = [
+    ...(dialogo.value?.querySelectorAll("a[href], button:not([disabled])") ??
+      []),
+  ];
+  if (focos.length === 0) return;
+  const primero = focos[0];
+  const ultimo = focos[focos.length - 1];
+  if (e.shiftKey && document.activeElement === primero) {
+    e.preventDefault();
+    ultimo.focus();
+  } else if (!e.shiftKey && document.activeElement === ultimo) {
+    e.preventDefault();
+    primero.focus();
+  }
 }
 
 onMounted(async () => {
+  disparador.value =
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
   // The Tauri runtime owns the real version; frontend-only dev (npm run
   // dev) has no runtime behind it — "dev" keeps the dialog honest there.
   try {
@@ -37,7 +60,10 @@ onMounted(async () => {
   botonCerrar.value?.focus();
 });
 
-onUnmounted(() => document.removeEventListener("keydown", alPulsarTecla));
+onUnmounted(() => {
+  document.removeEventListener("keydown", alPulsarTecla);
+  disparador.value?.focus();
+});
 </script>
 
 <template>
@@ -45,6 +71,7 @@ onUnmounted(() => document.removeEventListener("keydown", alPulsarTecla));
        ✕ button — three ways out, none of them a trap. -->
   <div class="velo" @click="emit('cerrar')">
     <div
+      ref="dialogo"
       class="dialogo"
       role="dialog"
       aria-modal="true"

@@ -19,6 +19,8 @@ const {
   logs,
   queue,
   conteo,
+  anuncio,
+  anuncioError,
   hayDesactualizados,
   refresh,
   update,
@@ -79,6 +81,10 @@ onUnmounted(() => {
 
 <template>
   <section class="panel">
+    <!-- Screen-reader announcements (#20): states polite, errors alert. -->
+    <p class="solo-lector" aria-live="polite">{{ anuncio }}</p>
+    <p class="solo-lector" role="alert">{{ anuncioError }}</p>
+
     <div class="barra">
       <div class="controles">
         <label class="busqueda" :title="t('filtrarTabla')">
@@ -180,7 +186,9 @@ onUnmounted(() => {
     <p v-if="state.loading && !state.snapshot" class="estado mono">
       {{ t("consultando") }}
     </p>
-    <p v-else-if="state.error" class="error mono">{{ state.error }}</p>
+    <p v-else-if="state.error" class="error mono" role="alert">
+      {{ state.error }}
+    </p>
 
     <div
       v-if="state.snapshot && packages.length === 0 && search"
@@ -215,8 +223,17 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <div v-if="state.snapshot" class="tabla-scroll">
+    <div
+      v-if="state.snapshot"
+      class="tabla-scroll"
+      :aria-busy="state.loading || queue.active"
+    >
       <table>
+        <caption class="solo-lector">
+          {{
+            t("captionTabla", { gestor })
+          }}
+        </caption>
         <thead>
           <tr>
             <th>{{ t("columnaPaquete") }}</th>

@@ -159,6 +159,21 @@ onUnmounted(() => desubscribir?.());
   position: absolute;
 }
 
+/* Visually hidden, screen-reader only (#20): live regions and the table
+   caption announce without changing the layout. */
+.solo-lector {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 /* Theme palettes: the ONLY place hex colors live. Both ramps are the same
    cold-gray family (Monochrome; the light one is its "between gray and
    white" variant). A new theme is a new [data-tema] block — every

@@ -124,6 +124,36 @@ describe("PanelGestor montado", () => {
     expect(fila.classes()).not.toContain("excluido");
   });
 
+  it("accesibilidad: caption del gestor, aria-busy durante la cola y regiones live", async () => {
+    tauri.responder("detener_actualizar_todo", {});
+    tauri.responder("actualizar_todo", () => new Promise(() => {})); // hangs
+    const c = await montarCargado();
+    // the table announces what it holds
+    expect(c.get("caption").text()).toContain("npm");
+    expect(c.get(".tabla-scroll").attributes("aria-busy")).toBe("false");
+    await c.get("button.primario").trigger("click");
+    await flushPromises();
+    expect(c.get(".tabla-scroll").attributes("aria-busy")).toBe("true");
+    // a package's start announces politely; a failure alerts
+    tauri.emitir("pm-cola", {
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    await flushPromises();
+    expect(c.get('[aria-live="polite"]').text()).toContain("hunkdiff");
+    tauri.emitir("pm-cola", {
+      gestor: "npm",
+      tipo: "resultado",
+      paquete: "hunkdiff",
+      motivo: "fallo",
+      salida: "EACCES",
+    });
+    await flushPromises();
+    const alertas = c.findAll('[role="alert"]');
+    expect(alertas.some((a) => a.text().includes("hunkdiff"))).toBe(true);
+  });
+
   it("el cambio de gestor abandona la cola saliente y filtra eventos por gestor", async () => {
     tauri.responder("abandonar_actualizar_todo", {});
     tauri.responder("actualizar_todo", () => new Promise(() => {})); // hangs
