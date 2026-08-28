@@ -31,11 +31,11 @@ package managers (**npm**, **pnpm**, **bun**) — no commands required.
 
 Grab an installer from the [releases page](https://github.com/zademy/nuupa/releases):
 
-| Platform | Installers |
-| --- | --- |
-| macOS (universal) | `.dmg` |
-| Linux x64 / arm64 | `.deb`, `.rpm`, `.AppImage` |
-| Windows x64 / arm64 | `.msi`, `.exe` (NSIS) |
+| Platform            | Installers                  |
+| ------------------- | --------------------------- |
+| macOS (universal)   | `.dmg`                      |
+| Linux x64 / arm64   | `.deb`, `.rpm`, `.AppImage` |
+| Windows x64 / arm64 | `.msi`, `.exe` (NSIS)       |
 
 Every release ships a `SHASUMS256.txt` with the checksums of all artifacts.
 
@@ -82,6 +82,19 @@ npm run dev       # frontend only (Vite)
 ```sh
 npm test          # store tests (Vitest)
 ```
+
+### Formatting and linting
+
+```sh
+npm run format    # frontend (Prettier)
+npm run lint      # frontend (ESLint)
+cargo fmt         # Rust (rustfmt)
+cargo clippy      # Rust lints
+```
+
+Prettier owns formatting; ESLint owns code quality (its stylistic rules are
+disabled via `eslint-config-prettier`, so they never conflict). CI checks
+all of the above on every push.
 
 ### Project layout
 

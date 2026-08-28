@@ -43,11 +43,11 @@ cargo tauri dev
 
 ## Code organization
 
-| Path | Contents |
-| --- | --- |
-| `src/` | Vue 3 frontend: app shell, manager panels, store and its tests |
-| `src-tauri/src/` | Rust backend: one module per package manager (`npm`, `pnpm`, `bun`), plus exclusions |
-| `.github/workflows/` | CI: multi-platform builds and automated releases |
+| Path                 | Contents                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `src/`               | Vue 3 frontend: app shell, manager panels, store and its tests                       |
+| `src-tauri/src/`     | Rust backend: one module per package manager (`npm`, `pnpm`, `bun`), plus exclusions |
+| `.github/workflows/` | CI: multi-platform builds and automated releases                                     |
 
 Domain vocabulary is defined in `CONTEXT.md` — use those terms in issues,
 PRs, tests and code so discussions stay unambiguous.

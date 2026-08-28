@@ -21,7 +21,7 @@ clásico "construye y publica lo que construiste".
   PROPIO run — sin resolución de commits ajenos ni saltos entre runs.
 - Se conservan del ADR-0001: sanidad en master exige tag nuevo (bump en
   develop antes del merge), el tag lo crea CI (`gh release create
-  --target`), y no hay trigger de tags.
+--target`), y no hay trigger de tags.
 - Desaparece la restricción de "merge normal o fast-forward" (ya no hay
   resolución de artefactos ajenos).
 

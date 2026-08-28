@@ -6,7 +6,8 @@ const almacen = { clave: null, valor: null };
 
 function fakeLocalStorage() {
   return {
-    getItem: (clave) => (clave === almacen.clave ? almacen.valor : almacen.valor),
+    getItem: (clave) =>
+      clave === almacen.clave ? almacen.valor : almacen.valor,
     setItem: (clave, valor) => {
       almacen.clave = clave;
       almacen.valor = valor;

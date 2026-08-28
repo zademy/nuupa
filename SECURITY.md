@@ -5,11 +5,11 @@
 Nuupa is in early development. Security fixes are applied to the latest
 release and to `master` only.
 
-| Version | Supported |
-| ------- | --------- |
-| latest release | ✅ |
-| `master` | ✅ |
-| older releases | ❌ |
+| Version        | Supported |
+| -------------- | --------- |
+| latest release | ✅        |
+| `master`       | ✅        |
+| older releases | ❌        |
 
 ## Reporting a vulnerability
 

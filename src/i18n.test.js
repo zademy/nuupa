@@ -6,7 +6,8 @@ const almacen = { clave: null, valor: null };
 
 function fakeLocalStorage() {
   return {
-    getItem: (clave) => (clave === almacen.clave ? almacen.valor : almacen.valor),
+    getItem: (clave) =>
+      clave === almacen.clave ? almacen.valor : almacen.valor,
     setItem: (clave, valor) => {
       almacen.clave = clave;
       almacen.valor = valor;
@@ -66,12 +67,16 @@ describe("i18n", () => {
   it("interpolates {param} placeholders", async () => {
     const { useI18n } = await cargarI18n();
     const { t } = useI18n();
-    expect(t("sinPaquetes", { gestor: "bun" })).toBe("no global packages for bun yet");
+    expect(t("sinPaquetes", { gestor: "bun" })).toBe(
+      "no global packages for bun yet",
+    );
   });
 
   it("both dictionaries cover exactly the same keys", async () => {
     const { MENSAJES } = await cargarI18n();
-    expect(Object.keys(MENSAJES.es).sort()).toEqual(Object.keys(MENSAJES.en).sort());
+    expect(Object.keys(MENSAJES.es).sort()).toEqual(
+      Object.keys(MENSAJES.en).sort(),
+    );
   });
 
   it("a missing key falls back to English instead of leaking the key", async () => {

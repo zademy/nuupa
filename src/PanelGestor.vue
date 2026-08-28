@@ -43,7 +43,7 @@ watch(
     await nextTick();
     if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight;
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 let desuscribirCola = null;
@@ -56,7 +56,9 @@ onMounted(async () => {
   refresh();
   // Queue events (starts/result per package) move THIS panel's rows; log
   // lines travel through App.
-  desuscribirCola = await listen("pm-cola", (e) => procesarEventoCola(e.payload));
+  desuscribirCola = await listen("pm-cola", (e) =>
+    procesarEventoCola(e.payload),
+  );
 });
 
 // Leaving the panel stops its queue gracefully: the backend finishes the
@@ -74,7 +76,11 @@ onUnmounted(() => {
       <div class="controles">
         <label class="busqueda" :title="t('filtrarTabla')">
           <Icono nombre="buscar" :tamano="13" />
-          <input v-model="search" type="search" :placeholder="t('buscarPlaceholder')" />
+          <input
+            v-model="search"
+            type="search"
+            :placeholder="t('buscarPlaceholder')"
+          />
         </label>
         <button
           class="primario"
@@ -113,28 +119,36 @@ onUnmounted(() => {
          monochrome line. -->
     <div class="statusbar">
       <span v-if="state.snapshot" class="mono"
-        >{{ gestor }} v{{ state.snapshot.version_gestor }}<template
-          v-if="state.snapshot.version_node"
-        >
+        >{{ gestor }} v{{ state.snapshot.version_gestor
+        }}<template v-if="state.snapshot.version_node">
           · node {{ state.snapshot.version_node }}</template
         ></span
       >
       <span class="mono">
-        {{ conteo.total }} {{ conteo.total === 1 ? t("paquete") : t("paquetes") }}
+        {{ conteo.total }}
+        {{ conteo.total === 1 ? t("paquete") : t("paquetes") }}
       </span>
       <span class="mono" :class="{ relevante: conteo.desactualizados > 0 }">
         {{ conteo.desactualizados }}
-        {{ conteo.desactualizados === 1 ? t("desactualizado") : t("desactualizados") }}
+        {{
+          conteo.desactualizados === 1
+            ? t("desactualizado")
+            : t("desactualizados")
+        }}
       </span>
       <span v-if="conteo.excluidos" class="mono">
-        {{ conteo.excluidos }} {{ conteo.excluidos === 1 ? t("excluido") : t("excluidos") }}
+        {{ conteo.excluidos }}
+        {{ conteo.excluidos === 1 ? t("excluido") : t("excluidos") }}
       </span>
       <span class="statusbar-der">
         <span v-if="queue.summary" class="mono">
           {{ queue.summary.ok }} {{ t("de") }} {{ queue.summary.total }}
-          {{ t("actualizados") }}<template v-if="queue.summary.failed">
+          {{ t("actualizados")
+          }}<template v-if="queue.summary.failed">
             · {{ queue.summary.failed }} {{ t("fallidos") }}</template
-          ><template v-if="queue.summary.detenida"> · {{ t("detenida") }}</template>
+          ><template v-if="queue.summary.detenida">
+            · {{ t("detenida") }}</template
+          >
         </span>
         <span v-if="queue.active || state.loading" class="spinner mini"></span>
       </span>
@@ -157,7 +171,10 @@ onUnmounted(() => {
     </p>
     <p v-else-if="state.error" class="error mono">{{ state.error }}</p>
 
-    <div v-if="state.snapshot && packages.length === 0 && search" class="vacio mono">
+    <div
+      v-if="state.snapshot && packages.length === 0 && search"
+      class="vacio mono"
+    >
       {{ t("sinCoincidencias", { q: search }) }}
     </div>
     <div v-else-if="state.snapshot && packages.length === 0" class="vacio mono">
@@ -320,7 +337,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  transition: background 120ms, color 120ms;
+  transition:
+    background 120ms,
+    color 120ms;
 }
 
 .controles button:not(:disabled):hover,
