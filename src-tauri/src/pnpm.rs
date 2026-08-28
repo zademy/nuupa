@@ -6,7 +6,7 @@
 use crate::kernel::{
     armar, con_extension, correr, correr_streaming, find_in_path, guardar_path_nvm, home,
     local_app_data, no_encontrado, parse_outdated, primer_existente, version_de, EspacioGlobal,
-    Runner, RunnerOutput,
+    Runner, RunnerOutput, PLAZO_CONSULTA, PLAZO_INSTALACION,
 };
 use std::path::{Path, PathBuf};
 
@@ -52,12 +52,12 @@ impl RealPnpmRunner {
             .ok_or_else(|| no_encontrado("pnpm", &buscadas))?;
         // The probes use the same prepended PATH as run(): without it,
         // from Finder the version would silently read "unknown".
-        let pnpm_version = version_de(&mut Self::command(&bin, &["--version"]))
+        let pnpm_version = version_de(Self::command(&bin, &["--version"]))
             .unwrap_or_else(|| "unknown".to_string());
         let mut probe = std::process::Command::new("node");
         probe.arg("--version");
         guardar_path_nvm(&mut probe);
-        let node_version = version_de(&mut probe).map(|v| crate::kernel::sin_v(&v).to_string());
+        let node_version = version_de(probe).map(|v| crate::kernel::sin_v(&v).to_string());
         Ok(Self {
             bin,
             pnpm_version,
@@ -83,7 +83,7 @@ impl Runner for RealPnpmRunner {
     }
 
     fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-        correr(&mut Self::command(&self.bin, args))
+        correr(Self::command(&self.bin, args), &PLAZO_CONSULTA)
     }
 
     fn run_streaming(
@@ -91,7 +91,7 @@ impl Runner for RealPnpmRunner {
         args: &[&str],
         on_line: &mut dyn FnMut(&str),
     ) -> std::io::Result<RunnerOutput> {
-        correr_streaming(Self::command(&self.bin, args), on_line)
+        correr_streaming(Self::command(&self.bin, args), on_line, &PLAZO_INSTALACION)
     }
 }
 

@@ -2152,6 +2152,7 @@ dependencies = [
 name = "nuupa"
 version = "0.3.3"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tauri",

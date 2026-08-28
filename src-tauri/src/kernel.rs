@@ -13,6 +13,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 /// Global package: name, installed version, latest known version and
 /// whether it is outdated (computed in Rust: the UI never re-derives it).
@@ -69,6 +75,7 @@ pub struct UpdateOutcome {
 /// Contract: npm/pnpm `outdated` exits with code 1 when there ARE
 /// outdated packages — that is a valid result, not an error. Only a spawn
 /// failure (or a hard failure with no useful output) propagates as `Err`.
+#[derive(Debug)]
 pub struct RunnerOutput {
     pub stdout: String,
     pub stderr: String,
@@ -203,24 +210,97 @@ pub fn instalar(
     })
 }
 
-/// Runs a command collecting all of its output (no streaming).
-pub fn correr(cmd: &mut std::process::Command) -> std::io::Result<RunnerOutput> {
-    let out = cmd.output()?;
-    Ok(RunnerOutput {
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        exit_code: out.status.code().unwrap_or(-1),
-    })
+/// Deadline of a manager command: `total` until the escalation starts,
+/// `grace` between the courteous signal and the forced kill (#11). A hung
+/// manager becomes an error, never a frozen app.
+#[derive(Debug, Clone, Copy)]
+pub struct Plazo {
+    pub total: Duration,
+    pub grace: Duration,
+}
+
+/// Queries (`ls`, `outdated`, `--version`): seconds against the registry.
+pub const PLAZO_CONSULTA: Plazo = Plazo {
+    total: Duration::from_secs(60),
+    grace: Duration::from_secs(5),
+};
+
+/// Installations (`install`/`add -g`): they legitimately take minutes.
+pub const PLAZO_INSTALACION: Plazo = Plazo {
+    total: Duration::from_secs(300),
+    grace: Duration::from_secs(5),
+};
+
+/// The timeout error the UI will show, with the binary that never
+/// answered.
+fn plazo_vencido(cmd: &std::process::Command, total: Duration) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "{} no respondió en {} s (proceso finalizado)",
+            cmd.get_program().to_string_lossy(),
+            total.as_secs()
+        ),
+    )
+}
+
+/// Escalated termination of a hung child: courteous signal, `grace`, then
+/// forced kill — and the reaping that leaves no zombie. On Windows the
+/// only available termination IS the hard one.
+///
+/// Managers arrive through shims (`sh` → node) and the direct child is
+/// just the wrapper: a kill to it leaves the grandchildren alive holding
+/// the output pipe. The child runs in its OWN process group (see the
+/// spawn) and the escalation signals the whole group.
+fn finalizar(hijo: &Mutex<std::process::Child>, grace: Duration) {
+    let Ok(mut hijo) = hijo.lock() else { return };
+    if hijo.try_wait().map(|t| t.is_some()).unwrap_or(false) {
+        return; // it died on its own while we armed the watch
+    }
+    #[cfg(unix)]
+    {
+        let grupo = -(hijo.id() as i32);
+        // SIGTERM to the group lets the manager close its installation
+        // orderly.
+        unsafe { libc::kill(grupo, libc::SIGTERM) };
+        let tope = std::time::Instant::now() + grace;
+        while std::time::Instant::now() < tope {
+            if hijo.try_wait().map(|t| t.is_some()).unwrap_or(true) {
+                return; // the courteous one was enough
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        unsafe { libc::kill(grupo, libc::SIGKILL) };
+        let _ = hijo.wait(); // reaps the wrapper: no zombies
+    }
+    #[cfg(windows)]
+    {
+        let _ = hijo.kill(); // TerminateProcess
+        let _ = hijo.wait();
+    }
+}
+
+/// Runs a command collecting all of its output (no streaming), under a
+/// deadline.
+pub fn correr(cmd: std::process::Command, plazo: &Plazo) -> std::io::Result<RunnerOutput> {
+    correr_streaming(cmd, &mut |_| {}, plazo)
 }
 
 /// Runs a command with pipes and streams each stdout line to `on_line` as
 /// it arrives; stderr is read on a separate thread (not streamed: manager
-/// progress output is polluted with control sequences).
+/// progress output is polluted with control sequences). Under `plazo`: a
+/// watchdog thread escalates the child's termination when it expires.
 pub fn correr_streaming(
     mut cmd: std::process::Command,
     on_line: &mut dyn FnMut(&str),
+    plazo: &Plazo,
 ) -> std::io::Result<RunnerOutput> {
     use std::io::{BufRead, BufReader};
+    // Own process group: the escalation can signal the whole family
+    // (shims leave grandchildren holding the pipe) and the child does not
+    // receive the app's terminal signals.
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -239,17 +319,58 @@ pub fn correr_streaming(
         buf
     });
 
+    // The watchdog sleeps the whole `total` unless the child finishes
+    // first (then the channel wakes it up). The child travels in a mutex
+    // because killing it needs `&mut` — the wait below never holds the
+    // lock while blocking.
+    let hijo = Arc::new(Mutex::new(child));
+    let vencio = Arc::new(AtomicBool::new(false));
+    let (listo_tx, listo_rx) = mpsc::channel::<()>();
+    let (vigia_hijo, vigia_vencio) = (Arc::clone(&hijo), Arc::clone(&vencio));
+    let vigia_plazo = *plazo; // Copy: el hilo vive más que la llamada
+    let vigia = std::thread::spawn(move || {
+        if listo_rx.recv_timeout(vigia_plazo.total).is_ok() {
+            return; // the child finished in time
+        }
+        vigia_vencio.store(true, Ordering::Release);
+        finalizar(&vigia_hijo, vigia_plazo.grace);
+    });
+
     let mut stdout_str = String::new();
+    let mut fallo_lectura: Option<std::io::Error> = None;
     for line in BufReader::new(stdout).lines() {
-        let line = line?;
-        on_line(&line);
-        stdout_str.push_str(&line);
-        stdout_str.push('\n');
+        match line {
+            Ok(line) => {
+                on_line(&line);
+                stdout_str.push_str(&line);
+                stdout_str.push('\n');
+            }
+            Err(e) => {
+                fallo_lectura = Some(e);
+                break;
+            }
+        }
     }
+
+    // Polling wait: brief locks only, so the watchdog can always get in.
+    let status = loop {
+        if let Some(st) = hijo.lock().unwrap().try_wait()? {
+            break st;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = listo_tx.send(());
+    let _ = vigia.join();
     let stderr_str = stderr_handle
         .join()
         .map_err(|_| std::io::Error::other("stderr thread died"))?;
-    let status = child.wait()?;
+
+    if vencio.load(Ordering::Acquire) {
+        return Err(plazo_vencido(&cmd, plazo.total));
+    }
+    if let Some(e) = fallo_lectura {
+        return Err(e);
+    }
     Ok(RunnerOutput {
         stdout: stdout_str,
         stderr: stderr_str,
@@ -390,12 +511,12 @@ pub fn no_encontrado(gestor: &str, buscadas: &[PathBuf]) -> std::io::Error {
 }
 
 /// Runs a probe command (`--version`) and returns its trimmed stdout if
-/// it ended well; `None` if it could not run.
-pub fn version_de(cmd: &mut std::process::Command) -> Option<String> {
-    let out = cmd.output().ok()?;
-    let salida = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    out.status
-        .success()
+/// it ended well; `None` if it could not run. Under the query deadline:
+/// discovery cannot hang either.
+pub fn version_de(cmd: std::process::Command) -> Option<String> {
+    let out = correr(cmd, &PLAZO_CONSULTA).ok()?;
+    let salida = out.stdout.trim().to_string();
+    (out.exit_code == 0)
         .then_some(salida)
         .filter(|s| !s.is_empty())
 }
@@ -699,5 +820,94 @@ mod tests {
         );
         assert!(msg.contains("/Users/ejemplo/Library/pnpm"), "{msg}");
         assert!(msg.contains("/opt/pnpm"), "{msg}");
+    }
+
+    // ---- Plazos: procesos REALES colgados (#11) ----
+    //
+    // Lo que se prueba es el manejo del hijo (escalada de finalización),
+    // por eso no hay mock: `sh`/`sleep` de verdad. Guardadas a unix porque
+    // CI corre `cargo test` en Linux; Windows compila el mismo mecanismo
+    // (allí la única terminación es la dura) pero no ejecuta estas.
+
+    /// Un comando que duerme `segundos` (el "gestor colgado").
+    #[cfg(unix)]
+    fn dormilon(segundos: u32) -> std::process::Command {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(format!("sleep {segundos}"));
+        c
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_con_proceso_colgado_corta_con_error_de_plazo() {
+        let plazo = Plazo {
+            total: Duration::from_millis(150),
+            grace: Duration::from_millis(300),
+        };
+        let inicio = std::time::Instant::now();
+        let err = correr(dormilon(30), &plazo).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("no respondió"), "{err}");
+        // cortó por el plazo, no porque `sleep 30` terminara
+        assert!(
+            inicio.elapsed() < Duration::from_secs(5),
+            "tardó {:?}",
+            inicio.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_escalada_a_kill_si_ignora_la_senal_cortes() {
+        // `sh` ignora TERM (como un gestor atascado de verdad); sus
+        // `sleep` nietos mueren con el TERM del grupo pero el bucle
+        // sigue: solo el KILL del grupo posterior al grace lo corta.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("trap '' TERM; while :; do sleep 0.1; done");
+        let plazo = Plazo {
+            total: Duration::from_millis(150),
+            grace: Duration::from_millis(300),
+        };
+        let inicio = std::time::Instant::now();
+        let err = correr(cmd, &plazo).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        // no murió con la señal cortés: esperó el grace y recibió KILL
+        assert!(
+            inicio.elapsed() >= plazo.total + plazo.grace,
+            "murió antes de la escalada: {:?}",
+            inicio.elapsed()
+        );
+        assert!(
+            inicio.elapsed() < Duration::from_secs(5),
+            "tardó {:?}",
+            inicio.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_streaming_entrega_lo_emitido_antes_del_corte() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("echo linea1; sleep 30");
+        let plazo = Plazo {
+            total: Duration::from_millis(150),
+            grace: Duration::from_millis(300),
+        };
+        let mut lineas = Vec::new();
+        let err = correr_streaming(cmd, &mut |l| lineas.push(l.to_string()), &plazo).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        // la salida parcial emitida antes del corte llegó al log
+        assert_eq!(lineas, vec!["linea1"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correr_con_comando_rapido_termina_normal() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("echo hola");
+        let out = correr(cmd, &PLAZO_CONSULTA).unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.contains("hola"), "{}", out.stdout);
     }
 }
