@@ -17,8 +17,7 @@ use cola::{EventoCola, Motivo, ResultadoCola, Resumen};
 use kernel::{Runner, Snapshot, UpdateOutcome};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 
 /// A supported manager: visible command, install verb and how its
@@ -134,13 +133,9 @@ fn nucleo_set_excluded(dir: &Path, gestor: &str, nombres: Vec<String>) -> Result
 /// Command dependencies, resolved once at startup.
 struct Contexto {
     dir_config: PathBuf,
-    /// Stop (#16): the queue's in-flight package is CUT. Only one queue
-    /// at a time makes sense.
-    parar: Arc<AtomicBool>,
-    /// The panel going away: the in-flight package FINISHES (cutting an
-    /// npm install mid-write leaves it broken), the next ones never
-    /// start.
-    suave: Arc<AtomicBool>,
+    /// The queue's shared flags: Stop (cuts, #16), graceful abandonment
+    /// (the panel went away) and the ONE-active-queue guard (#12).
+    banderas: cola::Banderas,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -231,10 +226,9 @@ async fn actualizar_todo(
 ) -> Result<ResultadoActualizarTodo, String> {
     let def = def_gestor_en(GESTORES, &gestor)?;
     let dir = estado.dir_config.clone();
-    let parar = estado.parar.clone();
-    let suave = estado.suave.clone();
+    let banderas = estado.banderas.compartidas();
     tauri::async_runtime::spawn_blocking(move || {
-        let (resumen, snapshot) = cola::correr(def, &dir, &parar, &suave, &mut |ev| match ev {
+        let (resumen, snapshot) = cola::correr(def, &dir, &banderas, &mut |ev| match ev {
             EventoCola::Linea { paquete, linea } => {
                 let _ = app.emit(
                     "pm-output",
@@ -296,14 +290,14 @@ impl EventoPaquete {
 /// deadline, #16) and the pending ones never start.
 #[tauri::command]
 fn detener_actualizar_todo(estado: tauri::State<Contexto>) {
-    estado.parar.store(true, Ordering::Relaxed);
+    estado.banderas.parar.store(true, Ordering::Relaxed);
 }
 
 /// The panel went away: the in-flight package FINISHES and the pending
 /// ones never start — nothing is cut.
 #[tauri::command]
 fn abandonar_actualizar_todo(estado: tauri::State<Contexto>) {
-    estado.suave.store(true, Ordering::Relaxed);
+    estado.banderas.suave.store(true, Ordering::Relaxed);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -317,8 +311,7 @@ pub fn run() {
                 .map_err(|e| format!("no config directory: {e}"))?;
             app.manage(Contexto {
                 dir_config,
-                parar: Arc::new(AtomicBool::new(false)),
-                suave: Arc::new(AtomicBool::new(false)),
+                banderas: cola::Banderas::nuevas(),
             });
             Ok(())
         })

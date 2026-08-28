@@ -70,18 +70,65 @@ fn excluidos_de(dir: &Path, gestor: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Runs the whole queue. `parar` is Stop (#16): checked before each
-/// package AND carried to the engine's watchdog, which CUTS the in-flight
-/// one. `suave` is the panel going away: the in-flight package FINISHES
-/// (an `npm i -g` cut mid-write leaves a broken install) and the next
-/// ones never start. Both reset at the start: every queue starts clean.
+/// The queue's shared flags: Stop (#16: cuts the in-flight install),
+/// graceful abandonment (the panel went away: finish, don't start) and
+/// the ONE-active-queue guard (#12) — a second start is an explicit
+/// error, so it can never silently un-stop the first.
+pub struct Banderas {
+    pub parar: Arc<AtomicBool>,
+    pub suave: Arc<AtomicBool>,
+    activa: Arc<AtomicBool>,
+}
+
+impl Banderas {
+    pub fn nuevas() -> Self {
+        Self {
+            parar: Arc::new(AtomicBool::new(false)),
+            suave: Arc::new(AtomicBool::new(false)),
+            activa: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Shares the same underlying flags (to cross into a thread).
+    pub fn compartidas(&self) -> Self {
+        Self {
+            parar: Arc::clone(&self.parar),
+            suave: Arc::clone(&self.suave),
+            activa: Arc::clone(&self.activa),
+        }
+    }
+}
+
+/// Runs the whole queue. Only ONE at a time (#12): while one runs, a
+/// second start is rejected with an explicit error — it cannot reset the
+/// first one's flags. Once finished, the next one starts normally.
 pub fn correr(
     def: &DefinicionGestor,
     dir_config: &Path,
-    parar: &Arc<AtomicBool>,
-    suave: &Arc<AtomicBool>,
+    banderas: &Banderas,
     emitir: &mut dyn FnMut(&EventoCola),
 ) -> Result<(Resumen, Snapshot), String> {
+    if banderas.activa.swap(true, Ordering::AcqRel) {
+        return Err("solo una Actualizar todo a la vez".to_string());
+    }
+    let resultado = correr_activa(def, dir_config, banderas, emitir);
+    banderas.activa.store(false, Ordering::Release);
+    resultado
+}
+
+/// The accepted queue's body. `parar` is checked before each package AND
+/// carried to the engine's watchdog, which CUTS the in-flight one. `suave`
+/// is the panel going away: the in-flight package FINISHES (an `npm i -g`
+/// cut mid-write leaves a broken install) and the next ones never start.
+/// Both reset at the start: every accepted queue starts clean.
+fn correr_activa(
+    def: &DefinicionGestor,
+    dir_config: &Path,
+    banderas: &Banderas,
+    emitir: &mut dyn FnMut(&EventoCola),
+) -> Result<(Resumen, Snapshot), String> {
+    let parar = &banderas.parar;
+    let suave = banderas.suave.as_ref();
     parar.store(false, Ordering::Relaxed);
     suave.store(false, Ordering::Relaxed);
     let runner = (def.runner)().map_err(|e| e.to_string())?;
@@ -212,11 +259,8 @@ mod tests {
     }
 
     fn cola_con(def: &DefinicionGestor, dir: &Path) -> (Resumen, Snapshot) {
-        let (parar, suave) = (
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
-        );
-        correr(def, dir, &parar, &suave, &mut |_| {}).unwrap()
+        let banderas = Banderas::nuevas();
+        correr(def, dir, &banderas, &mut |_| {}).unwrap()
     }
 
     #[test]
@@ -301,19 +345,16 @@ mod tests {
     #[test]
     fn detener_finaliza_el_en_curso_como_detenido_y_no_toca_los_pendientes() {
         let dir = tempfile::tempdir().unwrap();
-        let (parar, suave) = (
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
-        );
+        let banderas = Banderas::nuevas();
         let def = def_de_prueba();
         let mut eventos = Vec::new();
-        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| match ev {
+        let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| match ev {
             EventoCola::Empieza { paquete } => {
                 // Stop requested AS the first package starts: the engine
                 // cuts it mid-flight (the fake runner is faithful to
                 // that), the second one never starts.
                 if paquete == "context-mode" {
-                    parar.store(true, Ordering::Relaxed);
+                    banderas.parar.store(true, Ordering::Relaxed);
                 }
                 eventos.push(format!("empieza {paquete}"));
             }
@@ -348,15 +389,12 @@ mod tests {
         // Stop AFTER the first result, BEFORE the second start: nothing
         // was in flight, so nothing gets cut — same as it always was.
         let dir = tempfile::tempdir().unwrap();
-        let (parar, suave) = (
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
-        );
+        let banderas = Banderas::nuevas();
         let def = def_de_prueba();
         let mut actualizados = Vec::new();
-        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| {
+        let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| {
             if let EventoCola::Resultado(_) = ev {
-                parar.store(true, Ordering::Relaxed);
+                banderas.parar.store(true, Ordering::Relaxed);
             }
             if let EventoCola::Empieza { paquete } = ev {
                 actualizados.push(paquete.clone());
@@ -382,16 +420,13 @@ mod tests {
         // cutting an npm install mid-write leaves it broken — and the
         // next ones never start.
         let dir = tempfile::tempdir().unwrap();
-        let (parar, suave) = (
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
-        );
+        let banderas = Banderas::nuevas();
         let def = def_de_prueba();
         let mut actualizados = Vec::new();
-        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| {
+        let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| {
             if let EventoCola::Empieza { paquete } = ev {
                 if paquete == "context-mode" {
-                    suave.store(true, Ordering::Relaxed);
+                    banderas.suave.store(true, Ordering::Relaxed);
                 }
                 actualizados.push(paquete.clone());
             }
@@ -529,10 +564,9 @@ mod tests {
             },
             ..def_de_prueba()
         };
-        let parar = Arc::new(AtomicBool::new(false));
-        let suave = Arc::new(AtomicBool::new(false));
+        let banderas = Banderas::nuevas();
         let mut resultados = Vec::new();
-        let (resumen, _) = correr(&def, dir.path(), &parar, &suave, &mut |ev| {
+        let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| {
             if let EventoCola::Resultado(r) = ev {
                 resultados.push((r.paquete.clone(), r.motivo));
             }
@@ -556,5 +590,50 @@ mod tests {
                 ("hunkdiff".to_string(), Motivo::Ok),
             ]
         );
+    }
+
+    #[test]
+    fn segundo_arranque_con_una_cola_activa_es_rechazado_y_no_la_des_cancela() {
+        // A second start (as if another tab raced) runs WHILE the first
+        // queue is mid-package: it must be rejected AND leave the first
+        // one's Stop intact.
+        let dir = tempfile::tempdir().unwrap();
+        let banderas = Banderas::nuevas();
+        let def = def_de_prueba();
+        let anidado = std::cell::RefCell::new(None);
+        let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| {
+            if let EventoCola::Empieza { paquete } = ev {
+                if paquete == "context-mode" {
+                    banderas.parar.store(true, Ordering::Relaxed);
+                    *anidado.borrow_mut() = Some(correr(&def, dir.path(), &banderas, &mut |_| {}));
+                }
+            }
+        })
+        .unwrap();
+        let rechazo = anidado.into_inner().expect("nested start ran");
+        assert!(rechazo.is_err());
+        assert!(rechazo.unwrap_err().contains("solo una"));
+        // the first queue was still CUT: the rejected start never reset
+        // its Stop flag
+        assert_eq!(
+            resumen,
+            Resumen {
+                total: 2,
+                ok: 0,
+                failed: 0,
+                detenidos: 1,
+                detenida: true
+            }
+        );
+    }
+
+    #[test]
+    fn terminada_la_cola_se_puede_arrancar_otra() {
+        let dir = tempfile::tempdir().unwrap();
+        let banderas = Banderas::nuevas();
+        let def = def_de_prueba();
+        correr(&def, dir.path(), &banderas, &mut |_| {}).unwrap();
+        let (segunda, _) = correr(&def, dir.path(), &banderas, &mut |_| {}).unwrap();
+        assert_eq!(segunda.ok, 2);
     }
 }
