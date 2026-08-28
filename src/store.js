@@ -135,19 +135,38 @@ export function createPackagesStore(
   // the backend confirms, so two fast clicks can never lose an exclusion.
   const excluded = ref([]);
   const isExcluded = (name) => excluded.value.includes(name);
+  // #17: the file's state — "corrupto"/"ilegible" block every write until
+  // the user resolves (the banner asks).
+  const estadoExclusiones = ref("ok");
+  const detalleExclusiones = ref("");
   // Per-package in-flight: disables THAT row's toggle only.
   const excluyendo = reactive({});
 
   async function cargarExclusiones() {
     try {
-      excluded.value = await invokeFn("get_excluded", { gestor });
+      const r = await invokeFn("get_excluded", { gestor });
+      estadoExclusiones.value = r?.estado ?? "ok";
+      detalleExclusiones.value = r?.detalle ?? "";
+      excluded.value = r?.nombres ?? [];
     } catch (e) {
       appendLog(`${gestor}: ${t("cargarExclusionesFallo", { e })}`);
     }
   }
 
+  // The user's explicit choice (#17): the damaged original is kept as
+  // evidence (.corrupt) and the file starts clean.
+  async function exclusionesDeCero() {
+    try {
+      await invokeFn("exclusiones_de_cero");
+      await cargarExclusiones();
+    } catch (e) {
+      appendLog(`${gestor}: ${t("guardarExclusionesFallo", { e })}`);
+    }
+  }
+
   async function toggleExcluded(name) {
     if (excluyendo[name]) return; // in flight: the second click is a no-op
+    if (estadoExclusiones.value !== "ok") return; // unresolved file: blocked
     excluyendo[name] = true;
     const quitar = isExcluded(name);
     try {
@@ -309,6 +328,9 @@ export function createPackagesStore(
     abandonarCola,
     procesarEventoCola,
     cargarExclusiones,
+    exclusionesDeCero,
+    estadoExclusiones,
+    detalleExclusiones,
     toggleExcluded,
     excluyendoAhora,
     isUpdating,

@@ -61,13 +61,17 @@ pub enum EventoCola {
 }
 
 fn excluidos_de(dir: &Path, gestor: &str) -> HashSet<String> {
-    crate::exclusiones::cargar(dir)
-        .0
-        .get(gestor)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
+    // Corrupt/unreadable (#17): nothing to skip on — the banner asks the
+    // user to resolve before this matters.
+    match crate::exclusiones::leer(dir) {
+        crate::exclusiones::Lectura::Cargado { mapa, .. } => mapa
+            .get(gestor)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+        _ => HashSet::new(),
+    }
 }
 
 /// The queue's shared flags: Stop (#16: cuts the in-flight install),

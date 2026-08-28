@@ -238,7 +238,7 @@ describe("store de paquetes globales", () => {
       vistos.push(cmd);
       if (args?.gestor !== "pnpm") throw new Error(`wrong manager in ${cmd}`);
       if (cmd === "list_globals") return SNAPSHOT;
-      if (cmd === "get_excluded") return [];
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
       if (cmd === "excluir_paquete") return {};
       if (cmd === "update_package") return { success: true };
     }, "pnpm");
@@ -260,7 +260,8 @@ describe("store de paquetes globales", () => {
     const fakePorGestor = (gestor) => async (cmd, args) => {
       if (args?.gestor !== gestor)
         throw new Error(`crossed manager: ${args?.gestor}`);
-      if (cmd === "get_excluded") return excluidosPorGestor[gestor];
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: excluidosPorGestor[gestor] };
       if (cmd === "list_globals") return SNAPSHOT;
       throw new Error(`unexpected command: ${cmd}`);
     };
@@ -515,7 +516,8 @@ describe("store de paquetes globales", () => {
   it("updateAll salta a los excluidos: la cola del backend los filtra", async () => {
     const store = createPackagesStore(async (cmd, args) => {
       if (cmd === "list_globals") return SNAPSHOT;
-      if (cmd === "get_excluded") return ["hunkdiff"];
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
       if (cmd === "actualizar_todo") {
         // the backend builds the queue without hunkdiff: it shows in the summary
         expect(args).toEqual({ gestor: "npm" });
@@ -567,7 +569,8 @@ describe("store de paquetes globales", () => {
   it("toggleExcluded usa comandos granulares y aplica lo confirmado", async () => {
     const comandos = [];
     const store = createPackagesStore(async (cmd, args) => {
-      if (cmd === "get_excluded") return ["context-mode"];
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["context-mode"] };
       if (cmd === "excluir_paquete" || cmd === "quitar_exclusion") {
         comandos.push([cmd, args.paquete]);
         return {};
@@ -589,7 +592,7 @@ describe("store de paquetes globales", () => {
     // one exclusion. Granular ops cannot.
     const pendientes = [];
     const store = createPackagesStore(async (cmd) => {
-      if (cmd === "get_excluded") return [];
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
       if (cmd === "excluir_paquete")
         return new Promise((r) => pendientes.push(r));
     });
@@ -609,7 +612,7 @@ describe("store de paquetes globales", () => {
     let resolver;
     const comandos = [];
     const store = createPackagesStore(async (cmd) => {
-      if (cmd === "get_excluded") return [];
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
       if (cmd === "excluir_paquete") {
         comandos.push(cmd);
         return new Promise((r) => (resolver = r));
@@ -635,7 +638,8 @@ describe("store de paquetes globales", () => {
     };
     const store = createPackagesStore(async (cmd) => {
       if (cmd === "list_globals") return unSoloDesactualizadoExcluido;
-      if (cmd === "get_excluded") return ["hunkdiff"];
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
     });
     await store.cargarExclusiones();
     await store.refresh();
@@ -644,7 +648,7 @@ describe("store de paquetes globales", () => {
 
   it("un fallo del guardado no cambia el estado y queda en el log", async () => {
     const store = createPackagesStore(async (cmd) => {
-      if (cmd === "get_excluded") return [];
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
       if (cmd === "excluir_paquete") throw "disk full";
     });
     await store.cargarExclusiones();
@@ -711,5 +715,43 @@ describe("store de paquetes globales", () => {
     });
     await cola;
     expect(store.queue.active).toBe(false);
+  });
+
+  it("archivo corrupto: estado visible, escrituras bloqueadas y empezar de cero resuelve", async () => {
+    const llamadas = [];
+    let estado = "corrupto";
+    const store = createPackagesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "get_excluded")
+        return estado === "corrupto"
+          ? { estado: "corrupto", nombres: [] }
+          : { estado: "ok", nombres: [] };
+      if (cmd === "exclusiones_de_cero") {
+        estado = "ok";
+        return {};
+      }
+      if (cmd === "excluir_paquete") throw "bloqueado";
+    });
+    await store.cargarExclusiones();
+    expect(store.estadoExclusiones.value).toBe("corrupto");
+    // the toggle is a no-op while unresolved (nothing even reaches the
+    // backend)
+    await store.toggleExcluded("hunkdiff");
+    expect(llamadas).not.toContain("excluir_paquete");
+    expect(store.isExcluded("hunkdiff")).toBe(false);
+    // the user chooses to start clean → usable again
+    await store.exclusionesDeCero();
+    expect(llamadas).toContain("exclusiones_de_cero");
+    expect(store.estadoExclusiones.value).toBe("ok");
+  });
+
+  it("archivo ilegible muestra el detalle del error", async () => {
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "get_excluded")
+        return { estado: "ilegible", detalle: "Permission denied" };
+    });
+    await store.cargarExclusiones();
+    expect(store.estadoExclusiones.value).toBe("ilegible");
+    expect(store.detalleExclusiones.value).toContain("Permission denied");
   });
 });

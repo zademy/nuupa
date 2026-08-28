@@ -112,14 +112,72 @@ fn correr_update(
         .map_err(|e| e.to_string())
 }
 
-/// A manager's excluded packages; the legacy-format migration runs here,
-/// once, while the file still is legacy.
-fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<Vec<String>, String> {
-    let (mapa, era_legado) = exclusiones::cargar(dir);
-    if era_legado {
-        exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())?;
+/// The exclusions file's state for the UI (#17): "corrupto" BLOCKS all
+/// writes until the user resolves; "ilegible" shows why it cannot read.
+#[derive(Serialize)]
+struct EstadoExclusiones {
+    estado: &'static str, // "ok" | "corrupto" | "ilegible"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detalle: Option<String>,
+    /// This gestor's excluded names — only meaningful with estado "ok".
+    nombres: Vec<String>,
+}
+
+/// A gestor's excluded packages AND the file's state (#17): a corrupt
+/// file is preserved as evidence and never silently treated as empty.
+fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<EstadoExclusiones, String> {
+    use exclusiones::Lectura;
+    Ok(match exclusiones::leer(dir) {
+        Lectura::Cargado { mapa, era_legado } => {
+            // the legacy-format migration runs here, once
+            if era_legado {
+                exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())?;
+            }
+            EstadoExclusiones {
+                estado: "ok",
+                detalle: None,
+                nombres: mapa.get(gestor).cloned().unwrap_or_default(),
+            }
+        }
+        Lectura::Inexistente => EstadoExclusiones {
+            estado: "ok",
+            detalle: None,
+            nombres: Vec::new(),
+        },
+        Lectura::Corrupto => {
+            // evidence FIRST: the damaged original is preserved; the
+            // writes below refuse until the user resolves (#17)
+            let _ = exclusiones::resguardar(dir);
+            EstadoExclusiones {
+                estado: "corrupto",
+                detalle: None,
+                nombres: Vec::new(),
+            }
+        }
+        Lectura::Ilegible(e) => EstadoExclusiones {
+            estado: "ilegible",
+            detalle: Some(e.to_string()),
+            nombres: Vec::new(),
+        },
+    })
+}
+
+/// The map a granular op works on, or WHY writing is refused (#17): a
+/// file we cannot understand (corrupt) or cannot read is never
+/// overwritten by us.
+fn mapa_escriturable(
+    dir: &Path,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    use exclusiones::Lectura;
+    match exclusiones::leer(dir) {
+        Lectura::Cargado { mapa, .. } => Ok(mapa),
+        Lectura::Inexistente => Ok(std::collections::BTreeMap::new()),
+        Lectura::Corrupto => Err(
+            "el archivo de exclusiones está dañado (conservado como .corrupt): resuélvelo antes de escribir"
+                .to_string(),
+        ),
+        Lectura::Ilegible(e) => Err(format!("no se puede leer el archivo de exclusiones: {e}")),
     }
-    Ok(mapa.get(gestor).cloned().unwrap_or_default())
 }
 
 /// Excludes ONE package for ONE gestor (#14): the backend is the single
@@ -134,7 +192,7 @@ fn nucleo_excluir(
     paquete: &str,
 ) -> Result<(), String> {
     let _candado = candado.lock().unwrap();
-    let (mut mapa, _) = exclusiones::cargar(dir);
+    let mut mapa = mapa_escriturable(dir)?;
     exclusiones::excluir(&mut mapa, gestor, paquete);
     exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
 }
@@ -148,9 +206,17 @@ fn nucleo_quitar(
     paquete: &str,
 ) -> Result<(), String> {
     let _candado = candado.lock().unwrap();
-    let (mut mapa, _) = exclusiones::cargar(dir);
+    let mut mapa = mapa_escriturable(dir)?;
     exclusiones::quitar(&mut mapa, gestor, paquete);
     exclusiones::guardar(dir, &mapa).map_err(|e| e.to_string())
+}
+
+/// Resolves the corrupt emergency by starting clean (#17): evidence
+/// (.corrupt) first, then a valid empty map. Only ever with the user's
+/// explicit choice.
+fn nucleo_empezar_de_cero(candado: &Mutex<()>, dir: &Path) -> Result<(), String> {
+    let _candado = candado.lock().unwrap();
+    exclusiones::empezar_de_cero(dir).map_err(|e| e.to_string())
 }
 
 // ---- Commands (thin wrappers over the cores) ----
@@ -223,9 +289,18 @@ async fn update_package(
 }
 
 #[tauri::command]
-fn get_excluded(gestor: String, estado: tauri::State<Contexto>) -> Result<Vec<String>, String> {
+fn get_excluded(
+    gestor: String,
+    estado: tauri::State<Contexto>,
+) -> Result<EstadoExclusiones, String> {
     validar_gestor(&gestor)?;
     nucleo_get_excluded(&estado.dir_config, &gestor)
+}
+
+/// Resolves the corrupt-exclusions emergency by starting clean (#17).
+#[tauri::command]
+fn exclusiones_de_cero(estado: tauri::State<Contexto>) -> Result<(), String> {
+    nucleo_empezar_de_cero(&estado.candado_exclusiones, &estado.dir_config)
 }
 
 /// Excludes one package from Actualizar todo in its gestor (#14).
@@ -375,6 +450,7 @@ pub fn run() {
             get_excluded,
             excluir_paquete,
             quitar_exclusion,
+            exclusiones_de_cero,
             gestores_instalados,
             actualizar_todo,
             detener_actualizar_todo,
@@ -469,11 +545,11 @@ mod tests {
         std::fs::write(dir.path().join("exclusiones.json"), r#"["hunkdiff"]"#).unwrap();
         // legacy → the first read migrates once, as npm's
         assert_eq!(
-            nucleo_get_excluded(dir.path(), "npm").unwrap(),
+            nucleo_get_excluded(dir.path(), "npm").unwrap().nombres,
             ["hunkdiff"]
         );
         assert_eq!(
-            nucleo_get_excluded(dir.path(), "pnpm").unwrap(),
+            nucleo_get_excluded(dir.path(), "pnpm").unwrap().nombres,
             Vec::<String>::new()
         );
         // granular, idempotent, per (gestor, paquete)
@@ -482,9 +558,12 @@ mod tests {
         nucleo_excluir(&candado, dir.path(), "pnpm", "cowsay").unwrap(); // no duplicate
         nucleo_quitar(&candado, dir.path(), "npm", "hunkdiff").unwrap();
         nucleo_quitar(&candado, dir.path(), "npm", "hunkdiff").unwrap(); // absent: fine
-        assert_eq!(nucleo_get_excluded(dir.path(), "pnpm").unwrap(), ["cowsay"]);
         assert_eq!(
-            nucleo_get_excluded(dir.path(), "npm").unwrap(),
+            nucleo_get_excluded(dir.path(), "pnpm").unwrap().nombres,
+            ["cowsay"]
+        );
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "npm").unwrap().nombres,
             Vec::<String>::new()
         );
     }

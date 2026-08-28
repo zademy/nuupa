@@ -27,6 +27,9 @@ const {
   abandonarCola,
   procesarEventoCola,
   cargarExclusiones,
+  exclusionesDeCero,
+  estadoExclusiones,
+  detalleExclusiones,
   toggleExcluded,
   excluyendoAhora,
   isUpdating,
@@ -187,6 +190,29 @@ onUnmounted(() => {
       {{ t("sinPaquetes", { gestor }) }}
     </div>
 
+    <!-- #17: the exclusions file's emergency — writes blocked until the
+         user resolves it. -->
+    <div
+      v-if="
+        estadoExclusiones === 'corrupto' || estadoExclusiones === 'ilegible'
+      "
+      class="error emergencia"
+    >
+      <template v-if="estadoExclusiones === 'corrupto'">
+        {{ t("exclusionesCorruptas") }}
+      </template>
+      <template v-else>
+        {{ t("exclusionesIlegibles", { e: detalleExclusiones }) }}
+      </template>
+      <button @click="cargarExclusiones">{{ t("reintentar") }}</button>
+      <button
+        v-if="estadoExclusiones === 'corrupto'"
+        @click="exclusionesDeCero"
+      >
+        {{ t("exclusionesDeCero") }}
+      </button>
+    </div>
+
     <div v-if="state.snapshot" class="tabla-scroll">
       <table>
         <thead>
@@ -233,7 +259,8 @@ onUnmounted(() => {
                     :class="{ activo: isExcluded(p.name) }"
                     :disabled="
                       (!p.outdated && !isExcluded(p.name)) ||
-                      excluyendoAhora(p.name)
+                      excluyendoAhora(p.name) ||
+                      estadoExclusiones !== 'ok'
                     "
                     :title="
                       isExcluded(p.name) ? t('quitarExclusion') : t('excluir')

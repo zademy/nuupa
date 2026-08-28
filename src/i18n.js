@@ -62,6 +62,11 @@ export const MENSAJES = {
     paquetesDetenidos: "stopped mid-update",
     cargarExclusionesFallo: "could not load exclusions: {e}",
     guardarExclusionesFallo: "could not save exclusions: {e}",
+    exclusionesCorruptas:
+      "The exclusions file is damaged and was preserved as exclusiones.json.corrupt. Start clean, or repair it by hand and retry.",
+    exclusionesIlegibles: "The exclusions file could not be read: {e}",
+    exclusionesDeCero: "Start clean",
+    reintentar: "Retry",
     colaTerminada: "queue finished — {ok} of {total} updated",
     colaFallo: "the queue failed: {e}",
   },
@@ -119,6 +124,11 @@ export const MENSAJES = {
     paquetesDetenidos: "detenidos a mitad de actualización",
     cargarExclusionesFallo: "no se pudieron cargar las exclusiones: {e}",
     guardarExclusionesFallo: "no se pudieron guardar las exclusiones: {e}",
+    exclusionesCorruptas:
+      "El archivo de exclusiones está dañado; se conservó como exclusiones.json.corrupt. Empieza de cero, o repáralo a mano y reintenta.",
+    exclusionesIlegibles: "No se pudo leer el archivo de exclusiones: {e}",
+    exclusionesDeCero: "Empezar de cero",
+    reintentar: "Reintentar",
     colaTerminada: "cola terminada — {ok} de {total} actualizados",
     colaFallo: "la cola falló: {e}",
   },
