@@ -145,9 +145,13 @@ export function createPackagesStore(
   async function cargarExclusiones() {
     try {
       const r = await invokeFn("get_excluded", { gestor });
-      estadoExclusiones.value = r?.estado ?? "ok";
+      // fail-closed: an unknown/absent estado BLOCKS writes — the whole
+      // point is not acting on what we do not understand (#17)
+      const e = r?.estado;
+      estadoExclusiones.value =
+        e === "ok" || e === "corrupto" || e === "ilegible" ? e : "ilegible";
       detalleExclusiones.value = r?.detalle ?? "";
-      excluded.value = r?.nombres ?? [];
+      excluded.value = e === "ok" ? (r?.nombres ?? []) : [];
     } catch (e) {
       appendLog(`${gestor}: ${t("cargarExclusionesFallo", { e })}`);
     }

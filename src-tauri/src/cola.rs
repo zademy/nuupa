@@ -153,6 +153,17 @@ fn correr_activa(
     let suave = banderas.suave.as_ref();
     parar.store(false, Ordering::Relaxed);
     suave.store(false, Ordering::Relaxed);
+    // An unresolved exclusions file (#17): the queue would run over
+    // EVERYTHING (unknown exclusions) — refuse until the user resolves.
+    if !matches!(
+        crate::exclusiones::leer(dir_config),
+        crate::exclusiones::Lectura::Cargado { .. } | crate::exclusiones::Lectura::Inexistente
+    ) {
+        return Err(
+            "el archivo de exclusiones está dañado o ilegible: resuélvelo antes de Actualizar todo"
+                .to_string(),
+        );
+    }
     let runner = (def.runner)().map_err(|e| e.to_string())?;
 
     // The queue is built on the real state at start: outdated, not
@@ -657,5 +668,16 @@ mod tests {
         correr(&def, dir.path(), &banderas, &mut |_| {}).unwrap();
         let (segunda, _) = correr(&def, dir.path(), &banderas, &mut |_| {}).unwrap();
         assert_eq!(segunda.ok, 2);
+    }
+
+    #[test]
+    fn cola_rechazada_con_exclusiones_irresolubles() {
+        // #17: with a corrupt exclusions file the queue would run over
+        // EVERYTHING (unknown exclusions) — it is refused instead.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("exclusiones.json"), "roto").unwrap();
+        let banderas = Banderas::nuevas();
+        let err = correr(&def_de_prueba(), dir.path(), &banderas, &mut |_| {}).unwrap_err();
+        assert!(err.contains("resuélvelo"), "{err}");
     }
 }

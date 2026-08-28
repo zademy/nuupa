@@ -88,17 +88,26 @@ pub fn quitar(mapa: &mut Mapa, gestor: &str, paquete: &str) {
     }
 }
 
-/// Preserves the damaged original as evidence (#17): copies the live file
-/// to `.corrupt` WITHOUT touching it — the corrupt one stays in place and
-/// writing is refused until the user resolves.
+/// Preserves the damaged original as evidence (#17): copies ONLY if the
+/// `.corrupt` copy does not exist yet — the FIRST evidence is the one
+/// that matters, and repeated reads (or a double click on Start clean)
+/// must never overwrite it.
 pub fn resguardar(dir: &Path) -> std::io::Result<()> {
-    fs::copy(dir.join(ARCHIVO), dir.join(format!("{ARCHIVO}.corrupt"))).map(|_| ())
+    let resguardo = dir.join(format!("{ARCHIVO}.corrupt"));
+    if resguardo.exists() {
+        return Ok(());
+    }
+    fs::copy(dir.join(ARCHIVO), &resguardo).map(|_| ())
 }
 
 /// Resolves the corrupt emergency by starting clean (#17): evidence
-/// first (.corrupt), then a valid empty map. Only ever called with the
-/// user's explicit choice.
+/// first (.corrupt), then a valid empty map. ONLY acts on a file that is
+/// STILL corrupt: one the user already repaired by hand is never
+/// overwritten by a stale banner.
 pub fn empezar_de_cero(dir: &Path) -> std::io::Result<()> {
+    if !matches!(leer(dir), Lectura::Corrupto) {
+        return Ok(()); // already valid (or gone): nothing to resolve
+    }
     let _ = resguardar(dir);
     guardar(dir, &Mapa::new())
 }
@@ -287,6 +296,35 @@ mod tests {
                 era_legado: false,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn resguardar_no_sobrescribe_la_evidencia_previa() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(ARCHIVO), "roto v2").unwrap();
+        fs::write(dir.path().join(format!("{ARCHIVO}.corrupt")), "roto v1").unwrap();
+        resguardar(dir.path()).unwrap();
+        // the FIRST evidence stays: repeated reads must not overwrite it
+        assert_eq!(
+            fs::read_to_string(dir.path().join(format!("{ARCHIVO}.corrupt"))).unwrap(),
+            "roto v1"
+        );
+    }
+
+    #[test]
+    fn empezar_de_cero_no_pisa_un_archivo_ya_reparado() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(ARCHIVO), "roto").unwrap();
+        resguardar(dir.path()).unwrap();
+        // the user repairs it by hand while the UI still shows the stale
+        // emergency banner
+        fs::write(dir.path().join(ARCHIVO), r#"{"npm": ["hunkdiff"]}"#).unwrap();
+        empezar_de_cero(dir.path()).unwrap(); // no-op: no longer corrupt
+        assert!(matches!(
+            leer(dir.path()),
+            Lectura::Cargado { ref mapa, .. }
+                if mapa.get("npm") == Some(&vec!["hunkdiff".to_string()])
         ));
     }
 }

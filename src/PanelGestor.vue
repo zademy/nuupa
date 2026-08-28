@@ -91,7 +91,9 @@ onUnmounted(() => {
         </label>
         <button
           class="primario"
-          :disabled="!hayDesactualizados || queue.active"
+          :disabled="
+            !hayDesactualizados || queue.active || estadoExclusiones !== 'ok'
+          "
           :title="t('actualizarTodoTitulo')"
           @click="updateAll"
         >

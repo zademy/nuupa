@@ -146,11 +146,14 @@ fn nucleo_get_excluded(dir: &Path, gestor: &str) -> Result<EstadoExclusiones, St
         },
         Lectura::Corrupto => {
             // evidence FIRST: the damaged original is preserved; the
-            // writes below refuse until the user resolves (#17)
-            let _ = exclusiones::resguardar(dir);
+            // writes below refuse until the user resolves (#17). A failed
+            // copy leaves a trace instead of silence.
+            let detalle = exclusiones::resguardar(dir)
+                .err()
+                .map(|e| format!("(no se pudo conservar la copia .corrupt: {e})"));
             EstadoExclusiones {
                 estado: "corrupto",
-                detalle: None,
+                detalle,
                 nombres: Vec::new(),
             }
         }
