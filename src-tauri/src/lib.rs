@@ -224,6 +224,31 @@ fn nucleo_empezar_de_cero(candado: &Mutex<()>, dir: &Path) -> Result<(), String>
 
 // ---- Commands (thin wrappers over the cores) ----
 
+/// The machine facts a diagnostics copy needs (#21): version, OS and the
+/// installed gestores, plus the user's home (to redact it on the way out).
+#[derive(Serialize)]
+struct Diagnostico {
+    version: &'static str,
+    so: String,
+    gestores: Vec<String>,
+    home: Option<String>,
+}
+
+fn nucleo_diagnostico(gestores: Vec<String>) -> Diagnostico {
+    Diagnostico {
+        version: env!("CARGO_PKG_VERSION"),
+        so: format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH),
+        gestores,
+        home: kernel::home().map(|h| h.display().to_string()),
+    }
+}
+
+/// Copy-diagnostics facts (#21): nothing else leaves the machine.
+#[tauri::command]
+fn diagnostico() -> Diagnostico {
+    nucleo_diagnostico(gestores_instalados())
+}
+
 /// Command dependencies, resolved once at startup.
 struct Contexto {
     dir_config: PathBuf,
@@ -457,7 +482,8 @@ pub fn run() {
             gestores_instalados,
             actualizar_todo,
             detener_actualizar_todo,
-            abandonar_actualizar_todo
+            abandonar_actualizar_todo,
+            diagnostico
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -574,5 +600,13 @@ mod tests {
     #[test]
     fn exclusiones_gestor_desconocido_rechazado_por_el_wrapper() {
         assert!(validar_gestor("yarn").is_err());
+    }
+
+    #[test]
+    fn diagnostico_lleva_version_so_y_gestores() {
+        let d = nucleo_diagnostico(vec!["npm".to_string(), "pnpm".to_string()]);
+        assert_eq!(d.version, env!("CARGO_PKG_VERSION"));
+        assert!(d.so.contains(std::env::consts::OS));
+        assert_eq!(d.gestores, vec!["npm", "pnpm"]);
     }
 }

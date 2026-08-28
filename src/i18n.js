@@ -70,6 +70,12 @@ export const MENSAJES = {
     reintentar: "Retry",
     colaTerminada: "queue finished — {ok} of {total} updated",
     colaFallo: "the queue failed: {e}",
+    copiarDiagnostico:
+      "Copy diagnostics: version, system, gestores and the last log lines (paths redacted)",
+    copiarDiagnosticoBreve: "copy diagnostics",
+    copiado: "copied ✓",
+    diagnosticoCopiado: "Diagnostics copied to the clipboard",
+    diagnosticoFallo: "could not copy the diagnostics: {e}",
   },
   es: {
     gestoresInstalados: "Gestores instalados",
@@ -133,6 +139,12 @@ export const MENSAJES = {
     reintentar: "Reintentar",
     colaTerminada: "cola terminada — {ok} de {total} actualizados",
     colaFallo: "la cola falló: {e}",
+    copiarDiagnostico:
+      "Copiar diagnóstico: versión, sistema, gestores y las últimas líneas del log (rutas redactadas)",
+    copiarDiagnosticoBreve: "copiar diagnóstico",
+    copiado: "copiado ✓",
+    diagnosticoCopiado: "Diagnóstico copiado al portapapeles",
+    diagnosticoFallo: "no se pudo copiar el diagnóstico: {e}",
   },
 };
 

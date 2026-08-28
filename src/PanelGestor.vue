@@ -27,6 +27,8 @@ const {
   updateAll,
   stopAll,
   abandonarCola,
+  copiarDiagnostico,
+  diagnosticoCopiado,
   procesarEventoCola,
   cargarExclusiones,
   exclusionesDeCero,
@@ -177,6 +179,13 @@ onUnmounted(() => {
     <section class="log">
       <div class="log-cabecera">
         <span class="log-titulo mono">log</span>
+        <button
+          class="copiar mono"
+          :title="t('copiarDiagnostico')"
+          @click="copiarDiagnostico"
+        >
+          {{ diagnosticoCopiado ? t("copiado") : t("copiarDiagnosticoBreve") }}
+        </button>
       </div>
       <pre ref="logBox" class="mono">{{
         logs.length ? logs.join("\n") : t("sinActividad")
@@ -468,8 +477,35 @@ onUnmounted(() => {
 }
 
 .log-cabecera {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 4px 10px;
   border-bottom: 1px solid var(--border);
+}
+
+/* Copy-diagnostics (#21): a quiet ghost button in the log's header. */
+.copiar {
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    color 120ms,
+    background 120ms;
+}
+
+.copiar:hover {
+  color: var(--fg);
+  background: var(--surface-2);
+}
+
+.copiar:focus-visible {
+  outline: 1px solid var(--fg);
+  outline-offset: 1px;
 }
 
 .log-titulo {

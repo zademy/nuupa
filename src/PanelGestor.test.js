@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { tauri } from "./tauri-fake"; // the mocks register in tests-setup
 import PanelGestor from "./PanelGestor.vue";
@@ -152,6 +152,31 @@ describe("PanelGestor montado", () => {
     await flushPromises();
     const alertas = c.findAll('[role="alert"]');
     expect(alertas.some((a) => a.text().includes("hunkdiff"))).toBe(true);
+  });
+
+  it("copiar diagnóstico arma el bloque redactado y lo pone en el portapapeles", async () => {
+    const escritura = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: escritura },
+      configurable: true,
+    });
+    tauri.responder("diagnostico", {
+      version: "0.3.3",
+      so: "macos (aarch64)",
+      gestores: ["npm", "pnpm"],
+      home: "/Users/sadot",
+    });
+    const c = await montarCargado();
+    await c.get("button.copiar").trigger("click");
+    await flushPromises();
+    expect(escritura).toHaveBeenCalledTimes(1);
+    const texto = escritura.mock.calls[0][0];
+    expect(texto).toContain("nuupa v0.3.3");
+    expect(texto).toContain("gestores: npm, pnpm");
+    expect(texto).not.toContain("/Users/sadot"); // redacted on the way out
+    // visible + announced confirmation
+    expect(c.get("button.copiar").text()).toContain("copied");
+    expect(c.get('[aria-live="polite"]').text()).toContain("clipboard");
   });
 
   it("el cambio de gestor abandona la cola saliente y filtra eventos por gestor", async () => {

@@ -1,6 +1,7 @@
 import { computed, nextTick, reactive, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useI18n } from "./i18n";
+import { armarDiagnostico } from "./diagnostico";
 
 /**
  * Log shared by all managers: a single history with `manager/package:`
@@ -128,6 +129,34 @@ export function createPackagesStore(
   const hasError = (name) => status[name] === ESTADO.ERROR;
   // The row's tooltip: why THIS package failed (motivo + gestor output).
   const detalleFallo = (name) => detalle[name];
+
+  // Copy diagnostics (#21): version, OS, gestores, this gestor's counts
+  // and the last log lines — home-redacted — straight to the clipboard.
+  const diagnosticoCopiado = ref(false);
+  async function copiarDiagnostico() {
+    try {
+      const d = await invokeFn("diagnostico");
+      const texto = armarDiagnostico({
+        version: d.version,
+        so: d.so,
+        gestores: d.gestores,
+        activo: gestor,
+        conteo: conteo.value,
+        lineas: logs.value,
+        home: d.home,
+      });
+      await navigator.clipboard.writeText(texto);
+      diagnosticoCopiado.value = true;
+      setTimeout(() => {
+        diagnosticoCopiado.value = false;
+      }, 2000);
+      anunciar(anuncio, t("diagnosticoCopiado"));
+      return true;
+    } catch (e) {
+      appendLog(`${gestor}: ${t("diagnosticoFallo", { e })}`);
+      return false;
+    }
+  }
 
   // Excluded: "Update all" skips them; the individual update stays
   // available. The BACKEND is the single writer (#14): granular
@@ -352,6 +381,8 @@ export function createPackagesStore(
     updateAll,
     stopAll,
     abandonarCola,
+    copiarDiagnostico,
+    diagnosticoCopiado,
     procesarEventoCola,
     cargarExclusiones,
     exclusionesDeCero,
