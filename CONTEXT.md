@@ -68,3 +68,47 @@ _Avoid_: esquema, colores sueltos
 **Rol**:
 La función semántica de un color (fondo, superficie, borde, texto tenue…): igual en todos los temas; cambia el color, no el rol.
 _Avoid_: variable, token
+
+**Habilidad**:
+Conjunto de instrucciones para agentes (una carpeta con SKILL.md) que Nuupa gestiona a nivel de usuario en la carpeta de habilidades.
+_Avoid_: skill, plugin, extensión
+
+**Carpeta de habilidades**:
+La ruta `~/.agents/skills/`: nivel de usuario, única ruta que Nuupa toca; todos los agentes leen las habilidades de ahí.
+_Avoid_: skills globales, directorio de skills
+
+**Origen**:
+De dónde vino una Habilidad gestionada: repositorio, ruta dentro de él y SHA del árbol al momento de instalarla o actualizarla.
+_Avoid_: fuente, repositorio (a secas), procedencia
+
+**Gestionada**:
+Habilidad cuyo Origen registró Nuupa; única clase que Actualizar puede tocar.
+_Avoid_: instalada, trackeada
+
+**No gestionada**:
+Habilidad presente en la carpeta de habilidades sin Origen conocido (la puso otra herramienta): visible, sin Actualizar.
+_Avoid_: externa, huérfana, manual
+
+**Validación**:
+Comprobación de conformidad del contenido de una habilidad; se exige al agregarla y antes de aplicar una actualización. Sin Validación no se activa ni se actualiza.
+_Avoid_: chequeo, lint, escaneo
+
+**Conforme**:
+Contenido que pasa la Validación: SKILL.md presente, con frontmatter válido (name en minúsculas-con-guiones y description presentes, sin etiquetas XML) y el resto de archivos dentro de la carpeta de la habilidad.
+_Avoid_: válido (como estado de fila), correcto
+
+**Inválida**:
+Habilidad presente cuyo contenido ya no es Conforme: solo lectura, sin Actualizar hasta resolverse.
+_Avoid_: rota, corrupta, dañada
+
+**Actual**:
+Habilidad Gestionada cuyo SHA guardado coincide con el actual en su Origen remoto.
+_Avoid_: al día, sincronizada, vigente
+
+**Actualización disponible**:
+Habilidad Gestionada cuyo SHA guardado difiere del actual en su Origen remoto.
+_Avoid_: desactualizada (reservado a paquetes), pendiente, atrás
+
+**Sin verificar**:
+Habilidad Gestionada cuyo SHA no se pudo consultar ahora (fallo de red en SU fila): nunca es un veredicto; las demás filas refrescan igual.
+_Avoid_: error (a secas), fallida, desactualizada

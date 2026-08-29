@@ -8,6 +8,7 @@
 mod bun;
 mod cola;
 mod exclusiones;
+mod habilidades;
 mod kernel;
 mod npm;
 mod plazo;
@@ -259,6 +260,13 @@ struct Contexto {
     /// granular commands (even from different gestores' stores) must
     /// never interleave cargar/guardar — a lost update loses an exclusion.
     candado_exclusiones: Arc<Mutex<()>>,
+    /// Same single-writer rule for the skills manifest (#27): an install
+    /// is one read-modify-write, never interleaved.
+    candado_habilidades: Arc<Mutex<()>>,
+    /// The skills queue's OWN Stop/abandonment flags (#30) sharing the
+    /// ONE-active gate with the packages queue: both queues can never
+    /// run together.
+    banderas_habilidades: cola::Banderas,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -270,6 +278,91 @@ fn gestores_instalados() -> Vec<String> {
         .filter(|g| (g.instalado)())
         .map(|g| g.nombre.to_string())
         .collect()
+}
+
+// ---- Habilidades (#26) ----
+
+/// The skills tab's single data path (#28): scan + per-Gestionada SHA
+/// check. The scan is filesystem and network work: blocking on a pool
+/// thread like the package queries. A network failure marks ITS row
+/// (SinVerificar + reason); it never blocks the rest of the list.
+#[tauri::command]
+async fn listar_habilidades() -> Result<habilidades::SalidaHabilidades, String> {
+    let raiz = habilidades::carpeta_del_usuario()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        Ok(habilidades::refrescar(&raiz, &proveedor))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Resolves the corrupt-manifest emergency by starting clean (#17):
+/// evidence (.corrupt) first, then a valid empty map — only with the
+/// user's explicit choice.
+#[tauri::command]
+fn habilidades_de_cero() -> Result<(), String> {
+    let raiz = habilidades::carpeta_del_usuario()?;
+    habilidades::empezar_de_cero(&raiz).map_err(|e| e.to_string())
+}
+
+/// Scans ONE origin (a GitHub repo or a direct skill's URL) and reports
+/// every skill found: Conforme or Inválida with its reason. NOTHING is
+/// activated here — the download lives in a throwaway staging dir.
+#[tauri::command]
+async fn escanear_origen(
+    origen: String,
+) -> Result<Vec<habilidades::HabilidadEscaneada>, String> {
+    let url = habilidades::parsear_origen(&origen)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+        habilidades::escanear(&proveedor, &url, staging.path())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Installs the selected rutas of ONE origin (the add flow's second
+/// step): per ruta — validate, fetch its SHA, activate by copy-and-swap,
+/// record the Origen. The manifest is written ONCE with every confirmed
+/// entry under the manifest's lock (#17: a corrupt one refuses writes).
+#[tauri::command]
+async fn instalar_habilidades(
+    origen: String,
+    rutas: Vec<String>,
+    estado: tauri::State<'_, Contexto>,
+) -> Result<Vec<habilidades::ResultadoInstalacion>, String> {
+    let url = habilidades::parsear_origen(&origen)?;
+    let candado = estado.candado_habilidades.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _candado = candado.lock().unwrap();
+        let raiz = habilidades::carpeta_del_usuario()?;
+        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let resultados = habilidades::instalar(&proveedor, &url, &rutas, &raiz, &mut mapa, ahora)?;
+        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())?;
+        Ok(resultados)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Opens ONE Habilidad's folder in the system file manager: the name is
+/// validated as a single safe component under the skills root — never a
+/// path, never a hidden or parent entry.
+#[tauri::command]
+async fn abrir_habilidad(nombre: String, app: tauri::AppHandle) -> Result<(), String> {
+    habilidades::nombre_seguro(&nombre)?;
+    let ruta = habilidades::carpeta_del_usuario()?.join(&nombre);
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(ruta.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 /// Lists the global packages of the manager's space.
@@ -363,6 +456,113 @@ fn quitar_exclusion(
         &gestor,
         &paquete,
     )
+}
+
+/// Updates ONE managed Habilidad to the latest content of its Origen
+/// (#29): the two-phase install over the SAVED origen — validate the new
+/// content before activation, then record the new SHA. Managed-only: a
+/// No gestionada has nothing to update FROM. One manifest write on
+/// success, under the manifest's lock.
+#[tauri::command]
+async fn actualizar_habilidad(
+    nombre: String,
+    estado: tauri::State<'_, Contexto>,
+) -> Result<(), String> {
+    habilidades::nombre_seguro(&nombre)?;
+    let candado = estado.candado_habilidades.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _candado = candado.lock().unwrap();
+        let raiz = habilidades::carpeta_del_usuario()?;
+        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        habilidades::actualizar(&proveedor, &nombre, &raiz, &mut mapa, ahora)?;
+        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The skills queue's row event (`skills-cola`). Success is derivable:
+/// `motivo === "ok"`.
+#[derive(Clone, Serialize)]
+struct EventoHabilidad {
+    tipo: &'static str, // "empieza" | "resultado"
+    habilidad: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    salida: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    motivo: Option<Motivo>,
+}
+
+/// "Actualizar todo" over the skills (#30): sequential queue sharing the
+/// packages queue's ONE-active gate. Progress via `skills-cola`; on
+/// finish the UI refreshes (the manifest's new SHAs decide the states).
+#[tauri::command]
+async fn actualizar_habilidades_todo(
+    estado: tauri::State<'_, Contexto>,
+    app: tauri::AppHandle,
+) -> Result<Resumen, String> {
+    let candado = estado.candado_habilidades.clone();
+    let banderas = estado.banderas_habilidades.compartidas();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _candado = candado.lock().unwrap();
+        let raiz = habilidades::carpeta_del_usuario()?;
+        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let resumen = habilidades::actualizar_todo(
+            &proveedor,
+            &raiz,
+            &mut mapa,
+            &banderas,
+            ahora,
+            &mut |ev| {
+                let e = match ev {
+                    habilidades::EventoColaHabilidades::Empieza { habilidad } => EventoHabilidad {
+                        tipo: "empieza",
+                        habilidad: habilidad.clone(),
+                        salida: None,
+                        motivo: None,
+                    },
+                    habilidades::EventoColaHabilidades::Resultado {
+                        habilidad,
+                        motivo,
+                        salida,
+                    } => EventoHabilidad {
+                        tipo: "resultado",
+                        habilidad: habilidad.clone(),
+                        salida: Some(salida.clone()),
+                        motivo: Some(*motivo),
+                    },
+                };
+                let _ = app.emit("skills-cola", e);
+            },
+        )?;
+        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())?;
+        Ok(resumen)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stops the skills queue: nothing pending starts; the in-flight update
+/// finishes naturally (HTTP is bounded by its timeouts).
+#[tauri::command]
+fn detener_habilidades_todo(estado: tauri::State<Contexto>) {
+    estado.banderas_habilidades.detener();
+}
+
+/// The panel went away: finish the in-flight, start nothing new.
+#[tauri::command]
+fn abandonar_habilidades_todo(estado: tauri::State<Contexto>) {
+    estado.banderas_habilidades.abandonar();
 }
 
 /// "Update all": sequential queue in Rust. Progress via `pm-cola`
@@ -465,10 +665,15 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .map_err(|e| format!("no config directory: {e}"))?;
+            let banderas = cola::Banderas::nuevas();
             app.manage(Contexto {
                 dir_config,
-                banderas: cola::Banderas::nuevas(),
+                banderas_habilidades: cola::Banderas::con_guarda_compartida(
+                    banderas.activa(),
+                ),
+                banderas,
                 candado_exclusiones: Arc::new(Mutex::new(())),
+                candado_habilidades: Arc::new(Mutex::new(())),
             });
             Ok(())
         })
@@ -480,6 +685,15 @@ pub fn run() {
             quitar_exclusion,
             exclusiones_de_cero,
             gestores_instalados,
+            listar_habilidades,
+            habilidades_de_cero,
+            abrir_habilidad,
+            escanear_origen,
+            instalar_habilidades,
+            actualizar_habilidad,
+            actualizar_habilidades_todo,
+            detener_habilidades_todo,
+            abandonar_habilidades_todo,
             actualizar_todo,
             detener_actualizar_todo,
             abandonar_actualizar_todo,
