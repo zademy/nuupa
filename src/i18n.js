@@ -90,6 +90,7 @@ export const MENSAJES = {
     estadoInvalida: "invalid",
     estadoActual: "up to date",
     estadoActualizacion: "update available",
+    estadoSinVerificar: "not verified",
     abrirCarpetaHabilidad: "Open {habilidad}'s folder",
     abrirCarpetaFallo: "could not open the folder: {e}",
     sinHabilidades:
@@ -197,6 +198,7 @@ export const MENSAJES = {
     estadoInvalida: "Inválida",
     estadoActual: "Actual",
     estadoActualizacion: "Actualización disponible",
+    estadoSinVerificar: "Sin verificar",
     abrirCarpetaHabilidad: "Abrir la carpeta de {habilidad}",
     abrirCarpetaFallo: "no se pudo abrir la carpeta: {e}",
     sinHabilidades:

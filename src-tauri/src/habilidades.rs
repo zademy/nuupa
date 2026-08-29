@@ -206,17 +206,22 @@ pub enum EstadoHabilidad {
     /// Present but its content no longer passes Validación.
     Invalida,
     /// Gestionada whose saved SHA matches the remote one (#28).
-    #[allow(dead_code)] // wire value fixed NOW so the frontend mapping never changes
     Actual,
     /// Gestionada whose saved SHA differs from the remote one (#28).
-    #[allow(dead_code)]
     ActualizacionDisponible,
+    /// Gestionada whose SHA could not be checked right now (#28): a
+    /// network failure, never a verdict. The row carries the reason.
+    SinVerificar,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Habilidad {
     pub nombre: String,
     pub estado: EstadoHabilidad,
+    /// WHY the state could not be verified (#28): a per-row network
+    /// failure — the row keeps its place, the rest still refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// The manifest's state for the UI (#17): "corrupto"/"ilegible" block
@@ -238,27 +243,55 @@ pub struct SalidaHabilidades {
 /// derives each row's state. A missing folder is a valid first run: an
 /// empty list, not an error. A corrupt manifest still lists the rows —
 /// it BLOCKS writes, it does not hide reality.
-pub fn listar(raiz: &Path) -> SalidaHabilidades {
-    let manifest = match leer(raiz) {
-        Lectura::Cargado { .. } | Lectura::Inexistente => EstadoManifest {
-            estado: "ok",
-            detalle: None,
-        },
+///
+/// The REAL refresh (#28): every Gestionada's saved SHA is compared
+/// against the remote one — same SHA → Actual, different → Actualización
+/// disponible, unreachable → SinVerificar with the reason on ITS row
+/// (one failure never blocks the rest). `chequeo == None` is the offline
+/// derivation (tests only).
+pub fn refrescar(raiz: &Path, proveedor: &dyn ProveedorRemoto) -> SalidaHabilidades {
+    derivar(raiz, Some(proveedor))
+}
+
+fn derivar(raiz: &Path, chequeo: Option<&dyn ProveedorRemoto>) -> SalidaHabilidades {
+    // One read carries BOTH the manifest's emergency state (#17) and the
+    // managed entries the SHA check needs (#28).
+    let (mapa, manifest) = match leer(raiz) {
+        Lectura::Cargado { mapa } => (
+            Some(mapa),
+            EstadoManifest {
+                estado: "ok",
+                detalle: None,
+            },
+        ),
+        Lectura::Inexistente => (
+            None,
+            EstadoManifest {
+                estado: "ok",
+                detalle: None,
+            },
+        ),
         Lectura::Corrupto => {
             // evidence FIRST (#17), same as exclusions; a failed copy
             // leaves a trace instead of silence
             let detalle = resguardar(raiz)
                 .err()
                 .map(|e| format!("(no se pudo conservar la copia .corrupt: {e})"));
-            EstadoManifest {
-                estado: "corrupto",
-                detalle,
-            }
+            (
+                None,
+                EstadoManifest {
+                    estado: "corrupto",
+                    detalle,
+                },
+            )
         }
-        Lectura::Ilegible(e) => EstadoManifest {
-            estado: "ilegible",
-            detalle: Some(e.to_string()),
-        },
+        Lectura::Ilegible(e) => (
+            None,
+            EstadoManifest {
+                estado: "ilegible",
+                detalle: Some(e.to_string()),
+            },
+        ),
     };
     let mut habilidades = Vec::new();
     if let Ok(entradas) = fs::read_dir(raiz) {
@@ -267,12 +300,40 @@ pub fn listar(raiz: &Path) -> SalidaHabilidades {
             if nombre.starts_with('.') || !entrada.path().is_dir() {
                 continue;
             }
-            let estado = if validar(&entrada.path()).is_ok() {
-                EstadoHabilidad::NoGestionada
-            } else {
+            let conforme = validar(&entrada.path()).is_ok();
+            let estado = if !conforme {
                 EstadoHabilidad::Invalida
+            } else {
+                match mapa.as_ref().and_then(|m| m.get(&nombre)) {
+                    // Managed + Conforme: the SHA decides (#28).
+                    Some(gestionada) => match chequeo {
+                        None => EstadoHabilidad::NoGestionada, // offline path
+                        Some(proveedor) => {
+                            match proveedor.sha_de(&gestionada.origen.repo, &gestionada.origen.ruta)
+                            {
+                                Ok(sha) if sha == gestionada.sha => EstadoHabilidad::Actual,
+                                Ok(_) => EstadoHabilidad::ActualizacionDisponible,
+                                Err(e) => {
+                                    // ITS row carries the failure; the
+                                    // rest of the list still refreshes.
+                                    habilidades.push(Habilidad {
+                                        nombre,
+                                        estado: EstadoHabilidad::SinVerificar,
+                                        error: Some(e),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                    },
+                    None => EstadoHabilidad::NoGestionada,
+                }
             };
-            habilidades.push(Habilidad { nombre, estado });
+            habilidades.push(Habilidad {
+                nombre,
+                estado,
+                error: None,
+            });
         }
     }
     habilidades.sort_by(|a, b| a.nombre.cmp(&b.nombre));
@@ -894,7 +955,7 @@ mod tests {
         fs::create_dir(dir.path().join(".oculta")).unwrap();
         fs::write(dir.path().join("suelto.txt"), "no es carpeta").unwrap();
 
-        let salida = listar(dir.path());
+        let salida = derivar(dir.path(), None);
         assert_eq!(salida.manifest.estado, "ok");
         assert_eq!(
             salida
@@ -912,7 +973,7 @@ mod tests {
     #[test]
     fn carpeta_inexistente_es_un_arranco_vacio_valido() {
         let dir = tempfile::tempdir().unwrap();
-        let salida = listar(&dir.path().join("no-existe"));
+        let salida = derivar(&dir.path().join("no-existe"), None);
         assert!(salida.habilidades.is_empty());
         assert_eq!(salida.manifest.estado, "ok");
     }
@@ -923,7 +984,7 @@ mod tests {
         fs::create_dir(dir.path().join("buena")).unwrap();
         fs::write(dir.path().join("buena").join(SKILL_MD), SKILL_OK).unwrap();
         fs::write(dir.path().join(ARCHIVO), "roto").unwrap();
-        let salida = listar(dir.path());
+        let salida = derivar(dir.path(), None);
         assert_eq!(salida.manifest.estado, "corrupto");
         assert_eq!(salida.habilidades.len(), 1); // reality stays visible
         assert!(dir.path().join(format!("{ARCHIVO}.corrupt")).exists());
@@ -1216,5 +1277,149 @@ mod tests {
         // repaired by hand → writable again
         fs::write(raiz.path().join(ARCHIVO), "{}").unwrap();
         assert!(mapa_escriturable(raiz.path()).is_ok());
+    }
+
+    // ---- #28: refrescar — the SHA decides ----
+
+    /// Fake provider that COUNTS its SHA checks: no gestionada and
+    /// invalida must never reach the network.
+    struct ContadorProveedor {
+        fixture: PathBuf,
+        shas: std::cell::Cell<u32>,
+        // what the remote answers for EVERY ruta
+        remoto: String,
+        falla: bool,
+    }
+
+    impl ContadorProveedor {
+        fn nuevo(fixture: &Path, remoto: &str) -> Self {
+            Self {
+                fixture: fixture.to_path_buf(),
+                shas: std::cell::Cell::new(0),
+                remoto: remoto.to_string(),
+                falla: false,
+            }
+        }
+    }
+
+    impl ProveedorRemoto for ContadorProveedor {
+        fn descargar_en(&self, _origen: &RepoUrl, destino: &Path) -> Result<(), String> {
+            copiar_dir(&self.fixture, destino).map_err(|e| e.to_string())
+        }
+
+        fn sha_de(&self, _repo: &str, _ruta: &str) -> Result<String, String> {
+            self.shas.set(self.shas.get() + 1);
+            if self.falla {
+                Err("sin red".to_string())
+            } else {
+                Ok(self.remoto.clone())
+            }
+        }
+    }
+
+    /// A skills folder with ONE managed+conforme skill, one unmanaged and
+    /// one invalida; the manifest knows buena's Origen and saved SHA.
+    fn carpeta_con_gestionadas(sha_guardado: &str) -> (tempfile::TempDir, tempfile::TempDir) {
+        let raiz = tempfile::tempdir().unwrap();
+        for nombre in ["buena", "suelta"] {
+            fs::create_dir_all(raiz.path().join(nombre)).unwrap();
+            fs::write(raiz.path().join(nombre).join(SKILL_MD), SKILL_OK).unwrap();
+        }
+        fs::create_dir_all(raiz.path().join("invalida")).unwrap();
+        fs::write(
+            raiz.path().join("invalida").join(SKILL_MD),
+            "sin frontmatter",
+        )
+        .unwrap();
+        let mut mapa = Mapa::new();
+        mapa.insert(
+            "buena".to_string(),
+            entrada("o/r", "skills/productivity/buena", sha_guardado),
+        );
+        guardar(raiz.path(), &mapa).unwrap();
+        (raiz, fixture_repo())
+    }
+
+    #[test]
+    fn sha_igual_es_actual_sha_distinto_es_actualizacion_disponible() {
+        // same SHA → Actual
+        let (raiz, fixture) = carpeta_con_gestionadas("abc123");
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        let salida = refrescar(raiz.path(), &proveedor);
+        let estados: std::collections::BTreeMap<_, _> = salida
+            .habilidades
+            .iter()
+            .map(|h| (h.nombre.as_str(), h.estado))
+            .collect();
+        assert_eq!(estados["buena"], EstadoHabilidad::Actual);
+        assert_eq!(estados["suelta"], EstadoHabilidad::NoGestionada);
+        assert_eq!(estados["invalida"], EstadoHabilidad::Invalida);
+        // 2 SHA checks total: the invalida and the unmanaged NEVER hit
+        // the network
+        assert_eq!(proveedor.shas.get(), 1);
+
+        // different SHA → Actualización disponible
+        let (raiz, fixture) = carpeta_con_gestionadas("viejo");
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "nuevo");
+        let salida = refrescar(raiz.path(), &proveedor);
+        let fila = salida
+            .habilidades
+            .iter()
+            .find(|h| h.nombre == "buena")
+            .unwrap();
+        assert_eq!(fila.estado, EstadoHabilidad::ActualizacionDisponible);
+        assert!(fila.error.is_none());
+    }
+
+    #[test]
+    fn fallo_de_red_marca_solo_esa_fila_como_sin_verificar() {
+        let (raiz, fixture) = carpeta_con_gestionadas("abc123");
+        // a SECOND managed skill so one failure cannot hide the other's
+        // verdict; both entries live in ONE manifest
+        fs::create_dir_all(raiz.path().join("segunda")).unwrap();
+        fs::write(raiz.path().join("segunda").join(SKILL_MD), SKILL_OK).unwrap();
+        let mut mapa = Mapa::new();
+        mapa.insert(
+            "buena".to_string(),
+            entrada("o/r", "skills/productivity/buena", "abc123"),
+        );
+        mapa.insert(
+            "segunda".to_string(),
+            entrada("o/r", "utils/anidada", "def456"),
+        );
+        guardar(raiz.path(), &mapa).unwrap();
+
+        // the fake fails only for buena's ruta
+        struct FallaUna;
+        impl ProveedorRemoto for FallaUna {
+            fn descargar_en(&self, _o: &RepoUrl, _d: &Path) -> Result<(), String> {
+                unreachable!("el refresco no descarga");
+            }
+            fn sha_de(&self, _repo: &str, ruta: &str) -> Result<String, String> {
+                if ruta.ends_with("buena") {
+                    Err("sin red".to_string())
+                } else {
+                    Ok("def456".to_string())
+                }
+            }
+        }
+        let _ = fixture; // unused here
+        let proveedor = FallaUna;
+        let salida = refrescar(raiz.path(), &proveedor);
+        let buena = salida
+            .habilidades
+            .iter()
+            .find(|h| h.nombre == "buena")
+            .unwrap();
+        assert_eq!(buena.estado, EstadoHabilidad::SinVerificar);
+        assert!(buena.error.as_deref().unwrap().contains("sin red"));
+        // the rest still got their verdicts
+        let segunda = salida
+            .habilidades
+            .iter()
+            .find(|h| h.nombre == "segunda")
+            .unwrap();
+        assert_eq!(segunda.estado, EstadoHabilidad::Actual);
+        assert!(segunda.error.is_none());
     }
 }

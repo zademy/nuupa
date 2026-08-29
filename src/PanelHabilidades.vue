@@ -43,6 +43,7 @@ const CLAVE_ESTADO = {
   invalida: "estadoInvalida",
   actual: "estadoActual",
   actualizacion_disponible: "estadoActualizacion",
+  sin_verificar: "estadoSinVerificar",
 };
 const textoEstado = (estado) => t(CLAVE_ESTADO[estado] ?? estado);
 
@@ -233,9 +234,11 @@ onMounted(refresh);
             :key="h.nombre"
             :class="{
               invalida: h.estado === 'invalida',
-              error: hasError(h.nombre),
+              error: hasError(h.nombre) || h.error,
             }"
-            :title="hasError(h.nombre) ? detalleFallo(h.nombre) : undefined"
+            :title="
+              hasError(h.nombre) ? detalleFallo(h.nombre) : h.error || undefined
+            "
           >
             <td class="nombre mono">{{ h.nombre }}</td>
             <td class="estado-celda mono">{{ textoEstado(h.estado) }}</td>

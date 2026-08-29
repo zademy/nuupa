@@ -193,4 +193,48 @@ describe("PanelHabilidades montado", () => {
     );
     expect(c.findAll("tbody tr")).toHaveLength(2); // the table stays
   });
+
+  // ---- #28: los cuatro estados + Sin verificar por fila ----
+
+  it("refrescar refleja Actual y Actualización disponible por SHA", async () => {
+    tauri.responder("listar_habilidades", {
+      habilidades: [
+        { nombre: "buena", estado: "actual" },
+        { nombre: "vieja", estado: "actualizacion_disponible" },
+        { nombre: "suelta", estado: "no_gestionada" },
+        { nombre: "rota", estado: "invalida" },
+      ],
+      manifest: { estado: "ok" },
+    });
+    const c = montar();
+    await flushPromises();
+    expect(filaDe(c, "buena").text()).toContain("up to date");
+    expect(filaDe(c, "vieja").text()).toContain("update available");
+    expect(filaDe(c, "suelta").text()).toContain("not managed");
+    expect(filaDe(c, "rota").text()).toContain("invalid");
+  });
+
+  it("un fallo de red marca SOLO esa fila como Sin verificar con su motivo", async () => {
+    tauri.responder("listar_habilidades", {
+      habilidades: [
+        {
+          nombre: "buena",
+          estado: "sin_verificar",
+          error: "no se pudo contactar a GitHub: sin red",
+        },
+        { nombre: "otra", estado: "actual" },
+      ],
+      manifest: { estado: "ok" },
+    });
+    const c = montar();
+    await flushPromises();
+    const fila = filaDe(c, "buena");
+    expect(fila.text()).toContain("not verified");
+    expect(fila.classes()).toContain("error");
+    expect(fila.attributes("title")).toContain("sin red");
+    // the rest keep their verdicts
+    const otra = filaDe(c, "otra");
+    expect(otra.text()).toContain("up to date");
+    expect(otra.classes()).not.toContain("error");
+  });
 });

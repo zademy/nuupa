@@ -278,15 +278,19 @@ fn gestores_instalados() -> Vec<String> {
 
 // ---- Habilidades (#26) ----
 
-/// Lists the user-level agent skills with their offline states. The scan
-/// is filesystem work: it runs blocking on a pool thread like the
-/// package queries, so the IPC does not freeze.
+/// The skills tab's single data path (#28): scan + per-Gestionada SHA
+/// check. The scan is filesystem and network work: blocking on a pool
+/// thread like the package queries. A network failure marks ITS row
+/// (SinVerificar + reason); it never blocks the rest of the list.
 #[tauri::command]
 async fn listar_habilidades() -> Result<habilidades::SalidaHabilidades, String> {
     let raiz = habilidades::carpeta_del_usuario()?;
-    tauri::async_runtime::spawn_blocking(move || Ok(habilidades::listar(&raiz)))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        Ok(habilidades::refrescar(&raiz, &proveedor))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Resolves the corrupt-manifest emergency by starting clean (#17):

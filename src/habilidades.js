@@ -13,6 +13,7 @@ export const ESTADO_HABILIDAD = {
   INVALIDA: "invalida",
   ACTUAL: "actual",
   ACTUALIZACION: "actualizacion_disponible",
+  SIN_VERIFICAR: "sin_verificar",
 };
 
 /**
