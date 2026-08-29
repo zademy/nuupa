@@ -754,6 +754,44 @@ pub fn mapa_escriturable(raiz: &Path) -> Result<Mapa, String> {
     }
 }
 
+/// Updates ONE managed Habilidad to the latest content of its Origen
+/// (#29): download → validate the NEW content → activate by
+/// copy-and-swap → record the new SHA. Managed-only: a skill without a
+/// manifest entry refuses (there is nothing to update FROM). The local
+/// folder is only replaced after the new content passes Validación.
+pub fn actualizar(
+    proveedor: &dyn ProveedorRemoto,
+    nombre: &str,
+    raiz_habilidades: &Path,
+    mapa: &mut Mapa,
+    ahora_epoch: i64,
+) -> Result<(), String> {
+    let entrada = mapa
+        .get(nombre)
+        .ok_or_else(|| format!("{nombre} no es gestionada: sin Origen que actualizar"))?
+        .clone();
+    let origen = RepoUrl {
+        repo: entrada.origen.repo.clone(),
+        referencia: None,
+        ruta: Some(entrada.origen.ruta.clone()),
+    };
+    let resultados = instalar(
+        proveedor,
+        &origen,
+        std::slice::from_ref(&entrada.origen.ruta),
+        raiz_habilidades,
+        mapa,
+        ahora_epoch,
+    )?;
+    match &resultados[0] {
+        r if r.ok => Ok(()),
+        r => Err(r
+            .motivo
+            .clone()
+            .unwrap_or_else(|| "falló la actualización".to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1421,5 +1459,101 @@ mod tests {
             .unwrap();
         assert_eq!(segunda.estado, EstadoHabilidad::Actual);
         assert!(segunda.error.is_none());
+    }
+
+    // ---- #29: actualizar una gestionada ----
+
+    fn mapa_de(raiz: &Path) -> Mapa {
+        match leer(raiz) {
+            Lectura::Cargado { mapa } => mapa,
+            _ => Mapa::new(),
+        }
+    }
+
+    #[test]
+    fn actualizar_reemplaza_con_el_contenido_nuevo_y_registra_el_sha() {
+        // saved SHA "viejo"; the fixture holds the NEW content and the
+        // remote answers "abc123": after the update both agree
+        let (raiz, fixture) = carpeta_con_gestionadas("viejo");
+        fs::write(
+            raiz.path().join("buena").join(SKILL_MD),
+            "---\nname: buena\ndescription: contenido viejo\n---\n",
+        )
+        .unwrap();
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        let mut mapa = mapa_de(raiz.path());
+        actualizar(&proveedor, "buena", raiz.path(), &mut mapa, 9).unwrap();
+        // the command wrapper persists ONCE on success — mirror it here
+        guardar(raiz.path(), &mapa).unwrap();
+        // the local folder now holds the NEW content (validated, swapped)
+        let texto = fs::read_to_string(raiz.path().join("buena").join(SKILL_MD)).unwrap();
+        assert!(texto.contains("Help discovering skills"));
+        // the manifest records the NEW sha and the same Origen
+        assert_eq!(mapa["buena"].sha, "abc123");
+        assert_eq!(mapa["buena"].origen.repo, "o/r");
+        // and a refresh now reports Actual
+        let salida = refrescar(raiz.path(), &proveedor);
+        let fila = salida
+            .habilidades
+            .iter()
+            .find(|h| h.nombre == "buena")
+            .unwrap();
+        assert_eq!(fila.estado, EstadoHabilidad::Actual);
+    }
+
+    #[test]
+    fn actualizar_con_contenido_nuevo_invalido_falla_y_no_toca_nada() {
+        // the remote's content for the ruta is NOT conforme
+        let (raiz, fixture) = carpeta_con_gestionadas("viejo");
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        // point buena at the fixture's invalida folder
+        mapa_de(raiz.path()); // shape check only
+        let mut mapa = mapa_de(raiz.path());
+        mapa.get_mut("buena").unwrap().origen.ruta = "skills/productivity/invalida".to_string();
+        let contenido_antes = fs::read_to_string(raiz.path().join("buena").join(SKILL_MD)).unwrap();
+        let err = actualizar(&proveedor, "buena", raiz.path(), &mut mapa, 9).unwrap_err();
+        assert!(err.contains("inválida"), "{err}");
+        // the local folder is INTACT and the saved entry unchanged
+        assert_eq!(
+            fs::read_to_string(raiz.path().join("buena").join(SKILL_MD)).unwrap(),
+            contenido_antes
+        );
+        assert_eq!(mapa["buena"].sha, "viejo");
+    }
+
+    #[test]
+    fn actualizar_no_gestionada_rechaza() {
+        let (raiz, fixture) = carpeta_con_gestionadas("abc123");
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        let mut mapa = Mapa::new();
+        let err = actualizar(&proveedor, "suelta", raiz.path(), &mut mapa, 9).unwrap_err();
+        assert!(err.contains("no es gestionada"), "{err}");
+    }
+
+    #[test]
+    fn actualizar_con_red_caida_falla_visible_sin_cambios_locales() {
+        let (raiz, fixture) = carpeta_con_gestionadas("viejo");
+        let mut proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        proveedor.falla = true;
+        // downloading fails before anything is touched
+        struct SinRed;
+        impl ProveedorRemoto for SinRed {
+            fn descargar_en(&self, _o: &RepoUrl, _d: &Path) -> Result<(), String> {
+                Err("sin red".to_string())
+            }
+            fn sha_de(&self, _r: &str, _p: &str) -> Result<String, String> {
+                unreachable!()
+            }
+        }
+        let mut mapa = mapa_de(raiz.path());
+        let contenido_antes = fs::read_to_string(raiz.path().join("buena").join(SKILL_MD)).unwrap();
+        let err = actualizar(&SinRed, "buena", raiz.path(), &mut mapa, 9).unwrap_err();
+        assert!(err.contains("sin red"), "{err}");
+        assert_eq!(
+            fs::read_to_string(raiz.path().join("buena").join(SKILL_MD)).unwrap(),
+            contenido_antes
+        );
+        assert_eq!(mapa["buena"].sha, "viejo");
+        let _ = proveedor;
     }
 }

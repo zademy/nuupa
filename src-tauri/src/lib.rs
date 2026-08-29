@@ -454,6 +454,34 @@ fn quitar_exclusion(
     )
 }
 
+/// Updates ONE managed Habilidad to the latest content of its Origen
+/// (#29): the two-phase install over the SAVED origen — validate the new
+/// content before activation, then record the new SHA. Managed-only: a
+/// No gestionada has nothing to update FROM. One manifest write on
+/// success, under the manifest's lock.
+#[tauri::command]
+async fn actualizar_habilidad(
+    nombre: String,
+    estado: tauri::State<'_, Contexto>,
+) -> Result<(), String> {
+    habilidades::nombre_seguro(&nombre)?;
+    let candado = estado.candado_habilidades.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _candado = candado.lock().unwrap();
+        let raiz = habilidades::carpeta_del_usuario()?;
+        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        habilidades::actualizar(&proveedor, &nombre, &raiz, &mut mapa, ahora)?;
+        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// "Update all": sequential queue in Rust. Progress via `pm-cola`
 /// (starts/result per package) and `pm-output` (log lines); on finish it
 /// returns summary + final snapshot (a single refresh).
@@ -575,6 +603,7 @@ pub fn run() {
             abrir_habilidad,
             escanear_origen,
             instalar_habilidades,
+            actualizar_habilidad,
             actualizar_todo,
             detener_actualizar_todo,
             abandonar_actualizar_todo,

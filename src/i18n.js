@@ -114,6 +114,9 @@ export const MENSAJES = {
     seleccionadas: "{n} selected",
     instalacionLista: "{ok} of {total} skills installed",
     instalarFallo: "could not install: {e}",
+    actualizarHabilidad: "Update {habilidad} from its origin",
+    actualizarFallo: "the update failed",
+    actualizacionLista: "{habilidad} updated",
   },
   es: {
     gestoresInstalados: "Gestores instalados",
@@ -223,6 +226,9 @@ export const MENSAJES = {
     seleccionadas: "{n} seleccionadas",
     instalacionLista: "{ok} de {total} habilidades instaladas",
     instalarFallo: "no se pudo instalar: {e}",
+    actualizarHabilidad: "Actualizar {habilidad} desde su origen",
+    actualizarFallo: "la actualización falló",
+    actualizacionLista: "{habilidad} actualizada",
   },
 };
 

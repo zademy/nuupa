@@ -237,4 +237,50 @@ describe("PanelHabilidades montado", () => {
     expect(otra.text()).toContain("up to date");
     expect(otra.classes()).not.toContain("error");
   });
+
+  // ---- #29: el botón Actualizar ----
+
+  const CON_ACTUALIZACION = {
+    habilidades: [
+      { nombre: "vieja", estado: "actualizacion_disponible" },
+      { nombre: "al-dia", estado: "actual" },
+      { nombre: "suelta", estado: "no_gestionada" },
+      { nombre: "rota", estado: "invalida" },
+    ],
+    manifest: { estado: "ok" },
+  };
+
+  it("Actualizar solo está habilitado en la Actualización disponible y pide el comando", async () => {
+    tauri.responder("listar_habilidades", CON_ACTUALIZACION);
+    tauri.responder("actualizar_habilidad", {});
+    const c = montar();
+    await flushPromises();
+    const botonDe = (nombre) => filaDe(c, nombre).get("button.actualizar");
+    expect(botonDe("vieja").attributes("disabled")).toBeUndefined();
+    for (const nombre of ["al-dia", "suelta", "rota"]) {
+      expect(botonDe(nombre).attributes("disabled")).toBeDefined();
+    }
+    await botonDe("vieja").trigger("click");
+    await flushPromises();
+    expect(tauri.ultima("actualizar_habilidad").args).toEqual({
+      nombre: "vieja",
+    });
+    // after the update the list refreshed
+    expect(tauri.registradas("listar_habilidades")).toHaveLength(2);
+  });
+
+  it("un fallo de actualización marca la fila en error con su motivo", async () => {
+    tauri.responder("listar_habilidades", CON_ACTUALIZACION);
+    tauri.responder("actualizar_habilidad", () =>
+      Promise.reject("inválida: sin frontmatter"),
+    );
+    const c = await montarCargado(CON_ACTUALIZACION);
+    await filaDe(c, "vieja").get("button.actualizar").trigger("click");
+    await flushPromises();
+    const fila = filaDe(c, "vieja");
+    expect(fila.classes()).toContain("error");
+    expect(fila.attributes("title")).toContain("sin frontmatter");
+    // the neighbor was never touched
+    expect(filaDe(c, "al-dia").classes()).not.toContain("error");
+  });
 });

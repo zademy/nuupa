@@ -271,4 +271,105 @@ describe("store de habilidades", () => {
     expect(store.escaneo.items).toEqual([]);
     expect(store.seleccion.value).toEqual([]);
   });
+
+  // ---- #29: actualizar una gestionada ----
+
+  const CON_ESTADOS = {
+    habilidades: [
+      { nombre: "vieja", estado: ESTADO_HABILIDAD.ACTUALIZACION },
+      { nombre: "al-dia", estado: ESTADO_HABILIDAD.ACTUAL },
+      { nombre: "suelta", estado: ESTADO_HABILIDAD.NO_GESTIONADA },
+      { nombre: "rota", estado: ESTADO_HABILIDAD.INVALIDA },
+    ],
+    manifest: { estado: "ok" },
+  };
+
+  it("actualizar pide el comando con el nombre y refresca", async () => {
+    const llamadas = [];
+    const store = createHabilidadesStore(async (cmd, args) => {
+      llamadas.push(cmd);
+      if (cmd === "listar_habilidades") return CON_ESTADOS;
+      if (cmd === "actualizar_habilidad") {
+        expect(args).toEqual({ nombre: "vieja" });
+        return {};
+      }
+    });
+    await store.refresh();
+    await store.actualizar("vieja");
+    expect(llamadas).toEqual([
+      "listar_habilidades",
+      "actualizar_habilidad",
+      "listar_habilidades",
+    ]);
+    expect(store.estaActualizando("vieja")).toBe(false);
+    expect(store.hasError("vieja")).toBe(false);
+  });
+
+  it("actualizar fallido marca SOLO esa fila y deja el motivo en el log", async () => {
+    const log = crearLog();
+    const store = createHabilidadesStore(async (cmd) => {
+      if (cmd === "listar_habilidades") return CON_ESTADOS;
+      if (cmd === "actualizar_habilidad") throw "inválida: sin frontmatter";
+    }, log);
+    await store.refresh();
+    await store.actualizar("vieja");
+    expect(store.hasError("vieja")).toBe(true);
+    expect(store.detalleFallo("vieja")).toContain("sin frontmatter");
+    expect(log.lineas.value.some((l) => l.includes("vieja"))).toBe(true);
+    expect(store.state.error).toBe(""); // the TABLE's error stays clean
+  });
+
+  it("solo una Actualización disponible se puede actualizar", async () => {
+    const llamadas = [];
+    const store = createHabilidadesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "listar_habilidades") return CON_ESTADOS;
+      if (cmd === "actualizar_habilidad") return {};
+    });
+    await store.refresh();
+    expect(store.puedeActualizar("vieja")).toBe(true);
+    for (const nombre of ["al-dia", "suelta", "rota"]) {
+      expect(store.puedeActualizar(nombre)).toBe(false);
+      await store.actualizar(nombre); // the store guards too: no invoke
+    }
+    expect(llamadas).toEqual(["listar_habilidades"]);
+  });
+
+  it("manifest corrupto bloquea la actualización sin invocar", async () => {
+    const llamadas = [];
+    const store = createHabilidadesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "listar_habilidades")
+        return {
+          habilidades: [
+            { nombre: "vieja", estado: ESTADO_HABILIDAD.SIN_VERIFICAR },
+          ],
+          manifest: { estado: "corrupto" },
+        };
+      if (cmd === "actualizar_habilidad") return {};
+    });
+    await store.refresh();
+    expect(store.puedeActualizar("vieja")).toBe(false);
+    await store.actualizar("vieja");
+    expect(llamadas).toEqual(["listar_habilidades"]);
+  });
+
+  it("un segundo clic en la misma fila en vuelo es ignorado", async () => {
+    let resolver;
+    const comandos = [];
+    const store = createHabilidadesStore(async (cmd) => {
+      if (cmd === "listar_habilidades") return CON_ESTADOS;
+      if (cmd === "actualizar_habilidad") {
+        comandos.push(cmd);
+        return new Promise((r) => (resolver = r));
+      }
+    });
+    await store.refresh();
+    const primera = store.actualizar("vieja");
+    await store.actualizar("vieja"); // in flight: no-op
+    expect(comandos).toEqual(["actualizar_habilidad"]);
+    expect(store.estaActualizando("vieja")).toBe(true);
+    resolver();
+    await primera;
+  });
 });

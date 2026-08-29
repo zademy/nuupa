@@ -32,6 +32,9 @@ const {
   toggleRuta,
   instalarSeleccionadas,
   cerrarEscaneo,
+  actualizar,
+  puedeActualizar,
+  estaActualizando,
 } = createHabilidadesStore(undefined, props.log);
 
 const { t } = useI18n();
@@ -244,16 +247,33 @@ onMounted(refresh);
             <td class="estado-celda mono">{{ textoEstado(h.estado) }}</td>
             <td class="acciones">
               <div class="acciones-contenido">
-                <button
-                  class="abrir solo-icono"
-                  :title="t('abrirCarpetaHabilidad', { habilidad: h.nombre })"
-                  :aria-label="
-                    t('abrirCarpetaHabilidad', { habilidad: h.nombre })
-                  "
-                  @click="abrirCarpeta(h.nombre)"
-                >
-                  <Icono nombre="carpeta" :tamano="14" />
-                </button>
+                <span v-if="estaActualizando(h.nombre)" class="actualizando">
+                  <span class="spinner"></span>
+                  {{ t("actualizando") }}
+                </span>
+                <template v-else>
+                  <button
+                    class="actualizar solo-icono"
+                    :disabled="!puedeActualizar(h.nombre)"
+                    :title="t('actualizarHabilidad', { habilidad: h.nombre })"
+                    :aria-label="
+                      t('actualizarHabilidad', { habilidad: h.nombre })
+                    "
+                    @click="actualizar(h.nombre)"
+                  >
+                    <Icono nombre="actualizar" :tamano="14" />
+                  </button>
+                  <button
+                    class="abrir solo-icono"
+                    :title="t('abrirCarpetaHabilidad', { habilidad: h.nombre })"
+                    :aria-label="
+                      t('abrirCarpetaHabilidad', { habilidad: h.nombre })
+                    "
+                    @click="abrirCarpeta(h.nombre)"
+                  >
+                    <Icono nombre="carpeta" :tamano="14" />
+                  </button>
+                </template>
               </div>
             </td>
           </tr>
@@ -616,6 +636,21 @@ tr.error .nombre::before {
   height: 24px;
   width: 26px;
   padding: 0;
+}
+
+.actualizar {
+  height: 24px;
+  width: 26px;
+  padding: 0;
+}
+
+.actualizando {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  font-size: 11px;
+  color: var(--fg-muted);
 }
 
 .spinner {

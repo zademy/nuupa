@@ -216,6 +216,45 @@ export function createHabilidadesStore(
     seleccion.value = [];
   }
 
+  // ---- Actualizar una gestionada (#29) ----
+
+  // Per-row in-flight: disables THAT row's update only.
+  const actualizando = reactive({});
+
+  // The store guards too: only an Actualización disponible with a
+  // resolved manifest may update (#17: a corrupt manifest blocks every
+  // write).
+  function puedeActualizar(nombre) {
+    const h = state.habilidades.find((x) => x.nombre === nombre);
+    return (
+      h?.estado === ESTADO_HABILIDAD.ACTUALIZACION &&
+      estadoManifest.value === "ok"
+    );
+  }
+
+  const estaActualizando = (nombre) => !!actualizando[nombre];
+
+  async function actualizar(nombre) {
+    if (actualizando[nombre] || !puedeActualizar(nombre)) return;
+    actualizando[nombre] = true;
+    anunciar(anuncio, `${nombre}: ${t("actualizando")}`);
+    try {
+      await invokeFn("actualizar_habilidad", { nombre });
+      delete status[nombre];
+      delete detalle[nombre];
+      await refresh();
+      anunciar(anuncio, t("actualizacionLista", { habilidad: nombre }));
+    } catch (e) {
+      const texto = `${t("actualizarFallo")}\n${String(e)}`.trim();
+      status[nombre] = ESTADO.ERROR;
+      detalle[nombre] = texto;
+      anunciar(anuncioError, `${nombre}: ${t("actualizarFallo")}`);
+      appendLog(`habilidades/${nombre}: ${texto}`);
+    } finally {
+      delete actualizando[nombre];
+    }
+  }
+
   return {
     state,
     search,
@@ -239,5 +278,8 @@ export function createHabilidadesStore(
     toggleRuta,
     instalarSeleccionadas,
     cerrarEscaneo,
+    actualizar,
+    puedeActualizar,
+    estaActualizando,
   };
 }
