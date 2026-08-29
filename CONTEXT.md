@@ -108,3 +108,7 @@ _Avoid_: al día, sincronizada, vigente
 **Actualización disponible**:
 Habilidad Gestionada cuyo SHA guardado difiere del actual en su Origen remoto.
 _Avoid_: desactualizada (reservado a paquetes), pendiente, atrás
+
+**Sin verificar**:
+Habilidad Gestionada cuyo SHA no se pudo consultar ahora (fallo de red en SU fila): nunca es un veredicto; las demás filas refrescan igual.
+_Avoid_: error (a secas), fallida, desactualizada

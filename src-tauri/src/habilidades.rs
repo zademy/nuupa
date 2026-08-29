@@ -572,6 +572,17 @@ pub struct HabilidadEscaneada {
     pub motivo: Option<String>,
 }
 
+/// Downloads the origin's tree into `staging` and returns its single
+/// top directory — the shared first phase of escanear/instalar/actualizar.
+fn descargar_arbol(
+    proveedor: &dyn ProveedorRemoto,
+    origen: &RepoUrl,
+    staging: &Path,
+) -> Result<PathBuf, String> {
+    proveedor.descargar_en(origen, staging)?;
+    raiz_del_arbol(staging)
+}
+
 /// Downloads the repo into `staging` (a throwaway dir the caller owns)
 /// and reports every skill folder found: Conforme or Inválida with its
 /// reason. NOTHING is activated here. With a skills.sh slug (#31) the
@@ -582,8 +593,7 @@ pub fn escanear(
     origen: &RepoUrl,
     staging: &Path,
 ) -> Result<Vec<HabilidadEscaneada>, String> {
-    proveedor.descargar_en(origen, staging)?;
-    let raiz = raiz_del_arbol(staging)?;
+    let raiz = descargar_arbol(proveedor, origen, staging)?;
     let mut encontradas = Vec::new();
     match &origen.ruta {
         // Direct skill: only that folder, present or not.
@@ -686,8 +696,7 @@ pub fn instalar(
 ) -> Result<Vec<ResultadoInstalacion>, String> {
     fs::create_dir_all(raiz_habilidades).map_err(|e| e.to_string())?;
     let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
-    proveedor.descargar_en(origen, staging.path())?;
-    let raiz = raiz_del_arbol(staging.path())?;
+    let raiz = descargar_arbol(proveedor, origen, staging.path())?;
     let mut resultados = Vec::new();
     for ruta in rutas {
         resultados.push(instalar_una(
@@ -841,8 +850,7 @@ pub fn actualizar(
     };
     fs::create_dir_all(raiz_habilidades).map_err(|e| e.to_string())?;
     let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
-    proveedor.descargar_en(&origen, staging.path())?;
-    let raiz_repo = raiz_del_arbol(staging.path())?;
+    let raiz_repo = descargar_arbol(proveedor, &origen, staging.path())?;
     let resultado = instalar_una(
         proveedor,
         &origen,

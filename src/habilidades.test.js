@@ -179,6 +179,21 @@ describe("store de habilidades", () => {
     expect(store.escaneo.cargando).toBe(false);
   });
 
+  it("un atajo de skills.sh no resoluble deja el error visible y no instala", async () => {
+    const llamadas = [];
+    const store = createHabilidadesStore(async (cmd, args) => {
+      llamadas.push(cmd);
+      if (cmd === "escanear_origen") {
+        expect(args).toEqual({ origen: "skills.sh/o/r/no-existe" });
+        throw "no se encontró la habilidad «no-existe» en el repositorio";
+      }
+    });
+    store.origenInput.value = "skills.sh/o/r/no-existe";
+    await store.escanear();
+    expect(store.escaneo.error).toContain("no se encontró");
+    expect(llamadas).toEqual(["escanear_origen"]); // never installs
+  });
+
   it("toggleRuta agrega y quita de la selección", async () => {
     const store = createHabilidadesStore(async (cmd) => {
       if (cmd === "listar_habilidades") return LISTA;
