@@ -11,7 +11,7 @@ import { crearLog } from "./store";
 const LISTA = {
   habilidades: [
     { nombre: "markdownlint", estado: "no_gestionada" },
-    { nombre: "rota-skill", estado: "invalida" },
+    { nombre: "invalida-skill", estado: "invalida" },
   ],
   manifest: { estado: "ok" },
 };
@@ -37,7 +37,7 @@ describe("PanelHabilidades montado", () => {
     const c = await montarCargado();
     expect(c.findAll("tbody tr")).toHaveLength(2);
     expect(filaDe(c, "markdownlint").text()).toContain("not managed");
-    expect(filaDe(c, "rota-skill").text()).toContain("invalid");
+    expect(filaDe(c, "invalida-skill").text()).toContain("invalid");
     expect(c.get(".statusbar").text()).toContain("2");
   });
 
@@ -73,7 +73,7 @@ describe("PanelHabilidades montado", () => {
     await filaDe(c, "markdownlint").get("button.abrir").trigger("click");
     await flushPromises();
     expect(filaDe(c, "markdownlint").classes()).toContain("error");
-    expect(filaDe(c, "rota-skill").classes()).not.toContain("error");
+    expect(filaDe(c, "invalida-skill").classes()).not.toContain("error");
   });
 
   it("manifest corrupto: banner de emergencia, reintentar y empezar de cero resuelven", async () => {
@@ -115,9 +115,9 @@ describe("PanelHabilidades montado", () => {
 
   it("la búsqueda filtra las filas", async () => {
     const c = await montarCargado();
-    await c.get("input[type=search]").setValue("ROTA");
+    await c.get("input[type=search]").setValue("INVALID");
     expect(c.findAll("tbody tr")).toHaveLength(1);
-    expect(c.findAll("tbody tr")[0].text()).toContain("rota-skill");
+    expect(c.findAll("tbody tr")[0].text()).toContain("invalida-skill");
   });
 
   it("accesibilidad: caption, aria-busy y regiones live", async () => {

@@ -8,7 +8,7 @@ import { createHabilidadesStore, ESTADO_HABILIDAD } from "./habilidades";
 const LISTA = {
   habilidades: [
     { nombre: "markdownlint", estado: ESTADO_HABILIDAD.NO_GESTIONADA },
-    { nombre: "rota-skill", estado: ESTADO_HABILIDAD.INVALIDA },
+    { nombre: "invalida-skill", estado: ESTADO_HABILIDAD.INVALIDA },
   ],
   manifest: { estado: "ok" },
 };

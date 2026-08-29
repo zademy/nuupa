@@ -56,7 +56,7 @@ describe("axe (accesibilidad)", () => {
     tauri.responder("listar_habilidades", {
       habilidades: [
         { nombre: "markdownlint", estado: "no_gestionada" },
-        { nombre: "rota-skill", estado: "invalida" },
+        { nombre: "invalida-skill", estado: "invalida" },
       ],
       manifest: { estado: "ok" },
     });

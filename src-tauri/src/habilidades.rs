@@ -474,8 +474,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("buena")).unwrap();
         fs::write(dir.path().join("buena").join(SKILL_MD), SKILL_OK).unwrap();
-        fs::create_dir(dir.path().join("rota")).unwrap();
-        fs::write(dir.path().join("rota").join(SKILL_MD), "sin frontmatter").unwrap();
+        fs::create_dir(dir.path().join("invalida")).unwrap();
+        fs::write(dir.path().join("invalida").join(SKILL_MD), "sin frontmatter").unwrap();
         fs::create_dir(dir.path().join(".oculta")).unwrap();
         fs::write(dir.path().join("suelto.txt"), "no es carpeta").unwrap();
 
@@ -489,7 +489,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 ("buena", EstadoHabilidad::NoGestionada),
-                ("rota", EstadoHabilidad::Invalida)
+                ("invalida", EstadoHabilidad::Invalida)
             ]
         );
     }
