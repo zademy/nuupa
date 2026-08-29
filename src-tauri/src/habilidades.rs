@@ -348,18 +348,22 @@ fn derivar(raiz: &Path, chequeo: Option<&dyn ProveedorRemoto>) -> SalidaHabilida
 // ---- Origen: the URL forms accepted (#27) ----
 
 /// A parsed origin: the repo (`owner/repo`), an optional whole-tree
-/// reference and an optional direct skill's ruta inside the repo.
+/// reference, an optional direct skill's ruta inside the repo and an
+/// optional skills.sh slug to filter the scan by (#31).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoUrl {
     pub repo: String,
     pub referencia: Option<String>,
     pub ruta: Option<String>,
+    pub slug: Option<String>,
 }
 
 /// Accepts `owner/repo`, `github.com/owner/repo`,
-/// `https://github.com/owner/repo` and the `/tree/{ref}[/ruta]` forms.
-/// Anything else (another host, traversal, single segment) is an error —
-/// the error string is the UI's report.
+/// `https://github.com/owner/repo` and the `/tree/{ref}[/ruta]` forms —
+/// plus the skills.sh shortcut `skills.sh/{owner}/{repo}/{slug}` (#31),
+/// resolved by filtering the repo scan on the slug. Anything else
+/// (another host, traversal, wrong arity) is an error — the error string
+/// is the UI's report.
 pub fn parsear_origen(texto: &str) -> Result<RepoUrl, String> {
     let mal = |porque: String| format!("origen no válido ({porque}): {texto}");
     let t = texto.trim();
@@ -372,6 +376,27 @@ pub fn parsear_origen(texto: &str) -> Result<RepoUrl, String> {
     if t.is_empty() {
         return Err(mal("falta owner/repo".into()));
     }
+
+    // skills.sh shortcut: the id shape owner/repo/slug — the repo scan
+    // filters on the slug (#31). No ruta, no ref.
+    if let Ok(resto) = t.strip_prefix("skills.sh/").ok_or(()) {
+        let segmentos: Vec<&str> = resto.split('/').filter(|s| !s.is_empty()).collect();
+        if segmentos.len() != 3 {
+            return Err(mal("skills.sh espera owner/repo/slug".into()));
+        }
+        for s in &segmentos {
+            if *s == "." || *s == ".." || s.starts_with('.') {
+                return Err(mal(format!("segmento no seguro: {s:?}")));
+            }
+        }
+        return Ok(RepoUrl {
+            repo: format!("{}/{}", segmentos[0], segmentos[1]),
+            referencia: None,
+            ruta: None,
+            slug: Some(segmentos[2].to_string()),
+        });
+    }
+
     let (repo_part, resto) = match t.split_once("/tree/") {
         Some((r, resto)) => (r, Some(resto)),
         None => (t, None),
@@ -417,6 +442,7 @@ pub fn parsear_origen(texto: &str) -> Result<RepoUrl, String> {
         repo,
         referencia,
         ruta,
+        slug: None,
     })
 }
 
@@ -538,6 +564,9 @@ fn raiz_del_arbol(staging: &Path) -> Result<PathBuf, String> {
 pub struct HabilidadEscaneada {
     /// Ruta of the skill folder inside the repo (forward slashes).
     pub ruta: String,
+    /// The skill's frontmatter name — the slug matcher (#31).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub conforme: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motivo: Option<String>,
@@ -545,7 +574,9 @@ pub struct HabilidadEscaneada {
 
 /// Downloads the repo into `staging` (a throwaway dir the caller owns)
 /// and reports every skill folder found: Conforme or Inválida with its
-/// reason. NOTHING is activated here.
+/// reason. NOTHING is activated here. With a skills.sh slug (#31) the
+/// report is filtered to THAT skill — by folder name or frontmatter
+/// name; an unknown slug is an explicit error, never silence.
 pub fn escanear(
     proveedor: &dyn ProveedorRemoto,
     origen: &RepoUrl,
@@ -563,6 +594,7 @@ pub fn escanear(
             } else {
                 HabilidadEscaneada {
                     ruta: ruta.clone(),
+                    name: None,
                     conforme: false,
                     motivo: Some("la carpeta no existe en el repositorio".to_string()),
                 }
@@ -570,6 +602,19 @@ pub fn escanear(
         }
         // Whole repo: every folder with a SKILL.md, recursively.
         None => recolectar(&raiz, &raiz, &mut encontradas),
+    }
+    // skills.sh shortcut: keep only the slug's skill (#31).
+    if let Some(slug) = &origen.slug {
+        let coincide = |h: &HabilidadEscaneada| {
+            h.name.as_deref() == Some(slug.as_str())
+                || h.ruta.rsplit('/').next() == Some(slug.as_str())
+        };
+        if !encontradas.iter().any(coincide) {
+            return Err(format!(
+                "no se encontró la habilidad «{slug}» en el repositorio"
+            ));
+        }
+        encontradas.retain(coincide);
     }
     encontradas.sort_by(|a, b| a.ruta.cmp(&b.ruta));
     Ok(encontradas)
@@ -599,13 +644,15 @@ fn candidato(base: &Path, carpeta: &Path) -> HabilidadEscaneada {
         .to_string_lossy()
         .replace('\\', "/");
     match validar(carpeta) {
-        Ok(_) => HabilidadEscaneada {
+        Ok(frente) => HabilidadEscaneada {
             ruta,
+            name: Some(frente.name),
             conforme: true,
             motivo: None,
         },
         Err(e) => HabilidadEscaneada {
             ruta,
+            name: None,
             conforme: false,
             motivo: Some(e),
         },
@@ -790,6 +837,7 @@ pub fn actualizar(
         repo: entrada.origen.repo.clone(),
         referencia: None,
         ruta: Some(entrada.origen.ruta.clone()),
+        slug: None,
     };
     fs::create_dir_all(raiz_habilidades).map_err(|e| e.to_string())?;
     let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -1410,6 +1458,93 @@ mod tests {
         .unwrap();
         assert!(!resultados[0].ok);
         assert!(resultados[0].motivo.as_deref().unwrap().contains("segura"));
+    }
+
+    // ---- #31: atajo de skills.sh ----
+
+    #[test]
+    fn url_de_skills_sh_se_parsea_a_repo_y_slug() {
+        for texto in [
+            "skills.sh/o/r/buena",
+            "https://skills.sh/o/r/buena",
+            "www.skills.sh/o/r/buena",
+        ] {
+            let origen = parsear_origen(texto).unwrap();
+            assert_eq!(origen.repo, "o/r", "{texto}");
+            assert_eq!(origen.slug.as_deref(), Some("buena"));
+            assert_eq!(origen.ruta, None);
+            assert_eq!(origen.referencia, None);
+        }
+        // wrong arity is refused
+        for texto in ["skills.sh/o/r", "skills.sh/o", "skills.sh/o/r/buena/extra"] {
+            assert!(parsear_origen(texto).is_err(), "{texto} no debió pasar");
+        }
+    }
+
+    #[test]
+    fn escanear_con_slug_filtra_por_carpeta_y_por_name_del_frente() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let staging = tempfile::tempdir().unwrap();
+        // by folder leaf: "buena"
+        let por_carpeta = escanear(
+            &proveedor,
+            &parsear_origen("skills.sh/o/r/buena").unwrap(),
+            staging.path(),
+        )
+        .unwrap();
+        assert_eq!(por_carpeta.len(), 1);
+        assert_eq!(por_carpeta[0].ruta, "skills/productivity/buena");
+        assert!(por_carpeta[0].conforme);
+        // by frontmatter name: BOTH folders carrying name "find-skills"
+        // match (the fixture reuses it); sorted by ruta
+        let por_name = escanear(
+            &proveedor,
+            &parsear_origen("skills.sh/o/r/find-skills").unwrap(),
+            staging.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            por_name.iter().map(|h| h.ruta.as_str()).collect::<Vec<_>>(),
+            ["skills/productivity/buena", "utils/anidada"]
+        );
+        // an unknown slug is an explicit error, never silence
+        let err = escanear(
+            &proveedor,
+            &parsear_origen("skills.sh/o/r/no-existe").unwrap(),
+            staging.path(),
+        )
+        .unwrap_err();
+        assert!(err.contains("no se encontró"), "{err}");
+        assert!(err.contains("no-existe"));
+    }
+
+    #[test]
+    fn instalar_con_slug_usa_las_rutas_filtradas() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let staging = tempfile::tempdir().unwrap();
+        let encontradas = escanear(
+            &proveedor,
+            &parsear_origen("skills.sh/o/r/buena").unwrap(),
+            staging.path(),
+        )
+        .unwrap();
+        let rutas: Vec<String> = encontradas.iter().map(|h| h.ruta.clone()).collect();
+        let raiz = tempfile::tempdir().unwrap();
+        let mut mapa = Mapa::new();
+        let resultados = instalar(
+            &proveedor,
+            &parsear_origen("skills.sh/o/r/buena").unwrap(),
+            &rutas,
+            raiz.path(),
+            &mut mapa,
+            7,
+        )
+        .unwrap();
+        assert!(resultados[0].ok);
+        assert!(raiz.path().join("buena").join(SKILL_MD).is_file());
+        assert_eq!(mapa["buena"].origen.repo, "o/r");
     }
 
     #[test]
