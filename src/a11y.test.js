@@ -4,6 +4,7 @@ import { beforeEach, describe, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { tauri } from "./tauri-fake"; // the mocks register in tests-setup
 import PanelGestor from "./PanelGestor.vue";
+import PanelHabilidades from "./PanelHabilidades.vue";
 import AcercaDe from "./AcercaDe.vue";
 import { crearLog } from "./store";
 
@@ -45,6 +46,22 @@ describe("axe (accesibilidad)", () => {
     tauri.responder("list_globals", SNAPSHOT);
     mount(PanelGestor, {
       props: { gestor: "npm", log: crearLog() },
+      attachTo: document.body,
+    });
+    await flushPromises();
+    await avisarViolaciones();
+  });
+
+  it("chequea el panel de habilidades (avisos por consola, sin gate)", async () => {
+    tauri.responder("listar_habilidades", {
+      habilidades: [
+        { nombre: "markdownlint", estado: "no_gestionada" },
+        { nombre: "rota-skill", estado: "invalida" },
+      ],
+      manifest: { estado: "ok" },
+    });
+    mount(PanelHabilidades, {
+      props: { log: crearLog() },
       attachTo: document.body,
     });
     await flushPromises();

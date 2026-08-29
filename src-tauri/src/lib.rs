@@ -8,6 +8,7 @@
 mod bun;
 mod cola;
 mod exclusiones;
+mod habilidades;
 mod kernel;
 mod npm;
 mod plazo;
@@ -272,6 +273,41 @@ fn gestores_instalados() -> Vec<String> {
         .collect()
 }
 
+// ---- Habilidades (#26) ----
+
+/// Lists the user-level agent skills with their offline states. The scan
+/// is filesystem work: it runs blocking on a pool thread like the
+/// package queries, so the IPC does not freeze.
+#[tauri::command]
+async fn listar_habilidades() -> Result<habilidades::SalidaHabilidades, String> {
+    let raiz = habilidades::carpeta_del_usuario()?;
+    tauri::async_runtime::spawn_blocking(move || Ok(habilidades::listar(&raiz)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Resolves the corrupt-manifest emergency by starting clean (#17):
+/// evidence (.corrupt) first, then a valid empty map — only with the
+/// user's explicit choice.
+#[tauri::command]
+fn habilidades_de_cero() -> Result<(), String> {
+    let raiz = habilidades::carpeta_del_usuario()?;
+    habilidades::empezar_de_cero(&raiz).map_err(|e| e.to_string())
+}
+
+/// Opens ONE Habilidad's folder in the system file manager: the name is
+/// validated as a single safe component under the skills root — never a
+/// path, never a hidden or parent entry.
+#[tauri::command]
+async fn abrir_habilidad(nombre: String, app: tauri::AppHandle) -> Result<(), String> {
+    habilidades::nombre_seguro(&nombre)?;
+    let ruta = habilidades::carpeta_del_usuario()?.join(&nombre);
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(ruta.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Lists the global packages of the manager's space.
 /// `outdated` takes seconds (registry query): it runs blocking on a pool
 /// thread so the IPC does not freeze.
@@ -480,6 +516,9 @@ pub fn run() {
             quitar_exclusion,
             exclusiones_de_cero,
             gestores_instalados,
+            listar_habilidades,
+            habilidades_de_cero,
+            abrir_habilidad,
             actualizar_todo,
             detener_actualizar_todo,
             abandonar_actualizar_todo,
