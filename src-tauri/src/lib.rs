@@ -263,6 +263,10 @@ struct Contexto {
     /// Same single-writer rule for the skills manifest (#27): an install
     /// is one read-modify-write, never interleaved.
     candado_habilidades: Arc<Mutex<()>>,
+    /// The skills queue's OWN Stop/abandonment flags (#30) sharing the
+    /// ONE-active gate with the packages queue: both queues can never
+    /// run together.
+    banderas_habilidades: cola::Banderas,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -482,6 +486,85 @@ async fn actualizar_habilidad(
     .map_err(|e| e.to_string())?
 }
 
+/// The skills queue's row event (`skills-cola`). Success is derivable:
+/// `motivo === "ok"`.
+#[derive(Clone, Serialize)]
+struct EventoHabilidad {
+    tipo: &'static str, // "empieza" | "resultado"
+    habilidad: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    salida: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    motivo: Option<Motivo>,
+}
+
+/// "Actualizar todo" over the skills (#30): sequential queue sharing the
+/// packages queue's ONE-active gate. Progress via `skills-cola`; on
+/// finish the UI refreshes (the manifest's new SHAs decide the states).
+#[tauri::command]
+async fn actualizar_habilidades_todo(
+    estado: tauri::State<'_, Contexto>,
+    app: tauri::AppHandle,
+) -> Result<Resumen, String> {
+    let candado = estado.candado_habilidades.clone();
+    let banderas = estado.banderas_habilidades.compartidas();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _candado = candado.lock().unwrap();
+        let raiz = habilidades::carpeta_del_usuario()?;
+        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let resumen = habilidades::actualizar_todo(
+            &proveedor,
+            &raiz,
+            &mut mapa,
+            &banderas,
+            ahora,
+            &mut |ev| {
+                let e = match ev {
+                    habilidades::EventoColaHabilidades::Empieza { habilidad } => EventoHabilidad {
+                        tipo: "empieza",
+                        habilidad: habilidad.clone(),
+                        salida: None,
+                        motivo: None,
+                    },
+                    habilidades::EventoColaHabilidades::Resultado {
+                        habilidad,
+                        motivo,
+                        salida,
+                    } => EventoHabilidad {
+                        tipo: "resultado",
+                        habilidad: habilidad.clone(),
+                        salida: Some(salida.clone()),
+                        motivo: Some(*motivo),
+                    },
+                };
+                let _ = app.emit("skills-cola", e);
+            },
+        )?;
+        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())?;
+        Ok(resumen)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stops the skills queue: nothing pending starts; the in-flight update
+/// finishes naturally (HTTP is bounded by its timeouts).
+#[tauri::command]
+fn detener_habilidades_todo(estado: tauri::State<Contexto>) {
+    estado.banderas_habilidades.detener();
+}
+
+/// The panel went away: finish the in-flight, start nothing new.
+#[tauri::command]
+fn abandonar_habilidades_todo(estado: tauri::State<Contexto>) {
+    estado.banderas_habilidades.abandonar();
+}
+
 /// "Update all": sequential queue in Rust. Progress via `pm-cola`
 /// (starts/result per package) and `pm-output` (log lines); on finish it
 /// returns summary + final snapshot (a single refresh).
@@ -582,9 +665,13 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .map_err(|e| format!("no config directory: {e}"))?;
+            let banderas = cola::Banderas::nuevas();
             app.manage(Contexto {
                 dir_config,
-                banderas: cola::Banderas::nuevas(),
+                banderas_habilidades: cola::Banderas::con_guarda_compartida(
+                    banderas.activa(),
+                ),
+                banderas,
                 candado_exclusiones: Arc::new(Mutex::new(())),
                 candado_habilidades: Arc::new(Mutex::new(())),
             });
@@ -604,6 +691,9 @@ pub fn run() {
             escanear_origen,
             instalar_habilidades,
             actualizar_habilidad,
+            actualizar_habilidades_todo,
+            detener_habilidades_todo,
+            abandonar_habilidades_todo,
             actualizar_todo,
             detener_actualizar_todo,
             abandonar_actualizar_todo,

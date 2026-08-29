@@ -117,6 +117,8 @@ export const MENSAJES = {
     actualizarHabilidad: "Update {habilidad} from its origin",
     actualizarFallo: "the update failed",
     actualizacionLista: "{habilidad} updated",
+    actualizarTodoHabilidadesTitulo:
+      "Update all skills with an available update, one at a time",
   },
   es: {
     gestoresInstalados: "Gestores instalados",
@@ -229,6 +231,8 @@ export const MENSAJES = {
     actualizarHabilidad: "Actualizar {habilidad} desde su origen",
     actualizarFallo: "la actualización falló",
     actualizacionLista: "{habilidad} actualizada",
+    actualizarTodoHabilidadesTitulo:
+      "Actualizar, de a una, todas las habilidades con Actualización disponible",
   },
 };
 

@@ -283,4 +283,94 @@ describe("PanelHabilidades montado", () => {
     // the neighbor was never touched
     expect(filaDe(c, "al-dia").classes()).not.toContain("error");
   });
+
+  // ---- #30: la cola Actualizar todo ----
+
+  it("la cola delega al comando, mueve las filas por eventos y adopta el resumen", async () => {
+    tauri.responder("listar_habilidades", CON_ACTUALIZACION);
+    tauri.responder("actualizar_habilidades_todo", {
+      total: 1,
+      ok: 1,
+      failed: 0,
+      detenidos: 0,
+      detenida: false,
+    });
+    const c = await montarCargado(CON_ACTUALIZACION);
+    expect(
+      c.get("button.actualizar-todo").attributes("disabled"),
+    ).toBeUndefined();
+    await c.get("button.actualizar-todo").trigger("click");
+    await flushPromises();
+    expect(tauri.registradas("actualizar_habilidades_todo")).toHaveLength(1);
+    // the queue events move the row while running
+    tauri.emitir("skills-cola", {
+      tipo: "empieza",
+      habilidad: "vieja",
+    });
+    await flushPromises();
+    expect(filaDe(c, "vieja").text()).toContain("updating");
+    tauri.emitir("skills-cola", {
+      tipo: "resultado",
+      habilidad: "vieja",
+      motivo: "ok",
+    });
+    await flushPromises();
+    expect(filaDe(c, "vieja").text()).not.toContain("updating");
+    // the summary lives in the statusbar
+    expect(c.get(".statusbar").text()).toContain("1 of 1");
+  });
+
+  it("un resultado fallido de la cola marca la fila con el motivo", async () => {
+    tauri.responder("listar_habilidades", CON_ACTUALIZACION);
+    tauri.responder("actualizar_habilidades_todo", {
+      total: 1,
+      ok: 0,
+      failed: 1,
+      detenidos: 0,
+      detenida: false,
+    });
+    const c = await montarCargado(CON_ACTUALIZACION);
+    tauri.emitir("skills-cola", {
+      tipo: "resultado",
+      habilidad: "vieja",
+      motivo: "fallo",
+      salida: "no se pudo extraer el repositorio",
+    });
+    await flushPromises();
+    const fila = filaDe(c, "vieja");
+    expect(fila.classes()).toContain("error");
+    expect(fila.attributes("title")).toContain("no se pudo extraer");
+    const alertas = c.findAll('[role="alert"]');
+    expect(alertas.some((a) => a.text().includes("vieja"))).toBe(true);
+  });
+
+  it("sin actualizables (o manifest corrupto) la cola está deshabilitada", async () => {
+    const c = await montarCargado(LISTA); // ninguna Actualización disponible
+    expect(
+      c.get("button.actualizar-todo").attributes("disabled"),
+    ).toBeDefined();
+    tauri.responder("listar_habilidades", {
+      habilidades: [{ nombre: "vieja", estado: "actualizacion_disponible" }],
+      manifest: { estado: "corrupto" },
+    });
+    await c.get("button.refrescar").trigger("click");
+    await flushPromises();
+    expect(
+      c.get("button.actualizar-todo").attributes("disabled"),
+    ).toBeDefined();
+  });
+
+  it("Detener pide el corte de la cola de habilidades", async () => {
+    tauri.responder("listar_habilidades", CON_ACTUALIZACION);
+    tauri.responder("detener_habilidades_todo", {});
+    tauri.responder("actualizar_habilidades_todo", () => new Promise(() => {}));
+    const c = await montarCargado(CON_ACTUALIZACION);
+    await c.get("button.actualizar-todo").trigger("click");
+    await flushPromises();
+    await c.get("button.detener").trigger("click");
+    expect(tauri.registradas("detener_habilidades_todo")).toHaveLength(1);
+    c.unmount();
+    // leaving with an active queue: graceful abandonment, nothing cut
+    expect(tauri.registradas("abandonar_habilidades_todo")).toHaveLength(1);
+  });
 });

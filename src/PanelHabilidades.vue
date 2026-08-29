@@ -1,5 +1,6 @@
 <script setup>
-import { onMounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import Icono from "./Icono.vue";
 import { createHabilidadesStore } from "./habilidades";
 import { useI18n } from "./i18n";
@@ -35,6 +36,12 @@ const {
   actualizar,
   puedeActualizar,
   estaActualizando,
+  queue,
+  hayActualizables,
+  actualizarTodo,
+  procesarEventoCola,
+  detenerTodo,
+  abandonarTodo,
 } = createHabilidadesStore(undefined, props.log);
 
 const { t } = useI18n();
@@ -50,7 +57,26 @@ const CLAVE_ESTADO = {
 };
 const textoEstado = (estado) => t(CLAVE_ESTADO[estado] ?? estado);
 
-onMounted(refresh);
+// The fila updates while the queue runs: the row's spinner shows when
+// the queue is ON this skill.
+const filaEnCola = (nombre) => queue.current === nombre;
+
+let desuscribirCola = null;
+
+onMounted(async () => {
+  refresh();
+  // Queue events (starts/result per skill) move THIS panel's rows.
+  desuscribirCola = await listen("skills-cola", (e) =>
+    procesarEventoCola(e.payload),
+  );
+});
+
+onUnmounted(() => {
+  // Leaving the panel winds its queue down gracefully: the in-flight
+  // update finishes, the pending ones never start. Only Detener cuts.
+  desuscribirCola?.();
+  abandonarTodo();
+});
 </script>
 
 <template>
@@ -78,6 +104,30 @@ onMounted(refresh);
         >
           <span v-if="escaneo.cargando" class="spinner mini"></span>
           {{ t("agregarHabilidades") }}
+        </button>
+        <button
+          class="primario actualizar-todo"
+          :disabled="
+            !hayActualizables || queue.active || estadoManifest !== 'ok'
+          "
+          :title="t('actualizarTodoHabilidadesTitulo')"
+          @click="actualizarTodo"
+        >
+          <Icono nombre="actualizar" :tamano="14" />
+          {{ t("actualizarTodo") }}
+        </button>
+        <button
+          v-if="queue.active"
+          class="detener solo-icono"
+          :disabled="queue.stopped"
+          :title="
+            queue.stopped ? t('deteniendoColaTitulo') : t('detenerColaTitulo')
+          "
+          :aria-label="t('detenerCola')"
+          @click="detenerTodo"
+        >
+          <span v-if="queue.stopped" class="spinner mini"></span>
+          <Icono v-else nombre="detener" :tamano="14" />
         </button>
         <label class="busqueda" :title="t('buscarHabilidadesTitulo')">
           <Icono nombre="buscar" :tamano="13" />
@@ -111,7 +161,16 @@ onMounted(refresh);
         {{ conteo.invalidas === 1 ? t("invalida") : t("invalidas") }}
       </span>
       <span class="statusbar-der">
-        <span v-if="state.loading" class="spinner mini"></span>
+        <span v-if="queue.summary" class="mono">
+          {{ queue.summary.ok }} {{ t("de") }} {{ queue.summary.total }}
+          {{ t("actualizados")
+          }}<template v-if="queue.summary.failed">
+            · {{ queue.summary.failed }} {{ t("fallidos") }}</template
+          ><template v-if="queue.summary.detenida">
+            · {{ t("detenida") }}</template
+          >
+        </span>
+        <span v-if="queue.active || state.loading" class="spinner mini"></span>
       </span>
     </div>
 
@@ -247,9 +306,12 @@ onMounted(refresh);
             <td class="estado-celda mono">{{ textoEstado(h.estado) }}</td>
             <td class="acciones">
               <div class="acciones-contenido">
-                <span v-if="estaActualizando(h.nombre)" class="actualizando">
+                <span
+                  v-if="estaActualizando(h.nombre) || filaEnCola(h.nombre)"
+                  class="actualizando"
+                >
                   <span class="spinner"></span>
-                  {{ t("actualizando") }}
+                  {{ queue.stopped ? t("deteniendo") : t("actualizando") }}
                 </span>
                 <template v-else>
                   <button

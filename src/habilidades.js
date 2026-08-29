@@ -1,7 +1,7 @@
 import { computed, nextTick, reactive, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useI18n } from "./i18n";
-import { crearLog } from "./store";
+import { crearLog, MOTIVO } from "./store";
 
 /**
  * Wire values of a Habilidad's state (`EstadoHabilidad` in Rust,
@@ -34,7 +34,7 @@ export function createHabilidadesStore(
     loading: false,
   });
   const search = ref("");
-  const ESTADO = { ERROR: "error" };
+  const ESTADO = { ACTUALIZANDO: "updating", ERROR: "error" };
   // Failure detail per skill (the row's tooltip): why opening failed.
   const detalle = reactive({});
   // Log: shared if the app passes one; own otherwise. crearLog owns the
@@ -232,7 +232,8 @@ export function createHabilidadesStore(
     );
   }
 
-  const estaActualizando = (nombre) => !!actualizando[nombre];
+  const estaActualizando = (nombre) =>
+    !!actualizando[nombre] || status[nombre] === ESTADO.ACTUALIZANDO;
 
   async function actualizar(nombre) {
     if (actualizando[nombre] || !puedeActualizar(nombre)) return;
@@ -253,6 +254,86 @@ export function createHabilidadesStore(
     } finally {
       delete actualizando[nombre];
     }
+  }
+
+  // ---- Actualizar todo (#30): the sequential queue ----
+
+  // The queue lives in Rust (list order, one at a time, a failure does
+  // not stop it, shared ONE-active gate with the packages queue). The
+  // store delegates and reacts to `skills-cola` events; the invoke
+  // returns the summary — the list refreshes once at the end.
+  const queue = reactive({
+    active: false,
+    current: null,
+    stopped: false,
+    summary: null,
+  });
+
+  const hayActualizables = computed(
+    () =>
+      estadoManifest.value === "ok" &&
+      state.habilidades.some(
+        (h) => h.estado === ESTADO_HABILIDAD.ACTUALIZACION,
+      ),
+  );
+
+  async function actualizarTodo() {
+    if (!hayActualizables.value || queue.active) return;
+    queue.active = true;
+    queue.stopped = false;
+    queue.summary = null;
+    anunciar(anuncio, t("actualizando"));
+    try {
+      const resumen = await invokeFn("actualizar_habilidades_todo");
+      queue.summary = resumen;
+      await refresh();
+      const linea =
+        t("colaTerminada", { ok: resumen.ok, total: resumen.total }) +
+        (resumen.failed ? ` · ${resumen.failed} ${t("fallidos")}` : "") +
+        (resumen.detenida ? ` · ${t("detenida")}` : "");
+      appendLog(`habilidades: ${linea}`);
+      anunciar(anuncio, linea);
+    } catch (e) {
+      appendLog(`habilidades: ${t("colaFallo", { e })}`);
+      await refresh();
+    } finally {
+      queue.current = null;
+      queue.active = false;
+    }
+  }
+
+  // `skills-cola` event (starts/result per skill): moves the table row.
+  function procesarEventoCola(e) {
+    if (e.tipo === "empieza") {
+      queue.current = e.habilidad;
+      status[e.habilidad] = ESTADO.ACTUALIZANDO;
+      anunciar(anuncio, `${e.habilidad}: ${t("actualizando")}`);
+    } else if (e.tipo === "resultado") {
+      if (e.motivo === MOTIVO.OK) {
+        delete status[e.habilidad];
+        delete detalle[e.habilidad];
+      } else {
+        status[e.habilidad] = ESTADO.ERROR;
+        detalle[e.habilidad] =
+          `${t("actualizarFallo")}\n${e.salida ?? ""}`.trim();
+        anunciar(anuncioError, `${e.habilidad}: ${t("actualizarFallo")}`);
+        appendLog(`habilidades/${e.habilidad}: ${detalle[e.habilidad]}`);
+      }
+      if (queue.current === e.habilidad) queue.current = null;
+    }
+  }
+
+  function detenerTodo() {
+    if (!queue.active) return;
+    queue.stopped = true;
+    invokeFn("detener_habilidades_todo").catch(() => {});
+  }
+
+  // The panel went away: graceful — the in-flight update finishes, the
+  // next ones never start. No UI feedback: the panel is being destroyed.
+  function abandonarTodo() {
+    if (!queue.active) return;
+    invokeFn("abandonar_habilidades_todo").catch(() => {});
   }
 
   return {
@@ -281,5 +362,11 @@ export function createHabilidadesStore(
     actualizar,
     puedeActualizar,
     estaActualizando,
+    queue,
+    hayActualizables,
+    actualizarTodo,
+    procesarEventoCola,
+    detenerTodo,
+    abandonarTodo,
   };
 }

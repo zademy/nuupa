@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::cola;
+
 const ARCHIVO: &str = "habilidades.json";
 const SKILL_MD: &str = "SKILL.md";
 
@@ -645,25 +647,39 @@ pub fn instalar(
             proveedor,
             origen,
             ruta,
+            &Destino {
+                nombre: nombre_hoja(ruta),
+                ahora_epoch,
+            },
             &raiz,
             raiz_habilidades,
             mapa,
-            ahora_epoch,
         ));
     }
     Ok(resultados)
+}
+
+/// Where and when a downloaded skill lands (#27): its DESTINATION name
+/// under the skills root and the write timestamp.
+struct Destino {
+    nombre: String,
+    ahora_epoch: i64,
 }
 
 fn instalar_una(
     proveedor: &dyn ProveedorRemoto,
     origen: &RepoUrl,
     ruta: &str,
+    destino: &Destino,
     raiz_repo: &Path,
     raiz_habilidades: &Path,
     mapa: &mut Mapa,
-    ahora_epoch: i64,
 ) -> ResultadoInstalacion {
-    let nombre = nombre_hoja(ruta);
+    // The DESTINATION name is the caller's identity: the ruta's leaf for
+    // a fresh install, the LOCAL folder name for an update — updating
+    // must replace the user's folder, never spawn a renamed duplicate.
+    let nombre = destino.nombre.clone();
+    let ahora_epoch = destino.ahora_epoch;
     let falla = |motivo: String| ResultadoInstalacion {
         ruta: ruta.to_string(),
         nombre: nombre.clone(),
@@ -775,21 +791,112 @@ pub fn actualizar(
         referencia: None,
         ruta: Some(entrada.origen.ruta.clone()),
     };
-    let resultados = instalar(
+    fs::create_dir_all(raiz_habilidades).map_err(|e| e.to_string())?;
+    let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+    proveedor.descargar_en(&origen, staging.path())?;
+    let raiz_repo = raiz_del_arbol(staging.path())?;
+    let resultado = instalar_una(
         proveedor,
         &origen,
-        std::slice::from_ref(&entrada.origen.ruta),
+        &entrada.origen.ruta,
+        &Destino {
+            nombre: nombre.to_string(),
+            ahora_epoch,
+        },
+        &raiz_repo,
         raiz_habilidades,
         mapa,
-        ahora_epoch,
-    )?;
-    match &resultados[0] {
+    );
+    match resultado {
         r if r.ok => Ok(()),
         r => Err(r
             .motivo
-            .clone()
             .unwrap_or_else(|| "falló la actualización".to_string())),
     }
+}
+
+// ---- Actualizar todo (#30): the sequential queue over skills ----
+
+/// A queue event for a table row: the skill's update starts or ends.
+pub enum EventoColaHabilidades {
+    Empieza {
+        habilidad: String,
+    },
+    Resultado {
+        habilidad: String,
+        motivo: cola::Motivo,
+        salida: String,
+    },
+}
+
+/// "Actualizar todo" over the skills: list order, one at a time, a
+/// failure does not stop the queue. The pending set is the Gestionadas
+/// whose remote SHA differs (Actualización disponible) — derived FRESH
+/// at start; an unreachable origin (SinVerificar) is skipped, never
+/// guessed. One flag set SHARING the packages queue's one-active gate:
+/// both queues can never run together, while Detener/abandonment stay
+/// independent per queue.
+///
+/// Detener stops the queue immediately — the in-flight update FINISHES
+/// naturally (HTTP is bounded by its timeouts, unlike a hung process)
+/// and counts normally; nothing pending starts and the summary says
+/// `detenida`. There are no `detenidos` mid-flight here: HTTP cannot be
+/// cut the way a child process can.
+pub fn actualizar_todo(
+    proveedor: &dyn ProveedorRemoto,
+    raiz: &Path,
+    mapa: &mut Mapa,
+    banderas: &cola::Banderas,
+    ahora_epoch: i64,
+    emitir: &mut dyn FnMut(&EventoColaHabilidades),
+) -> Result<cola::Resumen, String> {
+    let _guarda = banderas.entrar()?;
+    banderas.reiniciar();
+    // The queue is built on FRESH state: a corrupt manifest would make
+    // the pending set a lie — refuse until resolved (#17).
+    let salida = refrescar(raiz, proveedor);
+    let pendientes: Vec<String> = salida
+        .habilidades
+        .iter()
+        .filter(|h| h.estado == EstadoHabilidad::ActualizacionDisponible)
+        .map(|h| h.nombre.clone())
+        .collect();
+    let total = pendientes.len();
+    let (mut ok, mut failed) = (0usize, 0usize);
+    let mut detenida = false;
+    for habilidad in pendientes {
+        if banderas.proximo_detenido() {
+            detenida = true;
+            break;
+        }
+        emitir(&EventoColaHabilidades::Empieza {
+            habilidad: habilidad.clone(),
+        });
+        let (motivo, salida) = match actualizar(proveedor, &habilidad, raiz, mapa, ahora_epoch) {
+            Ok(()) => {
+                ok += 1;
+                (cola::Motivo::Ok, String::new())
+            }
+            Err(e) => {
+                failed += 1;
+                (cola::Motivo::Fallo, e)
+            }
+        };
+        emitir(&EventoColaHabilidades::Resultado {
+            habilidad,
+            motivo,
+            salida,
+        });
+    }
+    Ok(cola::Resumen {
+        total,
+        ok,
+        failed,
+        // a user decision happens BETWEEN skills here; nothing is cut
+        // mid-write
+        detenidos: 0,
+        detenida,
+    })
 }
 
 #[cfg(test)]
@@ -1555,5 +1662,160 @@ mod tests {
         );
         assert_eq!(mapa["buena"].sha, "viejo");
         let _ = proveedor;
+    }
+
+    // ---- #30: la cola de habilidades ----
+
+    /// Skills folder with TWO managed skills whose saved SHA is stale
+    /// (both Actualización disponible against the fixture), plus one
+    /// already up to date and one unmanaged: the queue must touch only
+    /// the two stale ones.
+    fn carpeta_para_cola() -> (tempfile::TempDir, tempfile::TempDir, Mapa) {
+        let (raiz, fixture) = carpeta_con_gestionadas("viejo");
+        fs::create_dir_all(raiz.path().join("segunda")).unwrap();
+        fs::write(raiz.path().join("segunda").join(SKILL_MD), SKILL_OK).unwrap();
+        let mut mapa = mapa_de(raiz.path());
+        mapa.insert(
+            "segunda".to_string(),
+            entrada("o/r", "utils/anidada", "viejo"),
+        );
+        guardar(raiz.path(), &mapa).unwrap();
+        (raiz, fixture, mapa)
+    }
+
+    #[test]
+    fn cola_actualiza_solo_las_actualizables_en_orden_y_resume() {
+        let (raiz, fixture, mut mapa) = carpeta_para_cola();
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        let banderas = cola::Banderas::nuevas();
+        let eventos: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let resumen = actualizar_todo(
+            &proveedor,
+            raiz.path(),
+            &mut mapa,
+            &banderas,
+            5,
+            &mut |ev| match ev {
+                EventoColaHabilidades::Empieza { habilidad } => {
+                    eventos.lock().unwrap().push(format!("empieza:{habilidad}"))
+                }
+                EventoColaHabilidades::Resultado {
+                    habilidad, motivo, ..
+                } => eventos
+                    .lock()
+                    .unwrap()
+                    .push(format!("resultado:{habilidad}:{motivo:?}")),
+            },
+        )
+        .unwrap();
+        assert_eq!(resumen.total, 2);
+        assert_eq!(resumen.ok, 2);
+        assert_eq!(resumen.failed, 0);
+        assert!(!resumen.detenida);
+        // list order: buena before segunda; both now hold the new SHA
+        let esperados = [
+            "empieza:buena".to_string(),
+            "resultado:buena:Ok".to_string(),
+            "empieza:segunda".to_string(),
+            "resultado:segunda:Ok".to_string(),
+        ];
+        assert_eq!(*eventos.lock().unwrap(), esperados);
+        assert_eq!(mapa["buena"].sha, "abc123");
+        assert_eq!(mapa["segunda"].sha, "abc123");
+        assert_eq!(mapa["buena"].instalada_en, "5");
+    }
+
+    #[test]
+    fn cola_un_fallo_no_corta_y_el_resumen_cuenta_aparte() {
+        let (raiz, fixture, mut mapa) = carpeta_para_cola();
+        // buena's ruta points at the fixture's INVALIDA folder: its
+        // update fails; segunda's still succeeds
+        mapa.get_mut("buena").unwrap().origen.ruta = "skills/productivity/invalida".to_string();
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        let banderas = cola::Banderas::nuevas();
+        let resumen = actualizar_todo(
+            &proveedor,
+            raiz.path(),
+            &mut mapa,
+            &banderas,
+            5,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(resumen.total, 2);
+        assert_eq!(resumen.ok, 1);
+        assert_eq!(resumen.failed, 1);
+        assert!(!resumen.detenida);
+    }
+
+    #[test]
+    fn cola_detenida_antes_de_empezar_la_siguiente() {
+        let (raiz, fixture, mut mapa) = carpeta_para_cola();
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        let banderas = cola::Banderas::nuevas();
+        let vistos = std::sync::Mutex::new(0);
+        let resumen = actualizar_todo(
+            &proveedor,
+            raiz.path(),
+            &mut mapa,
+            &banderas,
+            5,
+            &mut |ev| {
+                if matches!(ev, EventoColaHabilidades::Empieza { habilidad } if habilidad == "buena")
+                {
+                    // the user hits Detener while the FIRST one runs
+                    banderas.detener();
+                }
+                *vistos.lock().unwrap() += 1;
+            },
+        )
+        .unwrap();
+        // the in-flight one finished naturally; the next never started
+        assert_eq!(resumen.total, 2);
+        assert_eq!(resumen.ok, 1);
+        assert!(resumen.detenida);
+        assert_eq!(resumen.detenidos, 0);
+        assert_eq!(*vistos.lock().unwrap(), 2); // empieza+resultado de buena
+                                                // the command persists ONCE on finish — mirror it before the
+                                                // next queue reads disk
+        guardar(raiz.path(), &mapa).unwrap();
+        // and a finished queue can start again
+        let segunda_vez = actualizar_todo(
+            &proveedor,
+            raiz.path(),
+            &mut mapa,
+            &banderas,
+            6,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(segunda_vez.total, 1); // solo queda segunda
+    }
+
+    #[test]
+    fn cola_comparte_la_guarda_con_la_de_paquetes_en_ambas_direcciones() {
+        let (raiz, fixture, mut mapa) = carpeta_para_cola();
+        let proveedor = ContadorProveedor::nuevo(fixture.path(), "abc123");
+        let de_paquetes = cola::Banderas::nuevas();
+        let de_habilidades = cola::Banderas::con_guarda_compartida(de_paquetes.activa());
+        // paquetes holding the gate → skills refused
+        let _guarda = de_paquetes.entrar().unwrap();
+        let err = actualizar_todo(
+            &proveedor,
+            raiz.path(),
+            &mut mapa,
+            &de_habilidades,
+            5,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("solo una"), "{err}");
+        drop(_guarda);
+        // and the reverse: skills holding it → paquetes refused
+        let guarda_skills = de_habilidades.entrar().unwrap();
+        assert!(de_paquetes.entrar().is_err());
+        drop(guarda_skills);
+        // released → both can start again (one at a time)
+        assert!(de_paquetes.entrar().is_ok());
     }
 }

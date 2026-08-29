@@ -112,6 +112,55 @@ impl Banderas {
     pub fn abandonar(&self) {
         self.suave.store(true, Ordering::Relaxed);
     }
+
+    /// A fresh flag set sharing the ONE-active guard with an existing
+    /// one (#30): different queues (paquetes, habilidades), one gate —
+    /// while their Stop/abandonment stay independent.
+    pub fn con_guarda_compartida(activa: &Arc<AtomicBool>) -> Self {
+        Self {
+            parar: Arc::new(AtomicBool::new(false)),
+            suave: Arc::new(AtomicBool::new(false)),
+            activa: Arc::clone(activa),
+        }
+    }
+
+    /// The ONE-active flag itself, to share the gate with another
+    /// queue's flag set (#30).
+    pub fn activa(&self) -> &Arc<AtomicBool> {
+        &self.activa
+    }
+
+    /// The ONE-active-queue gate (#12, shared across queues since #30):
+    /// swaps the flag on entry; the guard releases it on return AND on a
+    /// panic — a crashed queue must not block the next one forever. An
+    /// error while another queue holds it.
+    pub fn entrar(&self) -> Result<GuardaActiva<'_>, String> {
+        if self.activa.swap(true, Ordering::AcqRel) {
+            return Err("solo una Actualizar todo a la vez".to_string());
+        }
+        Ok(GuardaActiva(&self.activa))
+    }
+
+    /// Every accepted queue starts clean: Stop and abandonment reset.
+    pub fn reiniciar(&self) {
+        self.parar.store(false, Ordering::Relaxed);
+        self.suave.store(false, Ordering::Relaxed);
+    }
+
+    /// Whether the NEXT item must not start: Stop cut the queue (#16) or
+    /// the panel went away (graceful).
+    pub fn proximo_detenido(&self) -> bool {
+        self.parar.load(Ordering::Relaxed) || self.suave.load(Ordering::Relaxed)
+    }
+}
+
+/// Releases the ONE-active flag on drop (return or panic).
+pub struct GuardaActiva<'a>(&'a Arc<AtomicBool>);
+
+impl Drop for GuardaActiva<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// Runs the whole queue. Only ONE at a time (#12): while one runs, a
@@ -123,18 +172,7 @@ pub fn correr(
     banderas: &Banderas,
     emitir: &mut dyn FnMut(&EventoCola),
 ) -> Result<(Resumen, Snapshot), String> {
-    if banderas.activa.swap(true, Ordering::AcqRel) {
-        return Err("solo una Actualizar todo a la vez".to_string());
-    }
-    // Drop guard: the flag is released on return AND on a panic — a
-    // crashed queue must not block the next one forever.
-    struct SoltarActiva<'a>(&'a Arc<AtomicBool>);
-    impl Drop for SoltarActiva<'_> {
-        fn drop(&mut self) {
-            self.0.store(false, Ordering::Release);
-        }
-    }
-    let _soltar = SoltarActiva(&banderas.activa);
+    let _guarda = banderas.entrar()?;
     correr_activa(def, dir_config, banderas, emitir)
 }
 
