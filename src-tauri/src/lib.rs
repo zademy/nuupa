@@ -310,9 +310,7 @@ fn habilidades_de_cero() -> Result<(), String> {
 /// every skill found: Conforme or Inválida with its reason. NOTHING is
 /// activated here — the download lives in a throwaway staging dir.
 #[tauri::command]
-async fn escanear_origen(
-    origen: String,
-) -> Result<Vec<habilidades::HabilidadEscaneada>, String> {
+async fn escanear_origen(origen: String) -> Result<Vec<habilidades::HabilidadEscaneada>, String> {
     let url = habilidades::parsear_origen(&origen)?;
     tauri::async_runtime::spawn_blocking(move || {
         let proveedor = habilidades::ProveedorReal::nuevo()?;
@@ -668,9 +666,7 @@ pub fn run() {
             let banderas = cola::Banderas::nuevas();
             app.manage(Contexto {
                 dir_config,
-                banderas_habilidades: cola::Banderas::con_guarda_compartida(
-                    banderas.activa(),
-                ),
+                banderas_habilidades: cola::Banderas::con_guarda_compartida(banderas.activa()),
                 banderas,
                 candado_exclusiones: Arc::new(Mutex::new(())),
                 candado_habilidades: Arc::new(Mutex::new(())),
