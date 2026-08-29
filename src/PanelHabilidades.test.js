@@ -127,4 +127,70 @@ describe("PanelHabilidades montado", () => {
     expect(c.get('[aria-live="polite"]').exists()).toBe(true);
     expect(c.get('[role="alert"]').exists()).toBe(true);
   });
+
+  // ---- #27: agregar desde origen ----
+
+  const ITEMS = [
+    { ruta: "skills/productivity/buena", conforme: true },
+    {
+      ruta: "skills/productivity/invalida",
+      conforme: false,
+      motivo: "sin frontmatter",
+    },
+  ];
+
+  it("agregar: escanea, preselecciona conformes e instala solo la selección", async () => {
+    tauri.responder("listar_habilidades", LISTA);
+    tauri.responder("escanear_origen", ITEMS);
+    tauri.responder("instalar_habilidades", [
+      { ruta: "skills/productivity/buena", nombre: "buena", ok: true },
+    ]);
+    const c = montar();
+    await flushPromises();
+    await c.get("input[type=text]").setValue("github.com/o/r");
+    await c.get("button.primario").trigger("click");
+    await flushPromises();
+    const seccion = c.get(".escaneo");
+    const checks = seccion.findAll("input[type=checkbox]");
+    expect(checks).toHaveLength(2);
+    expect(checks[0].element.checked).toBe(true); // conforme preselected
+    expect(checks[1].element.disabled).toBe(true); // invalida: never
+    expect(seccion.text()).toContain("sin frontmatter");
+    await seccion.get("button.primario").trigger("click");
+    await flushPromises();
+    expect(tauri.ultima("instalar_habilidades").args).toEqual({
+      origen: "github.com/o/r",
+      rutas: ["skills/productivity/buena"],
+    });
+    expect(c.find(".escaneo").exists()).toBe(false); // closes after install
+  });
+
+  it("cancelar cierra la sección del escaneo sin instalar", async () => {
+    tauri.responder("listar_habilidades", LISTA);
+    tauri.responder("escanear_origen", ITEMS);
+    const c = await montarCargado();
+    await c.get("input[type=text]").setValue("github.com/o/r");
+    await c.get("button.primario").trigger("click");
+    await flushPromises();
+    expect(c.find(".escaneo").exists()).toBe(true);
+    await c.get("button.cerrar").trigger("click");
+    await flushPromises();
+    expect(c.find(".escaneo").exists()).toBe(false);
+    expect(tauri.registradas("instalar_habilidades")).toHaveLength(0);
+  });
+
+  it("un fallo del escaneo vive en la sección y no toca la tabla", async () => {
+    tauri.responder("listar_habilidades", LISTA);
+    tauri.responder("escanear_origen", () =>
+      Promise.reject("repo no encontrado"),
+    );
+    const c = await montarCargado();
+    await c.get("input[type=text]").setValue("github.com/o/r");
+    await c.get("button.primario").trigger("click");
+    await flushPromises();
+    expect(c.get(".escaneo [role=alert]").text()).toContain(
+      "repo no encontrado",
+    );
+    expect(c.findAll("tbody tr")).toHaveLength(2); // the table stays
+  });
 });

@@ -130,4 +130,145 @@ describe("store de habilidades", () => {
     await store.refresh();
     expect(store.conteo.value).toEqual({ total: 2, invalidas: 1 });
   });
+
+  // ---- #27: agregar desde origen ----
+
+  const ITEMS = [
+    { ruta: "skills/productivity/buena", conforme: true },
+    {
+      ruta: "skills/productivity/invalida",
+      conforme: false,
+      motivo: "sin frontmatter",
+    },
+  ];
+
+  it("escanear consulta el origen y preselecciona las conformes", async () => {
+    const store = createHabilidadesStore(async (cmd, args) => {
+      if (cmd === "listar_habilidades") return LISTA;
+      if (cmd === "escanear_origen") {
+        expect(args).toEqual({ origen: "github.com/o/r" });
+        return ITEMS;
+      }
+    });
+    await store.refresh();
+    store.origenInput.value = "github.com/o/r";
+    await store.escanear();
+    expect(store.escaneo.abierto).toBe(true);
+    expect(store.escaneo.items).toEqual(ITEMS);
+    expect(store.escaneo.cargando).toBe(false);
+    // conformes preselected, invalidas never
+    expect(store.seleccion.value).toEqual(["skills/productivity/buena"]);
+  });
+
+  it("escanear sin URL no invoca nada", async () => {
+    const llamadas = [];
+    const store = createHabilidadesStore(async (cmd) => {
+      llamadas.push(cmd);
+    });
+    await store.escanear();
+    expect(llamadas).toEqual([]);
+  });
+
+  it("escanear con fallo muestra el error en la sección", async () => {
+    const store = createHabilidadesStore(async (cmd) => {
+      if (cmd === "escanear_origen") throw "repo no encontrado";
+    });
+    store.origenInput.value = "github.com/o/r";
+    await store.escanear();
+    expect(store.escaneo.error).toContain("repo no encontrado");
+    expect(store.escaneo.cargando).toBe(false);
+  });
+
+  it("toggleRuta agrega y quita de la selección", async () => {
+    const store = createHabilidadesStore(async (cmd) => {
+      if (cmd === "listar_habilidades") return LISTA;
+      if (cmd === "escanear_origen") return ITEMS;
+    });
+    await store.refresh();
+    store.origenInput.value = "o/r";
+    await store.escanear();
+    expect(store.seleccion.value).toEqual(["skills/productivity/buena"]);
+    store.toggleRuta("skills/productivity/buena"); // off
+    expect(store.seleccion.value).toEqual([]);
+    store.toggleRuta("skills/productivity/buena"); // on again
+    expect(store.seleccion.value).toEqual(["skills/productivity/buena"]);
+  });
+
+  it("instalarSeleccionadas invoca con origen y rutas, refresca y cierra", async () => {
+    const llamadas = [];
+    const store = createHabilidadesStore(async (cmd, args) => {
+      llamadas.push(cmd);
+      if (cmd === "listar_habilidades") return LISTA;
+      if (cmd === "escanear_origen") return ITEMS;
+      if (cmd === "instalar_habilidades") {
+        expect(args).toEqual({
+          origen: "o/r",
+          rutas: ["skills/productivity/buena"],
+        });
+        return [
+          { ruta: "skills/productivity/buena", nombre: "buena", ok: true },
+        ];
+      }
+    });
+    await store.refresh();
+    store.origenInput.value = "o/r";
+    await store.escanear();
+    await store.instalarSeleccionadas();
+    expect(llamadas).toContain("instalar_habilidades");
+    expect(llamadas.filter((c) => c === "listar_habilidades").length).toBe(2); // refreshed
+    expect(store.escaneo.abierto).toBe(false);
+    expect(store.instalando.value).toBe(false);
+  });
+
+  it("las instalaciones fallidas quedan en el log con su motivo", async () => {
+    const log = crearLog();
+    const store = createHabilidadesStore(async (cmd) => {
+      if (cmd === "listar_habilidades") return LISTA;
+      if (cmd === "escanear_origen") return ITEMS;
+      if (cmd === "instalar_habilidades")
+        return [
+          { ruta: "skills/productivity/buena", nombre: "buena", ok: true },
+          {
+            ruta: "skills/productivity/invalida",
+            nombre: "invalida",
+            ok: false,
+            motivo: "inválida: sin frontmatter",
+          },
+        ];
+    }, log);
+    store.origenInput.value = "o/r";
+    await store.escanear();
+    store.toggleRuta("skills/productivity/invalida"); // the user insisted
+    await store.instalarSeleccionadas();
+    expect(
+      log.lineas.value.some(
+        (l) => l.includes("invalida") && l.includes("sin frontmatter"),
+      ),
+    ).toBe(true);
+  });
+
+  it("instalarSeleccionadas sin selección no invoca", async () => {
+    const llamadas = [];
+    const store = createHabilidadesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "escanear_origen") return ITEMS;
+    });
+    store.origenInput.value = "o/r";
+    await store.escanear();
+    store.seleccion.value = [];
+    await store.instalarSeleccionadas();
+    expect(llamadas).toEqual(["escanear_origen"]);
+  });
+
+  it("cerrarEscaneo limpia la sección y la selección", async () => {
+    const store = createHabilidadesStore(async (cmd) =>
+      cmd === "escanear_origen" ? ITEMS : LISTA,
+    );
+    store.origenInput.value = "o/r";
+    await store.escanear();
+    store.cerrarEscaneo();
+    expect(store.escaneo.abierto).toBe(false);
+    expect(store.escaneo.items).toEqual([]);
+    expect(store.seleccion.value).toEqual([]);
+  });
 });

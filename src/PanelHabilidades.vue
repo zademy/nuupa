@@ -24,6 +24,14 @@ const {
   abrirCarpeta,
   hasError,
   detalleFallo,
+  origenInput,
+  escaneo,
+  seleccion,
+  instalando,
+  escanear,
+  toggleRuta,
+  instalarSeleccionadas,
+  cerrarEscaneo,
 } = createHabilidadesStore(undefined, props.log);
 
 const { t } = useI18n();
@@ -49,6 +57,24 @@ onMounted(refresh);
 
     <div class="barra">
       <div class="controles">
+        <label class="busqueda" :title="t('agregarTitulo')">
+          <Icono nombre="carpeta" :tamano="13" />
+          <input
+            v-model="origenInput"
+            type="text"
+            :placeholder="t('origenPlaceholder')"
+            @keydown.enter="escanear"
+          />
+        </label>
+        <button
+          class="primario"
+          :disabled="escaneo.cargando || !origenInput.trim()"
+          :title="t('agregarTitulo')"
+          @click="escanear"
+        >
+          <span v-if="escaneo.cargando" class="spinner mini"></span>
+          {{ t("agregarHabilidades") }}
+        </button>
         <label class="busqueda" :title="t('buscarHabilidadesTitulo')">
           <Icono nombre="buscar" :tamano="13" />
           <input
@@ -84,6 +110,63 @@ onMounted(refresh);
         <span v-if="state.loading" class="spinner mini"></span>
       </span>
     </div>
+
+    <!-- The scan's report: nothing is activated until the user picks
+         and installs (#27). A network failure lives HERE, never over
+         the folder's table. -->
+    <section v-if="escaneo.abierto" class="escaneo" aria-label="escaneo">
+      <div class="escaneo-cabecera">
+        <span class="mono titulo">{{ t("escaneoTitulo") }}</span>
+        <button
+          class="cerrar solo-icono"
+          :aria-label="t('cancelar')"
+          @click="cerrarEscaneo"
+        >
+          <Icono nombre="cerrar" :tamano="13" />
+        </button>
+      </div>
+      <p v-if="escaneo.error" class="error mono" role="alert">
+        {{ escaneo.error }}
+      </p>
+      <p v-else-if="escaneo.cargando" class="mono estado">
+        <span class="spinner mini"></span>
+        {{ t("escaneando") }}
+      </p>
+      <ul v-else-if="escaneo.items.length" class="lista">
+        <li
+          v-for="item in escaneo.items"
+          :key="item.ruta"
+          :class="{ invalida: !item.conforme }"
+        >
+          <label>
+            <input
+              type="checkbox"
+              :checked="seleccion.includes(item.ruta)"
+              :disabled="!item.conforme || instalando"
+              @change="toggleRuta(item.ruta)"
+            />
+            <span class="mono ruta">{{ item.ruta }}</span>
+          </label>
+          <span v-if="!item.conforme" class="mono motivo">
+            {{ item.motivo }}
+          </span>
+        </li>
+      </ul>
+      <p v-else class="vacio mono">{{ t("sinHabilidadesEnRepo") }}</p>
+      <div v-if="escaneo.items.length && !escaneo.cargando" class="pie">
+        <span class="mono">{{
+          t("seleccionadas", { n: seleccion.length })
+        }}</span>
+        <button
+          class="primario"
+          :disabled="seleccion.length === 0 || instalando"
+          @click="instalarSeleccionadas"
+        >
+          <span v-if="instalando" class="spinner mini"></span>
+          {{ t("instalarSeleccionadas") }}
+        </button>
+      </div>
+    </section>
 
     <p
       v-if="state.loading && state.habilidades.length === 0"
@@ -283,6 +366,20 @@ onMounted(refresh);
   color: var(--fg);
 }
 
+/* The app's single highest-contrast element. */
+.primario:not(:disabled) {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+  font-weight: 600;
+}
+
+.primario:not(:disabled):hover {
+  background: var(--fg);
+  color: var(--bg);
+  opacity: 0.88;
+}
+
 .statusbar {
   display: flex;
   align-items: center;
@@ -306,6 +403,124 @@ onMounted(refresh);
   align-items: center;
   gap: 8px;
   color: var(--fg-muted);
+}
+
+/* The scan's report section (#27): a bordered drawer between the
+   controls and the table; invalid rows show their reason, never a
+   checkbox. */
+.escaneo {
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.escaneo-cabecera {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.escaneo .titulo {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.escaneo .cerrar {
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.escaneo .cerrar:hover {
+  color: var(--fg);
+  background: var(--surface-2);
+}
+
+.escaneo .lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.escaneo .lista li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.escaneo .lista li:last-child {
+  border-bottom: none;
+}
+
+.escaneo .lista label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.escaneo .lista li.invalida label {
+  cursor: default;
+  color: var(--fg-faint);
+}
+
+.escaneo .lista li.invalida .ruta {
+  text-decoration: line-through;
+}
+
+.escaneo .motivo {
+  font-size: 11px;
+  color: var(--fg-faint);
+  text-align: right;
+}
+
+.escaneo .pie {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.escaneo .pie .primario {
+  font: inherit;
+  font-size: 12px;
+  color: var(--bg);
+  background: var(--fg);
+  border: 1px solid var(--fg);
+  border-radius: 5px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.escaneo .pie .primario:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  cursor: default;
+  font-weight: 400;
 }
 
 .vacio {

@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const ARCHIVO: &str = "habilidades.json";
 const SKILL_MD: &str = "SKILL.md";
@@ -282,6 +282,417 @@ pub fn listar(raiz: &Path) -> SalidaHabilidades {
     }
 }
 
+// ---- Origen: the URL forms accepted (#27) ----
+
+/// A parsed origin: the repo (`owner/repo`), an optional whole-tree
+/// reference and an optional direct skill's ruta inside the repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoUrl {
+    pub repo: String,
+    pub referencia: Option<String>,
+    pub ruta: Option<String>,
+}
+
+/// Accepts `owner/repo`, `github.com/owner/repo`,
+/// `https://github.com/owner/repo` and the `/tree/{ref}[/ruta]` forms.
+/// Anything else (another host, traversal, single segment) is an error —
+/// the error string is the UI's report.
+pub fn parsear_origen(texto: &str) -> Result<RepoUrl, String> {
+    let mal = |porque: String| format!("origen no válido ({porque}): {texto}");
+    let t = texto.trim();
+    let t = t
+        .strip_prefix("https://")
+        .or_else(|| t.strip_prefix("http://"))
+        .unwrap_or(t);
+    let t = t.strip_prefix("www.").unwrap_or(t);
+    let t = t.trim_end_matches('/');
+    if t.is_empty() {
+        return Err(mal("falta owner/repo".into()));
+    }
+    let (repo_part, resto) = match t.split_once("/tree/") {
+        Some((r, resto)) => (r, Some(resto)),
+        None => (t, None),
+    };
+    let segmentos: Vec<&str> = repo_part.split('/').filter(|s| !s.is_empty()).collect();
+    // Two forms: `github.com/owner/repo` or bare `owner/repo` (the
+    // skills.sh id shape). Anything else — another host, a subpath — is
+    // refused.
+    let repo = match segmentos.as_slice() {
+        [host, o, r] if *host == "github.com" => format!("{o}/{r}"),
+        // bare owner/repo — but "github.com" alone is a host remnant,
+        // never an owner
+        [o, r] if *o != "github.com" => format!("{o}/{r}"),
+        _ => return Err(mal("se esperaba owner/repo en github.com".into())),
+    };
+    for s in &segmentos[segmentos.len() - 2..] {
+        if *s == "." || *s == ".." || s.starts_with('.') {
+            return Err(mal(format!("segmento de repo no seguro: {s:?}")));
+        }
+    }
+    let (referencia, ruta) = match resto {
+        None => (None, None),
+        Some(resto) => {
+            let mut partes = resto.splitn(2, '/');
+            let r = partes.next().unwrap_or("").trim_end_matches('/');
+            if r.is_empty() {
+                (None, None)
+            } else {
+                match partes.next() {
+                    Some(ruta) if !ruta.trim_end_matches('/').is_empty() => (
+                        Some(r.to_string()),
+                        Some(ruta.trim_end_matches('/').to_string()),
+                    ),
+                    _ => (Some(r.to_string()), None),
+                }
+            }
+        }
+    };
+    if let Some(ruta) = &ruta {
+        ruta_segura(ruta).map_err(mal)?;
+    }
+    Ok(RepoUrl {
+        repo,
+        referencia,
+        ruta,
+    })
+}
+
+/// A ruta inside a repo that may become paths: no empty, hidden, parent
+/// or absolute components.
+fn ruta_segura(ruta: &str) -> Result<(), String> {
+    if ruta.is_empty()
+        || ruta.starts_with('/')
+        || ruta.split('/').any(|p| p.is_empty() || p.starts_with('.'))
+    {
+        return Err(format!("ruta no segura: {ruta:?}"));
+    }
+    Ok(())
+}
+
+// ---- Proveedor remoto (the injected dependency; #27) ----
+
+pub trait ProveedorRemoto {
+    /// Extracts the repo tree at its reference into `destino` (created if
+    /// needed); exactly one top directory remains there.
+    fn descargar_en(&self, origen: &RepoUrl, destino: &Path) -> Result<(), String>;
+    /// The latest commit SHA touching `ruta` in the repo.
+    fn sha_de(&self, repo: &str, ruta: &str) -> Result<String, String>;
+}
+
+/// The real provider: GitHub public, no auth. Synchronous HTTP — every
+/// caller runs it on a blocking pool thread. Timeouts bound the wait
+/// (the Plazo concept applied to the network).
+pub struct ProveedorReal {
+    agente: ureq::Agent,
+}
+
+impl ProveedorReal {
+    pub fn nuevo() -> Result<Self, String> {
+        Ok(Self {
+            agente: ureq::AgentBuilder::new()
+                .timeout_connect(std::time::Duration::from_secs(15))
+                .timeout(std::time::Duration::from_secs(120))
+                .build(),
+        })
+    }
+
+    fn get(&self, url: &str) -> Result<ureq::Response, String> {
+        self.agente
+            .get(url)
+            .set("User-Agent", "nuupa")
+            .set("Accept", "application/vnd.github+json")
+            .call()
+            .map_err(|e| format!("no se pudo contactar a GitHub: {e}"))
+    }
+}
+
+impl ProveedorRemoto for ProveedorReal {
+    fn descargar_en(&self, origen: &RepoUrl, destino: &Path) -> Result<(), String> {
+        fs::create_dir_all(destino).map_err(|e| e.to_string())?;
+        let url = match &origen.referencia {
+            Some(r) => format!("https://api.github.com/repos/{}/tarball/{r}", origen.repo),
+            None => format!("https://api.github.com/repos/{}/tarball", origen.repo),
+        };
+        let lector = self.get(&url)?.into_reader();
+        let gz = flate2::read::GzDecoder::new(lector);
+        tar::Archive::new(gz)
+            .unpack(destino)
+            .map_err(|e| format!("no se pudo extraer el repositorio: {e}"))
+    }
+
+    fn sha_de(&self, repo: &str, ruta: &str) -> Result<String, String> {
+        let url = format!("https://api.github.com/repos/{repo}/commits?path={ruta}&per_page=1");
+        let texto = self
+            .get(&url)?
+            .into_string()
+            .map_err(|e| format!("respuesta ilegible: {e}"))?;
+        if let Some(sha) = primer_sha(&texto) {
+            return Ok(sha);
+        }
+        // A ruta with no commits of its own (an empty array): fall back
+        // to the repo's HEAD so the skill stays trackable (#28).
+        let texto = self
+            .get(&format!(
+                "https://api.github.com/repos/{repo}/commits?per_page=1"
+            ))?
+            .into_string()
+            .map_err(|e| format!("respuesta ilegible: {e}"))?;
+        primer_sha(&texto).ok_or_else(|| "respuesta sin sha".to_string())
+    }
+}
+
+/// The first commit's sha of a GitHub commits-list JSON response.
+fn primer_sha(texto: &str) -> Option<String> {
+    let valor: serde_json::Value = serde_json::from_str(texto).ok()?;
+    valor
+        .as_array()?
+        .first()?
+        .get("sha")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// The tarball's single top directory (`repo-<ref>`); a GitHub tarball
+/// always has exactly one — anything else is a surprise we refuse.
+fn raiz_del_arbol(staging: &Path) -> Result<PathBuf, String> {
+    let mut entradas: Vec<PathBuf> = Vec::new();
+    for entrada in fs::read_dir(staging).map_err(|e| e.to_string())?.flatten() {
+        if entrada.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        entradas.push(entrada.path());
+    }
+    match entradas.len() {
+        1 => Ok(entradas.remove(0)),
+        0 => Err("el repositorio llegó vacío".to_string()),
+        _ => Err("el repositorio llegó con varias raíces".to_string()),
+    }
+}
+
+// ---- Escaneo (#27): the report before anything is activated ----
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HabilidadEscaneada {
+    /// Ruta of the skill folder inside the repo (forward slashes).
+    pub ruta: String,
+    pub conforme: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub motivo: Option<String>,
+}
+
+/// Downloads the repo into `staging` (a throwaway dir the caller owns)
+/// and reports every skill folder found: Conforme or Inválida with its
+/// reason. NOTHING is activated here.
+pub fn escanear(
+    proveedor: &dyn ProveedorRemoto,
+    origen: &RepoUrl,
+    staging: &Path,
+) -> Result<Vec<HabilidadEscaneada>, String> {
+    proveedor.descargar_en(origen, staging)?;
+    let raiz = raiz_del_arbol(staging)?;
+    let mut encontradas = Vec::new();
+    match &origen.ruta {
+        // Direct skill: only that folder, present or not.
+        Some(ruta) => {
+            let carpeta = raiz.join(ruta);
+            encontradas.push(if carpeta.is_dir() {
+                candidato(&raiz, &carpeta)
+            } else {
+                HabilidadEscaneada {
+                    ruta: ruta.clone(),
+                    conforme: false,
+                    motivo: Some("la carpeta no existe en el repositorio".to_string()),
+                }
+            });
+        }
+        // Whole repo: every folder with a SKILL.md, recursively.
+        None => recolectar(&raiz, &raiz, &mut encontradas),
+    }
+    encontradas.sort_by(|a, b| a.ruta.cmp(&b.ruta));
+    Ok(encontradas)
+}
+
+/// A folder holding a SKILL.md is a candidate (validated, NOT recursed
+/// into — its files are the bundle); otherwise recurse. Hidden folders
+/// are never candidates.
+fn recolectar(base: &Path, dir: &Path, out: &mut Vec<HabilidadEscaneada>) {
+    if dir.join(SKILL_MD).is_file() {
+        out.push(candidato(base, dir));
+        return;
+    }
+    for entrada in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let nombre = entrada.file_name().to_string_lossy().to_string();
+        if nombre.starts_with('.') || !entrada.path().is_dir() {
+            continue;
+        }
+        recolectar(base, &entrada.path(), out);
+    }
+}
+
+fn candidato(base: &Path, carpeta: &Path) -> HabilidadEscaneada {
+    let ruta = carpeta
+        .strip_prefix(base)
+        .unwrap_or(carpeta)
+        .to_string_lossy()
+        .replace('\\', "/");
+    match validar(carpeta) {
+        Ok(_) => HabilidadEscaneada {
+            ruta,
+            conforme: true,
+            motivo: None,
+        },
+        Err(e) => HabilidadEscaneada {
+            ruta,
+            conforme: false,
+            motivo: Some(e),
+        },
+    }
+}
+
+// ---- Instalación (#27): two phases per skill, Origen recorded ----
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResultadoInstalacion {
+    pub ruta: String,
+    /// The installed folder's name (the ruta's leaf).
+    pub nombre: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub motivo: Option<String>,
+}
+
+/// Installs the requested rutas of ONE origen: download once to staging,
+/// then per ruta — validate the content, fetch its SHA, activate by
+/// copy-and-swap, record the Origen in `mapa`. Invalid content or a
+/// failed SHA never activates; one failure does not stop the rest. The
+/// caller persists `mapa` ONCE after (a single manifest write).
+pub fn instalar(
+    proveedor: &dyn ProveedorRemoto,
+    origen: &RepoUrl,
+    rutas: &[String],
+    raiz_habilidades: &Path,
+    mapa: &mut Mapa,
+    ahora_epoch: i64,
+) -> Result<Vec<ResultadoInstalacion>, String> {
+    fs::create_dir_all(raiz_habilidades).map_err(|e| e.to_string())?;
+    let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+    proveedor.descargar_en(origen, staging.path())?;
+    let raiz = raiz_del_arbol(staging.path())?;
+    let mut resultados = Vec::new();
+    for ruta in rutas {
+        resultados.push(instalar_una(
+            proveedor,
+            origen,
+            ruta,
+            &raiz,
+            raiz_habilidades,
+            mapa,
+            ahora_epoch,
+        ));
+    }
+    Ok(resultados)
+}
+
+fn instalar_una(
+    proveedor: &dyn ProveedorRemoto,
+    origen: &RepoUrl,
+    ruta: &str,
+    raiz_repo: &Path,
+    raiz_habilidades: &Path,
+    mapa: &mut Mapa,
+    ahora_epoch: i64,
+) -> ResultadoInstalacion {
+    let nombre = nombre_hoja(ruta);
+    let falla = |motivo: String| ResultadoInstalacion {
+        ruta: ruta.to_string(),
+        nombre: nombre.clone(),
+        ok: false,
+        motivo: Some(motivo),
+    };
+    if let Err(e) = ruta_segura(ruta) {
+        return falla(e);
+    }
+    let carpeta = raiz_repo.join(ruta);
+    // Phase 2 gate: the NEW content must be Conforme before activation.
+    if let Err(e) = validar(&carpeta) {
+        return falla(format!("inválida: {e}"));
+    }
+    let sha = match proveedor.sha_de(&origen.repo, ruta) {
+        Ok(s) => s,
+        Err(e) => return falla(format!("sin SHA del origen: {e}")),
+    };
+    // Activation: copy to a hidden staging folder inside the skills
+    // root, then swap — a crash can never leave a half-copied skill.
+    let destino = raiz_habilidades.join(&nombre);
+    let temporal = raiz_habilidades.join(format!(".instalando-{nombre}"));
+    let _ = fs::remove_dir_all(&temporal);
+    if let Err(e) = copiar_dir(&carpeta, &temporal) {
+        let _ = fs::remove_dir_all(&temporal);
+        return falla(format!("no se pudo copiar: {e}"));
+    }
+    let _ = fs::remove_dir_all(&destino);
+    if let Err(e) = fs::rename(&temporal, &destino) {
+        let _ = fs::remove_dir_all(&temporal);
+        return falla(format!("no se pudo activar: {e}"));
+    }
+    mapa.insert(
+        nombre.clone(),
+        Entrada {
+            origen: Origen {
+                repo: origen.repo.clone(),
+                ruta: ruta.to_string(),
+            },
+            sha,
+            instalada_en: ahora_epoch.to_string(),
+        },
+    );
+    ResultadoInstalacion {
+        ruta: ruta.to_string(),
+        nombre,
+        ok: true,
+        motivo: None,
+    }
+}
+
+fn nombre_hoja(ruta: &str) -> String {
+    ruta.rsplit('/').next().unwrap_or(ruta).to_string()
+}
+
+/// Recursive folder copy. Symlinks are SKIPPED: a skill bundle has no
+/// business leaving the folder, and following one could escape it.
+fn copiar_dir(de: &Path, a: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(a)?;
+    for entrada in fs::read_dir(de)? {
+        let entrada = entrada?;
+        let tipo = entrada.file_type()?;
+        if tipo.is_symlink() {
+            continue;
+        }
+        let destino = a.join(entrada.file_name());
+        if tipo.is_dir() {
+            copiar_dir(&entrada.path(), &destino)?;
+        } else {
+            fs::copy(entrada.path(), destino)?;
+        }
+    }
+    Ok(())
+}
+
+/// The map an install may work on, or WHY writing is refused (#17):
+/// mirrors exclusiones — a file we cannot understand is never
+/// overwritten by us.
+pub fn mapa_escriturable(raiz: &Path) -> Result<Mapa, String> {
+    match leer(raiz) {
+        Lectura::Cargado { mapa } => Ok(mapa),
+        Lectura::Inexistente => Ok(Mapa::new()),
+        Lectura::Corrupto => Err(
+            "el manifest de habilidades está dañado (conservado como .corrupt): resuélvelo antes de escribir"
+                .to_string(),
+        ),
+        Lectura::Ilegible(e) => Err(format!("no se puede leer el manifest de habilidades: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,7 +886,11 @@ mod tests {
         fs::create_dir(dir.path().join("buena")).unwrap();
         fs::write(dir.path().join("buena").join(SKILL_MD), SKILL_OK).unwrap();
         fs::create_dir(dir.path().join("invalida")).unwrap();
-        fs::write(dir.path().join("invalida").join(SKILL_MD), "sin frontmatter").unwrap();
+        fs::write(
+            dir.path().join("invalida").join(SKILL_MD),
+            "sin frontmatter",
+        )
+        .unwrap();
         fs::create_dir(dir.path().join(".oculta")).unwrap();
         fs::write(dir.path().join("suelto.txt"), "no es carpeta").unwrap();
 
@@ -512,5 +927,294 @@ mod tests {
         assert_eq!(salida.manifest.estado, "corrupto");
         assert_eq!(salida.habilidades.len(), 1); // reality stays visible
         assert!(dir.path().join(format!("{ARCHIVO}.corrupt")).exists());
+    }
+
+    // ---- #27: parsear_origen ----
+
+    fn repo_de(texto: &str) -> RepoUrl {
+        parsear_origen(texto).unwrap()
+    }
+
+    #[test]
+    fn formas_de_origen_aceptadas() {
+        // bare owner/repo, with host, with scheme, trailing slash
+        for texto in [
+            "o/r",
+            "github.com/o/r",
+            "https://github.com/o/r/",
+            "github.com/o/r",
+        ] {
+            assert_eq!(repo_de(texto).repo, "o/r", "{texto}");
+            assert_eq!(repo_de(texto).referencia, None);
+            assert_eq!(repo_de(texto).ruta, None);
+        }
+        // tree form: ref only, and ref + ruta
+        let con_ref = repo_de("github.com/o/r/tree/v1.0");
+        assert_eq!(con_ref.referencia.as_deref(), Some("v1.0"));
+        assert_eq!(con_ref.ruta, None);
+        let completo = repo_de("https://github.com/o/r/tree/main/skills/productivity/x");
+        assert_eq!(completo.referencia.as_deref(), Some("main"));
+        assert_eq!(completo.ruta.as_deref(), Some("skills/productivity/x"));
+    }
+
+    #[test]
+    fn orígenes_rechazados() {
+        for texto in [
+            "gitlab.com/o/r",
+            "github.com/",
+            "github.com/solo",
+            "github.com/o/r/extra/más",
+            "github.com/o/.r",
+            "github.com/o/r/tree/main/../escape",
+            "",
+        ] {
+            assert!(parsear_origen(texto).is_err(), "{texto} no debió pasar");
+        }
+    }
+
+    // ---- #27: escanear with a fake provider ----
+
+    /// A fake provider: copies a fixture tree into the staging dir — the
+    /// same contract as the real one, no network.
+    struct FalsoProveedor {
+        fixture: PathBuf,
+        sha: String,
+        falla_sha: bool,
+    }
+
+    impl FalsoProveedor {
+        fn nuevo(fixture: &Path) -> Self {
+            Self {
+                fixture: fixture.to_path_buf(),
+                sha: "abc123".to_string(),
+                falla_sha: false,
+            }
+        }
+    }
+
+    impl ProveedorRemoto for FalsoProveedor {
+        fn descargar_en(&self, _origen: &RepoUrl, destino: &Path) -> Result<(), String> {
+            // the real provider leaves ONE top dir (tarball root); the
+            // fake mimics that: fixture/repo/<skills…>
+            copiar_dir(&self.fixture, destino).map_err(|e| e.to_string())
+        }
+
+        fn sha_de(&self, _repo: &str, _ruta: &str) -> Result<String, String> {
+            if self.falla_sha {
+                Err("api caída".to_string())
+            } else {
+                Ok(self.sha.clone())
+            }
+        }
+    }
+
+    /// A fake repo tree: one top dir (`repo/`) with skills nested at
+    /// several depths, one broken, one hidden, one loose file.
+    fn fixture_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let skill = |rel: &str, texto: &str| {
+            let p = repo.join(rel);
+            fs::create_dir_all(&p).unwrap();
+            fs::write(p.join(SKILL_MD), texto).unwrap();
+        };
+        skill("skills/productivity/buena", SKILL_OK);
+        skill("skills/engineering/otra", SKILL_OK_COMILLAS);
+        skill("utils/anidada", SKILL_OK); // recursion proof
+        skill("skills/productivity/invalida", "sin frontmatter");
+        skill(".oculta/buena", SKILL_OK); // hidden: never a candidate
+        fs::write(repo.join("README.md"), "texto suelto").unwrap();
+        dir
+    }
+
+    #[test]
+    fn escanear_encuentra_anidadas_valida_e_invalida_y_salta_ocultas() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let staging = tempfile::tempdir().unwrap();
+        let rutas: Vec<(String, bool)> = escanear(&proveedor, &repo_de("o/r"), staging.path())
+            .unwrap()
+            .into_iter()
+            .map(|h| (h.ruta, h.conforme))
+            .collect();
+        assert_eq!(
+            rutas,
+            vec![
+                ("skills/engineering/otra".to_string(), true),
+                ("skills/productivity/buena".to_string(), true),
+                ("skills/productivity/invalida".to_string(), false),
+                ("utils/anidada".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn escanear_directa_reporta_solo_esa_y_marca_la_inexistente() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let staging = tempfile::tempdir().unwrap();
+        let directa = escanear(
+            &proveedor,
+            &repo_de("github.com/o/r/tree/main/utils/anidada"),
+            staging.path(),
+        )
+        .unwrap();
+        assert_eq!(directa.len(), 1);
+        assert!(directa[0].conforme);
+        let ausente = escanear(
+            &proveedor,
+            &repo_de("github.com/o/r/tree/main/no/esta"),
+            staging.path(),
+        )
+        .unwrap();
+        assert_eq!(ausente.len(), 1);
+        assert!(!ausente[0].conforme);
+        assert!(ausente[0].motivo.as_deref().unwrap().contains("no existe"));
+    }
+
+    // ---- #27: instalar ----
+
+    fn origen_simple() -> RepoUrl {
+        repo_de("o/r")
+    }
+
+    #[test]
+    fn instalar_activa_valida_y_registra_origen_y_sha() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let raiz = tempfile::tempdir().unwrap();
+        let mut mapa = Mapa::new();
+        let resultados = instalar(
+            &proveedor,
+            &origen_simple(),
+            &[
+                "skills/productivity/buena".to_string(),
+                "utils/anidada".to_string(),
+            ],
+            raiz.path(),
+            &mut mapa,
+            1_800_000_000,
+        )
+        .unwrap();
+        assert!(resultados.iter().all(|r| r.ok));
+        // both skills live under their leaf names
+        assert!(raiz.path().join("buena").join(SKILL_MD).is_file());
+        assert!(raiz.path().join("anidada").join(SKILL_MD).is_file());
+        // the manifest entries carry repo, ruta and the fetched SHA
+        let entrada = &mapa["buena"];
+        assert_eq!(entrada.origen.repo, "o/r");
+        assert_eq!(entrada.origen.ruta, "skills/productivity/buena");
+        assert_eq!(entrada.sha, "abc123");
+        assert_eq!(entrada.instalada_en, "1800000000");
+        assert_eq!(mapa["anidada"].origen.ruta, "utils/anidada");
+    }
+
+    #[test]
+    fn instalar_invalida_no_se_activa_pero_las_demas_si() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let raiz = tempfile::tempdir().unwrap();
+        let mut mapa = Mapa::new();
+        let resultados = instalar(
+            &proveedor,
+            &origen_simple(),
+            &[
+                "skills/productivity/invalida".to_string(),
+                "skills/productivity/buena".to_string(),
+            ],
+            raiz.path(),
+            &mut mapa,
+            1,
+        )
+        .unwrap();
+        assert_eq!(resultados.len(), 2);
+        assert!(!resultados[0].ok);
+        assert!(resultados[0]
+            .motivo
+            .as_deref()
+            .unwrap()
+            .contains("inválida"));
+        assert!(!raiz.path().join("invalida").exists()); // never activated
+        assert!(resultados[1].ok); // a failure does not stop the rest
+        assert!(mapa.contains_key("buena"));
+        assert!(!mapa.contains_key("invalida"));
+    }
+
+    #[test]
+    fn instalar_sin_sha_falla_la_ruta_y_no_escribe_entrada() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor {
+            falla_sha: true,
+            ..FalsoProveedor::nuevo(fixture.path())
+        };
+        let raiz = tempfile::tempdir().unwrap();
+        let mut mapa = Mapa::new();
+        let resultados = instalar(
+            &proveedor,
+            &origen_simple(),
+            &["skills/productivity/buena".to_string()],
+            raiz.path(),
+            &mut mapa,
+            1,
+        )
+        .unwrap();
+        assert!(!resultados[0].ok);
+        assert!(resultados[0].motivo.as_deref().unwrap().contains("SHA"));
+        assert!(mapa.is_empty()); // without a SHA there is nothing to track
+    }
+
+    #[test]
+    fn instalar_reemplaza_la_carpeta_existente() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let raiz = tempfile::tempdir().unwrap();
+        // a previous install (or another tool's copy) with junk in it
+        let previa = raiz.path().join("buena");
+        fs::create_dir_all(&previa).unwrap();
+        fs::write(previa.join("basura.txt"), "vieja").unwrap();
+        let mut mapa = Mapa::new();
+        let resultados = instalar(
+            &proveedor,
+            &origen_simple(),
+            &["skills/productivity/buena".to_string()],
+            raiz.path(),
+            &mut mapa,
+            1,
+        )
+        .unwrap();
+        assert!(resultados[0].ok);
+        assert!(!previa.join("basura.txt").exists()); // replaced, not merged
+        assert!(previa.join(SKILL_MD).is_file());
+    }
+
+    #[test]
+    fn instalar_ruta_traversal_rechazada() {
+        let fixture = fixture_repo();
+        let proveedor = FalsoProveedor::nuevo(fixture.path());
+        let raiz = tempfile::tempdir().unwrap();
+        let mut mapa = Mapa::new();
+        let resultados = instalar(
+            &proveedor,
+            &origen_simple(),
+            &["../escape".to_string()],
+            raiz.path(),
+            &mut mapa,
+            1,
+        )
+        .unwrap();
+        assert!(!resultados[0].ok);
+        assert!(resultados[0].motivo.as_deref().unwrap().contains("segura"));
+    }
+
+    #[test]
+    fn manifest_ilegible_o_corrupto_bloquea_la_escritura() {
+        let raiz = tempfile::tempdir().unwrap();
+        assert!(matches!(mapa_escriturable(raiz.path()), Ok(m) if m.is_empty()));
+        fs::write(raiz.path().join(ARCHIVO), "roto").unwrap();
+        let err = mapa_escriturable(raiz.path()).unwrap_err();
+        assert!(err.contains("resuélvelo"), "{err}");
+        // repaired by hand → writable again
+        fs::write(raiz.path().join(ARCHIVO), "{}").unwrap();
+        assert!(mapa_escriturable(raiz.path()).is_ok());
     }
 }

@@ -132,6 +132,89 @@ export function createHabilidadesStore(
     });
   }
 
+  // ---- Agregar desde origen (#27) ----
+
+  const origenInput = ref("");
+  // The scan's section: report rows, loading and error live here — a
+  // network failure NEVER blocks the folder's table.
+  const escaneo = reactive({
+    abierto: false,
+    cargando: false,
+    error: "",
+    origen: "",
+    items: [],
+  });
+  // Selected rutas: conformes preselected, invalidas never (they cannot
+  // be activated).
+  const seleccion = ref([]);
+  const instalando = ref(false);
+
+  async function escanear() {
+    const origen = origenInput.value.trim();
+    if (!origen || escaneo.cargando) return;
+    escaneo.abierto = true;
+    escaneo.cargando = true;
+    escaneo.error = "";
+    escaneo.origen = origen;
+    escaneo.items = [];
+    anunciar(anuncio, t("escaneando"));
+    try {
+      escaneo.items = await invokeFn("escanear_origen", { origen });
+      seleccion.value = escaneo.items
+        .filter((i) => i.conforme)
+        .map((i) => i.ruta);
+      const conformes = seleccion.value.length;
+      anunciar(
+        anuncio,
+        t("escaneoListo", { conformes, total: escaneo.items.length }),
+      );
+    } catch (e) {
+      escaneo.error = String(e);
+    } finally {
+      escaneo.cargando = false;
+    }
+  }
+
+  function toggleRuta(ruta) {
+    seleccion.value = seleccion.value.includes(ruta)
+      ? seleccion.value.filter((r) => r !== ruta)
+      : [...seleccion.value, ruta];
+  }
+
+  async function instalarSeleccionadas() {
+    if (instalando.value || seleccion.value.length === 0) return;
+    instalando.value = true;
+    try {
+      const resultados = await invokeFn("instalar_habilidades", {
+        origen: escaneo.origen,
+        rutas: [...seleccion.value],
+      });
+      let ok = 0;
+      for (const r of resultados) {
+        if (r.ok) ok++;
+        else appendLog(`habilidades/${r.nombre}: ${r.motivo}`);
+      }
+      await refresh();
+      const linea = t("instalacionLista", { ok, total: resultados.length });
+      appendLog(`habilidades: ${linea}`);
+      anunciar(anuncio, linea);
+      cerrarEscaneo();
+      origenInput.value = "";
+    } catch (e) {
+      appendLog(`habilidades: ${t("instalarFallo", { e })}`);
+      anunciar(anuncioError, t("instalarFallo", { e }));
+    } finally {
+      instalando.value = false;
+    }
+  }
+
+  function cerrarEscaneo() {
+    escaneo.abierto = false;
+    escaneo.error = "";
+    escaneo.items = [];
+    seleccion.value = [];
+  }
+
   return {
     state,
     search,
@@ -147,5 +230,13 @@ export function createHabilidadesStore(
     abrirCarpeta,
     hasError,
     detalleFallo,
+    origenInput,
+    escaneo,
+    seleccion,
+    instalando,
+    escanear,
+    toggleRuta,
+    instalarSeleccionadas,
+    cerrarEscaneo,
   };
 }

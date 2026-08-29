@@ -260,6 +260,9 @@ struct Contexto {
     /// granular commands (even from different gestores' stores) must
     /// never interleave cargar/guardar — a lost update loses an exclusion.
     candado_exclusiones: Arc<Mutex<()>>,
+    /// Same single-writer rule for the skills manifest (#27): an install
+    /// is one read-modify-write, never interleaved.
+    candado_habilidades: Arc<Mutex<()>>,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -293,6 +296,52 @@ async fn listar_habilidades() -> Result<habilidades::SalidaHabilidades, String> 
 fn habilidades_de_cero() -> Result<(), String> {
     let raiz = habilidades::carpeta_del_usuario()?;
     habilidades::empezar_de_cero(&raiz).map_err(|e| e.to_string())
+}
+
+/// Scans ONE origin (a GitHub repo or a direct skill's URL) and reports
+/// every skill found: Conforme or Inválida with its reason. NOTHING is
+/// activated here — the download lives in a throwaway staging dir.
+#[tauri::command]
+async fn escanear_origen(
+    origen: String,
+) -> Result<Vec<habilidades::HabilidadEscaneada>, String> {
+    let url = habilidades::parsear_origen(&origen)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+        habilidades::escanear(&proveedor, &url, staging.path())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Installs the selected rutas of ONE origin (the add flow's second
+/// step): per ruta — validate, fetch its SHA, activate by copy-and-swap,
+/// record the Origen. The manifest is written ONCE with every confirmed
+/// entry under the manifest's lock (#17: a corrupt one refuses writes).
+#[tauri::command]
+async fn instalar_habilidades(
+    origen: String,
+    rutas: Vec<String>,
+    estado: tauri::State<'_, Contexto>,
+) -> Result<Vec<habilidades::ResultadoInstalacion>, String> {
+    let url = habilidades::parsear_origen(&origen)?;
+    let candado = estado.candado_habilidades.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _candado = candado.lock().unwrap();
+        let raiz = habilidades::carpeta_del_usuario()?;
+        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
+        let proveedor = habilidades::ProveedorReal::nuevo()?;
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let resultados = habilidades::instalar(&proveedor, &url, &rutas, &raiz, &mut mapa, ahora)?;
+        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())?;
+        Ok(resultados)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Opens ONE Habilidad's folder in the system file manager: the name is
@@ -505,6 +554,7 @@ pub fn run() {
                 dir_config,
                 banderas: cola::Banderas::nuevas(),
                 candado_exclusiones: Arc::new(Mutex::new(())),
+                candado_habilidades: Arc::new(Mutex::new(())),
             });
             Ok(())
         })
@@ -519,6 +569,8 @@ pub fn run() {
             listar_habilidades,
             habilidades_de_cero,
             abrir_habilidad,
+            escanear_origen,
+            instalar_habilidades,
             actualizar_todo,
             detener_actualizar_todo,
             abandonar_actualizar_todo,

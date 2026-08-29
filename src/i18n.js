@@ -99,6 +99,20 @@ export const MENSAJES = {
       "The skills manifest is damaged and was preserved as habilidades.json.corrupt. Start clean, or repair it by hand and retry.",
     habilidadesIlegibles: "The skills manifest could not be read: {e}",
     habilidadesDeCero: "Start clean",
+    agregarHabilidades: "Add",
+    agregarTitulo: "Add skills from a repository URL",
+    origenPlaceholder:
+      "owner/repo — or github.com/owner/repo/tree/main/path/skill",
+    escaneando: "scanning the repository…",
+    escaneoListo: "{conformes} of {total} skills are valid",
+    escaneoTitulo: "Review before activating",
+    sinHabilidadesEnRepo: "no skill folders found in the repository",
+    instalarSeleccionadas: "Install selected",
+    instalandoHabilidades: "installing…",
+    cancelar: "Cancel",
+    seleccionadas: "{n} selected",
+    instalacionLista: "{ok} of {total} skills installed",
+    instalarFallo: "could not install: {e}",
   },
   es: {
     gestoresInstalados: "Gestores instalados",
@@ -192,6 +206,21 @@ export const MENSAJES = {
       "El manifest de habilidades está dañado; se conservó como habilidades.json.corrupt. Empieza de cero, o repáralo a mano y reintenta.",
     habilidadesIlegibles: "No se pudo leer el manifest de habilidades: {e}",
     habilidadesDeCero: "Empezar de cero",
+    agregarHabilidades: "Agregar",
+    agregarTitulo: "Agregar habilidades desde la URL de un repositorio",
+    origenPlaceholder:
+      "owner/repo — o github.com/owner/repo/tree/main/ruta/skill",
+    escaneando: "escaneando el repositorio…",
+    escaneoListo: "{conformes} de {total} habilidades son conformes",
+    escaneoTitulo: "Revisá antes de activar",
+    sinHabilidadesEnRepo:
+      "no se encontraron carpetas de habilidades en el repositorio",
+    instalarSeleccionadas: "Instalar seleccionadas",
+    instalandoHabilidades: "instalando…",
+    cancelar: "Cancelar",
+    seleccionadas: "{n} seleccionadas",
+    instalacionLista: "{ok} de {total} habilidades instaladas",
+    instalarFallo: "no se pudo instalar: {e}",
   },
 };
 
