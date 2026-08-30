@@ -433,18 +433,32 @@ fn version_key(v: &str) -> Vec<u64> {
     v.split('.').map(|p| p.parse().unwrap_or(0)).collect()
 }
 
-/// Prepends nvm's active node bin to the command's PATH: the shims (npm,
-/// pnpm) carry `#!/usr/bin/env node` and a GUI app opened from Finder
-/// does not inherit the shell's PATH.
-pub fn guardar_path_nvm(cmd: &mut std::process::Command) {
-    if let Some(bin_dir) = home().and_then(|h| resolve_nvm_bin_dir(&h.join(".nvm"))) {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        // join_paths uses the OS separator (`:` POSIX, `;` Windows).
-        if let Ok(nueva) =
-            std::env::join_paths(std::iter::once(bin_dir).chain(std::env::split_paths(&path)))
-        {
-            cmd.env("PATH", nueva);
-        }
+/// Prepends `dir` to the command's PATH: the shims (npm, pnpm) carry
+/// `#!/usr/bin/env node` and a GUI app opened from Finder does not
+/// inherit the shell's PATH — the directory that owns the shim also
+/// owns its node.
+pub fn guardar_path(cmd: &mut std::process::Command, dir: &Path) {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    // join_paths uses the OS separator (`:` POSIX, `;` Windows).
+    if let Ok(nueva) =
+        std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&path)))
+    {
+        cmd.env("PATH", nueva);
+    }
+}
+
+/// Prepends node's own bin directory (see [`ubicar_node`]) to the
+/// command's PATH: for shims whose directory does NOT carry node
+/// (pnpm's). On Windows nvm-windows publishes its active version in
+/// the PATH already: no-op.
+pub fn guardar_path_node(cmd: &mut std::process::Command) {
+    #[cfg(not(windows))]
+    if let Some(dir) = ubicar_node().0 {
+        guardar_path(cmd, &dir);
+    }
+    #[cfg(windows)]
+    {
+        let _ = cmd;
     }
 }
 
@@ -502,6 +516,73 @@ pub fn find_in_path(bin: &str) -> Option<PathBuf> {
 /// discovery resolves (PATH → vars → OS standard).
 pub fn primer_existente(candidatos: Vec<PathBuf>) -> Option<PathBuf> {
     candidatos.into_iter().find(|c| c.is_file())
+}
+
+/// Standard POSIX node locations a GUI app's PATH lacks — the
+/// counterpart of Windows's `%ProgramFiles%\nodejs`: the macOS
+/// installer and Intel Homebrew write to `/usr/local/bin`, Apple
+/// Silicon Homebrew to `/opt/homebrew/bin`.
+#[cfg(not(windows))]
+fn dirs_estandar_node() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ]
+}
+
+/// Node's bin directory on THIS machine, in kernel's discovery order:
+/// the PATH first (the machine's own node — Homebrew, the installer,
+/// fnm/volta, or nvm active in an inherited shell, `nvm use` included),
+/// then nvm without shell PATH (NVM_DIR when set, `~/.nvm` default),
+/// then the standard install dirs. Returns the directory (if any) and
+/// every location searched outside the PATH (they feed the visible
+/// error).
+#[cfg(not(windows))]
+pub fn ubicar_node() -> (Option<PathBuf>, Vec<PathBuf>) {
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let nvm_dir = std::env::var_os("NVM_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    ubicar_node_con(
+        &path_dirs,
+        nvm_dir.as_deref(),
+        home().as_deref(),
+        &dirs_estandar_node(),
+    )
+}
+
+/// Pure core of [`ubicar_node`]: every source injected, tests decide
+/// the outcome. The machine's truth first: PATH → nvm → standard.
+#[cfg(not(windows))]
+fn ubicar_node_con(
+    path_dirs: &[PathBuf],
+    nvm_dir_env: Option<&Path>,
+    home_dir: Option<&Path>,
+    estandar: &[PathBuf],
+) -> (Option<PathBuf>, Vec<PathBuf>) {
+    let npm = con_extension("npm");
+    // 1. The machine's own PATH — what `which npm` would answer.
+    if let Some(bin) = primer_existente(path_dirs.iter().map(|d| d.join(&npm)).collect()) {
+        return (bin.parent().map(PathBuf::from), Vec::new());
+    }
+    // 2. nvm without shell PATH (app opened from Finder): NVM_DIR when
+    //    set, `~/.nvm` as the default location.
+    let nvm = nvm_dir_env
+        .map(Path::to_path_buf)
+        .or_else(|| home_dir.map(|h| h.join(".nvm")));
+    if let Some(bin_dir) = nvm.as_deref().and_then(resolve_nvm_bin_dir) {
+        return (Some(bin_dir), Vec::new());
+    }
+    // 3. Standard installs outside a GUI app's PATH.
+    let mut buscadas = Vec::new();
+    if let Some(dir) = &nvm {
+        buscadas.push(dir.clone());
+    }
+    buscadas.extend(estandar.iter().cloned());
+    let bin = primer_existente(buscadas.iter().map(|d| d.join(&npm)).collect());
+    (bin.and_then(|b| b.parent().map(PathBuf::from)), buscadas)
 }
 
 /// Discovery error that shows where it searched: kills the "it doesn't
@@ -802,6 +883,102 @@ mod tests {
         assert_eq!(sin_v("v26.2.0"), "26.2.0");
         assert_eq!(sin_v("26.2.0"), "26.2.0");
         assert_eq!(sin_v(" v1.0.0 "), "1.0.0");
+    }
+
+    #[cfg(not(windows))]
+    fn dir_con_bin(dir: &std::path::Path, nombre: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(nombre), "#!/bin/sh\n").unwrap();
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn ubicar_prefiere_el_path_de_la_maquina() {
+        let dir = tempfile::tempdir().unwrap();
+        let brew = dir.path().join("brew-bin");
+        dir_con_bin(&brew, "npm");
+        let home = dir.path().join("home");
+        nvm_con(&home.join(".nvm"), &["v26.2.0"]);
+        // The machine's own PATH wins even with nvm present: it is
+        // what `which npm` would answer (an `nvm use` included).
+        let path = vec![brew.clone()];
+        let (bin, _) = ubicar_node_con(&path, None, Some(&home), &[]);
+        assert_eq!(bin.as_deref(), Some(brew.as_path()));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn ubicar_sin_path_resuelve_el_nvm_del_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        nvm_con(&home.join(".nvm"), &["v26.2.0"]);
+        let (bin, _) = ubicar_node_con(&[], None, Some(&home), &[]);
+        assert_eq!(bin, Some(home.join(".nvm/versions/node/v26.2.0/bin")));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn ubicar_respeta_nvm_dir_sobre_el_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        nvm_con(&home.join(".nvm"), &["v26.2.0"]);
+        let nvm_dir = dir.path().join("nvm-otro");
+        nvm_con(&nvm_dir, &["v20.0.0"]);
+        let (bin, _) = ubicar_node_con(&[], Some(&nvm_dir), Some(&home), &[]);
+        assert_eq!(bin, Some(nvm_dir.join("versions/node/v20.0.0/bin")));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn ubicar_cae_en_las_rutas_estandar() {
+        let dir = tempfile::tempdir().unwrap();
+        let estandar = dir.path().join("opt/homebrew/bin");
+        dir_con_bin(&estandar, "npm");
+        // No PATH, no nvm: Homebrew outside a GUI app's PATH.
+        let estandar_busqueda = vec![estandar.clone()];
+        let (bin, _) = ubicar_node_con(&[], None, None, &estandar_busqueda);
+        assert_eq!(bin.as_deref(), Some(estandar.as_path()));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn ubicar_sin_nada_devuelve_none_con_las_busquedas() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let nvm = home.join(".nvm");
+        let estandar = vec![dir.path().join("usr-local-bin")];
+        let (bin, buscadas) = ubicar_node_con(&[], None, Some(&home), &estandar);
+        assert_eq!(bin, None);
+        // The visible error shows where it searched (nvm + standard).
+        assert_eq!(buscadas, vec![nvm, estandar[0].clone()]);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn guardar_path_antepone_el_directorio_al_path() {
+        let mut cmd = std::process::Command::new("npm");
+        guardar_path(&mut cmd, std::path::Path::new("/opt/homebrew/bin"));
+        let path = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("PATH"))
+            .and_then(|(_, v)| v)
+            .unwrap();
+        let primero = std::env::split_paths(&path).next().unwrap();
+        assert_eq!(primero, std::path::Path::new("/opt/homebrew/bin"));
+    }
+
+    /// Manual smoke on the REAL machine (`cargo test -- --ignored`):
+    /// node must be found with the shell's PATH AND with a GUI's
+    /// minimal PATH (Finder launch: no inherited shell PATH).
+    #[test]
+    #[ignore]
+    #[cfg(not(windows))]
+    fn ubicar_node_encuentra_node_en_esta_maquina() {
+        let (bin, buscadas) = ubicar_node();
+        assert!(bin.is_some(), "shell PATH: {buscadas:?}");
+        let estandar = dirs_estandar_node();
+        let (bin_gui, buscadas) = ubicar_node_con(&[], None, home().as_deref(), &estandar);
+        assert!(bin_gui.is_some(), "GUI PATH: {buscadas:?}");
     }
 
     #[test]

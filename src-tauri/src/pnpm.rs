@@ -4,7 +4,7 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, guardar_path_nvm,
+    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, guardar_path_node,
     home, local_app_data, no_encontrado, parse_outdated, primer_existente, version_de,
     EspacioGlobal, Runner, RunnerOutput,
 };
@@ -36,8 +36,9 @@ pub fn instalado() -> bool {
 }
 
 /// pnpm's real runner: binary from the PATH or from pnpm's standard
-/// locations. The shim needs node in the PATH: nvm's active version bin
-/// is prepended if needed (app opened from Finder).
+/// locations. The shim needs node in the PATH: node's own bin
+/// directory (see [`crate::kernel::ubicar_node`]) is prepended if
+/// needed (app opened from Finder).
 pub struct RealPnpmRunner {
     bin: PathBuf,
     pnpm_version: String,
@@ -56,7 +57,7 @@ impl RealPnpmRunner {
             .unwrap_or_else(|| "unknown".to_string());
         let mut probe = std::process::Command::new("node");
         probe.arg("--version");
-        guardar_path_nvm(&mut probe);
+        guardar_path_node(&mut probe);
         let node_version = version_de(probe).map(|v| crate::kernel::sin_v(&v).to_string());
         Ok(Self {
             bin,
@@ -68,7 +69,7 @@ impl RealPnpmRunner {
     fn command(bin: &Path, args: &[&str]) -> std::process::Command {
         let mut cmd = std::process::Command::new(bin);
         cmd.args(args);
-        guardar_path_nvm(&mut cmd);
+        guardar_path_node(&mut cmd);
         cmd
     }
 }
