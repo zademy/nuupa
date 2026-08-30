@@ -3,16 +3,19 @@
 //! [`crate::kernel`]; the verb (`install`) and the visible command
 //! (`npm i -g`) live in [`crate`]'s manager table.
 //!
-//! npm runs on node: its global space belongs to nvm's active version,
-//! and the runner resolves that version (the inherited PATH may point to
-//! ANOTHER node's npm, e.g. Homebrew's).
+//! npm runs on node: its runner is resolved per machine (PATH → nvm
+//! without shell PATH → standard installs — see
+//! [`crate::kernel::ubicar_node`]), never pinned to one machine's
+//! layout.
 
-#[cfg(windows)]
-use crate::kernel::program_files;
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, guardar_path_nvm,
-    home, no_encontrado, resolve_nvm_bin_dir, version_de, EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, no_encontrado, version_de,
+    EspacioGlobal, Runner, RunnerOutput,
 };
+#[cfg(windows)]
+use crate::kernel::{find_in_path, program_files};
+#[cfg(not(windows))]
+use crate::kernel::{guardar_path, ubicar_node};
 use std::path::{Path, PathBuf};
 
 /// npm's executable: on POSIX it is the `npm` shim; on Windows it is
@@ -23,23 +26,15 @@ const NPM_BIN: &str = "npm.cmd";
 #[cfg(not(windows))]
 const NPM_BIN: &str = "npm";
 
-/// Where npm can be: returns the resolved bin directory (if any) and the
-/// paths searched outside the PATH (they feed the visible error).
+/// Where npm can be: kernel's per-machine node discovery — the PATH
+/// first (the machine's own node, Homebrew/installer/nvm active in an
+/// inherited shell), then nvm without shell PATH (NVM_DIR, `~/.nvm`),
+/// then the standard install dirs. Returns the resolved bin directory
+/// (if any) and the paths searched outside the PATH (they feed the
+/// visible error).
 #[cfg(not(windows))]
 fn ubicaciones_npm() -> (Option<PathBuf>, Vec<PathBuf>) {
-    let mut buscadas = Vec::new();
-    // nvm is the authoritative source on POSIX: the inherited PATH may
-    // point to ANOTHER node's npm (e.g. Homebrew's).
-    if let Some(bin_dir) = home().and_then(|h| resolve_nvm_bin_dir(&h.join(".nvm"))) {
-        return (Some(bin_dir), buscadas);
-    }
-    if let Some(h) = home() {
-        buscadas.push(h.join(".nvm"));
-    }
-    (
-        find_in_path(NPM_BIN).and_then(|p| p.parent().map(PathBuf::from)),
-        buscadas,
-    )
+    ubicar_node()
 }
 
 /// Windows: npm is a shim of the node.js installer (standard location:
@@ -101,9 +96,9 @@ impl RealRunner {
 
 /// Builds the npm command over a resolved bin directory.
 ///
-/// POSIX: the `npm` shim carries the `#!/usr/bin/env node` shebang; nvm's
-/// version PATH is prepended so it finds its node even when the GUI app
-/// does not inherit the shell's PATH.
+/// POSIX: the `npm` shim carries the `#!/usr/bin/env node` shebang; the
+/// RESOLVED directory is prepended to the PATH so the shim finds ITS
+/// node even when the GUI app does not inherit the shell's PATH.
 ///
 /// Windows: npm is `npm.cmd` and CreateProcess cannot run cmd scripts —
 /// `node.exe npm-cli.js` is invoked, exactly what the shim does
@@ -112,7 +107,7 @@ impl RealRunner {
 fn comando_npm(bin_dir: &Path, args: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(bin_dir.join(NPM_BIN));
     cmd.args(args);
-    guardar_path_nvm(&mut cmd);
+    guardar_path(&mut cmd, bin_dir);
     cmd
 }
 
