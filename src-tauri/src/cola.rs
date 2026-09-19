@@ -403,6 +403,132 @@ mod tests {
         assert_eq!(resumen.failed, 0);
     }
 
+    #[test]
+    fn la_cola_de_brew_actualiza_formula_y_cask_con_sus_flags() {
+        // Both kinds outdated: each row runs with ITS flag, in list
+        // order (formulae first).
+        fn snapshot_brew(_r: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(EspacioGlobal {
+                version_gestor: "7.0.4".into(),
+                version_node: None,
+                packages: vec![
+                    Paquete {
+                        tipo: Some("formula".into()),
+                        name: "wget".into(),
+                        installed: "1.25.0".into(),
+                        latest: Some("1.26.0".into()),
+                        outdated: true,
+                        pinned: false,
+                    },
+                    Paquete {
+                        tipo: Some("cask".into()),
+                        name: "firefox".into(),
+                        installed: "142.0".into(),
+                        latest: Some("142.1".into()),
+                        outdated: true,
+                        pinned: false,
+                    },
+                ],
+            })
+        }
+        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+            let flag = match tipo {
+                Some("cask") => "--cask",
+                _ => "--formula",
+            };
+            vec!["upgrade".into(), flag.into(), name.into()]
+        }
+        fn runner_brew() -> io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                crate::kernel::testutil::FakeRunner::new("7.0.4")
+                    .respuesta_exacta("upgrade --formula wget", "Upgrading wget", 0)
+                    .respuesta_exacta("upgrade --cask firefox", "Upgrading firefox", 0),
+            ) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            nombre: "brew",
+            comando: "brew upgrade",
+            args_update: args_brew,
+            instalado: || true,
+            runner: runner_brew,
+            snapshot: snapshot_brew,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut empiezan = Vec::new();
+        let banderas = Banderas::nuevas();
+        let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| {
+            if let EventoCola::Empieza { paquete } = ev {
+                empiezan.push(paquete.clone());
+            }
+        })
+        .unwrap();
+        assert_eq!(resumen.total, 2);
+        assert_eq!(resumen.ok, 2);
+        let esperado: Vec<String> = vec!["wget".into(), "firefox".into()];
+        assert_eq!(empiezan, esperado); // list order
+    }
+
+    #[test]
+    fn las_exclusiones_de_nuupa_aplican_tambien_a_los_casks() {
+        // Excluding the cask by (gestor=brew, paquete=firefox) — the
+        // same granular mechanism as npm, over brew's cask row.
+        fn snapshot_brew(_r: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(EspacioGlobal {
+                version_gestor: "7.0.4".into(),
+                version_node: None,
+                packages: vec![
+                    Paquete {
+                        tipo: Some("formula".into()),
+                        name: "wget".into(),
+                        installed: "1.25.0".into(),
+                        latest: Some("1.26.0".into()),
+                        outdated: true,
+                        pinned: false,
+                    },
+                    Paquete {
+                        tipo: Some("cask".into()),
+                        name: "firefox".into(),
+                        installed: "142.0".into(),
+                        latest: Some("142.1".into()),
+                        outdated: true,
+                        pinned: false,
+                    },
+                ],
+            })
+        }
+        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+            let flag = match tipo {
+                Some("cask") => "--cask",
+                _ => "--formula",
+            };
+            vec!["upgrade".into(), flag.into(), name.into()]
+        }
+        fn runner_brew() -> io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                crate::kernel::testutil::FakeRunner::new("7.0.4").respuesta_exacta(
+                    "upgrade --formula wget",
+                    "Upgrading wget",
+                    0,
+                ),
+            ) as Box<dyn Runner>)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut mapa = std::collections::BTreeMap::new();
+        mapa.insert("brew".to_string(), vec!["firefox".to_string()]);
+        crate::exclusiones::guardar(dir.path(), &mapa).unwrap();
+        let def = DefinicionGestor {
+            nombre: "brew",
+            comando: "brew upgrade",
+            args_update: args_brew,
+            instalado: || true,
+            runner: runner_brew,
+            snapshot: snapshot_brew,
+        };
+        let (resumen, _) = cola_con(&def, dir.path());
+        assert_eq!(resumen.total, 1); // only wget: the cask is excluded
+        assert_eq!(resumen.ok, 1);
+    }
+
     /// Runner with a side effect: installing its first package marks the
     /// second as excluded — simulates "exclude mid-queue".
     struct ExcluyenteAF;

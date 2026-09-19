@@ -548,6 +548,14 @@ mod tests {
     }
 
     #[test]
+    fn la_tabla_de_gestores_es_los_cuatro_en_orden() {
+        // The table drives tabs AND the diagnostics copy: brew closes
+        // the list.
+        let nombres: Vec<&str> = GESTORES.iter().map(|g| g.nombre).collect();
+        assert_eq!(nombres, vec!["npm", "pnpm", "bun", "brew"]);
+    }
+
+    #[test]
     fn gestores_no_soportados_rechazados() {
         for g in ["yarn", "", "--force"] {
             assert!(validar_gestor(g).is_err(), "{g} must not pass");
