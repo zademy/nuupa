@@ -10,7 +10,7 @@
 //!   deadline) and never starts the next one;
 //! * on finish it returns summary + final snapshot (a single refresh).
 
-use crate::kernel::Snapshot;
+use crate::kernel::{GlobalPackage, Snapshot};
 use crate::DefinicionGestor;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -176,18 +176,20 @@ fn correr_activa(
     let runner = (def.runner)().map_err(|e| e.to_string())?;
 
     // The queue is built on the real state at start: outdated, not
-    // excluded, in list order.
+    // excluded, in list order. Packages travel WHOLE: the type (brew)
+    // decides each row's update flag.
     let snap0 = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
-    let pendientes: Vec<String> = snap0
+    let pendientes: Vec<GlobalPackage> = snap0
         .packages
         .iter()
         .filter(|p| p.outdated && !excluidos_de(dir_config, def.nombre).contains(&p.name))
-        .map(|p| p.name.clone())
+        .cloned()
         .collect();
     let total = pendientes.len();
     let (mut ok, mut failed, mut detenidos, mut saltados) = (0usize, 0usize, 0usize, 0usize);
 
-    for name in &pendientes {
+    for paquete in &pendientes {
+        let name = &paquete.name;
         if parar.load(Ordering::Relaxed) || suave.load(Ordering::Relaxed) {
             break;
         }
@@ -203,7 +205,7 @@ fn correr_activa(
         });
         // The update line is built per package by the def (single
         // source of the verb; brew's per-row flag arrives with it).
-        let args = (def.args_update)(name, None);
+        let args = (def.args_update)(name, paquete.tipo.as_deref());
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let resultado = crate::kernel::instalar(
             runner.as_ref(),

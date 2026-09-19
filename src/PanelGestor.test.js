@@ -53,6 +53,61 @@ describe("PanelGestor montado", () => {
     expect(c.get(".statusbar").text()).toContain("npm v11.4.2");
   });
 
+  it("las filas con tipo (brew) llevan la marca f/c y el update viaja con el tipo", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", {
+      version_gestor: "7.0.4",
+      version_node: null,
+      comando_actualizar: "brew upgrade",
+      packages: [
+        {
+          tipo: "formula",
+          name: "wine",
+          installed: "9.0",
+          latest: "10.0",
+          outdated: true,
+        },
+        {
+          tipo: "cask",
+          name: "wine",
+          installed: "9.0",
+          latest: "10.1",
+          outdated: true,
+        },
+        {
+          tipo: "formula",
+          name: "wget",
+          installed: "1.25.0",
+          latest: "1.25.0",
+          outdated: false,
+        },
+      ],
+    });
+    const c = montar("brew");
+    await flushPromises();
+    // two distinguishable rows for the name collision
+    const vinos = c
+      .findAll("tbody tr")
+      .filter((r) => r.text().includes("wine"));
+    expect(vinos).toHaveLength(2);
+    const marcas = vinos.map((r) => r.get(".tipo").text());
+    expect(marcas).toEqual(["f", "c"]); // formulae first
+    expect(vinos[0].get(".tipo").attributes("title")).toBe("formula");
+    expect(vinos[1].get(".tipo").attributes("title")).toBe("cask");
+    // rows without tipo (node managers) carry no mark: the npm table
+    const cNpm = await montarCargado();
+    expect(cNpm.findAll(".tipo")).toHaveLength(0);
+    // the individual update travels WITH the row's type
+    let recibido = null;
+    tauri.responder("update_package", (args) => {
+      recibido = args;
+      return { success: true, output: "" };
+    });
+    await vinos[1].find("button.actualizar").trigger("click");
+    await flushPromises();
+    expect(recibido).toEqual({ gestor: "brew", name: "wine", tipo: "cask" });
+  });
+
   it("los eventos pm-cola mueven las fila por los cuatro motivos", async () => {
     const c = await montarCargado();
     const fila = filaDe(c, "hunkdiff");

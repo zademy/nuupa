@@ -89,17 +89,19 @@ export function createPackagesStore(
     }
   }
 
-  // Update one package: install its latest version. On success the list
+  // Update one package: install its latest version. `tipo` is the row's
+  // kind when the manager has more than one (brew: formula/cask) — it
+  // decides the update line's flag. On success the list
   // refreshes (the row becomes up to date) except inside "Update all",
   // which refreshes once when the queue finishes; on failure the row
   // stays marked in error and the detail (the manager's real output)
   // lives in the log. Returns true/false on success/failure; undefined
   // if it was already in-flight (the queue only counts explicit results).
-  async function update(name, { refrescar = true } = {}) {
+  async function update(name, tipo = null, { refrescar = true } = {}) {
     if (status[name] === ESTADO.ACTUALIZANDO) return;
     status[name] = ESTADO.ACTUALIZANDO;
     try {
-      const res = await invokeFn("update_package", { gestor, name });
+      const res = await invokeFn("update_package", { gestor, name, tipo });
       if (res?.success) {
         delete status[name];
         delete detalle[name];

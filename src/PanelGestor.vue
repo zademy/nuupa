@@ -254,7 +254,7 @@ onUnmounted(() => {
         <tbody>
           <tr
             v-for="p in packages"
-            :key="p.name"
+            :key="p.tipo ? `${p.tipo}/${p.name}` : p.name"
             :class="{
               desactualizado: p.outdated,
               error: hasError(p.name),
@@ -262,7 +262,16 @@ onUnmounted(() => {
             }"
             :title="hasError(p.name) ? detalleFallo(p.name) : undefined"
           >
-            <td class="nombre mono">{{ p.name }}</td>
+            <td class="nombre mono">
+              {{ p.name }}<!-- brew's kinds: a small type mark tells
+                   formula from cask apart (a collision shows two rows). -->
+              <span
+                v-if="p.tipo"
+                class="tipo"
+                :title="p.tipo === 'cask' ? t('tipoCask') : t('tipoFormula')"
+                >{{ p.tipo === "cask" ? "c" : "f" }}</span
+              >
+            </td>
             <td class="version mono">{{ p.installed }}</td>
             <td class="mono">
               <template v-if="p.outdated">
@@ -308,7 +317,7 @@ onUnmounted(() => {
                       })
                     "
                     :aria-label="t('actualizarPaquete', { paquete: p.name })"
-                    @click="update(p.name)"
+                    @click="update(p.name, p.tipo)"
                   >
                     <Icono nombre="actualizar" :tamano="14" />
                   </button>
@@ -577,6 +586,14 @@ tbody tr:hover td {
 .nombre {
   font-weight: 500;
   color: var(--fg);
+}
+
+/* brew's kind mark (f/c): muted, one space from the name. */
+.tipo {
+  margin-left: 5px;
+  color: var(--fg-faint);
+  font-weight: 400;
+  cursor: help;
 }
 
 .version {

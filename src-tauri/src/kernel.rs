@@ -22,9 +22,14 @@ use std::time::Duration;
 use std::os::unix::process::CommandExt;
 
 /// Global package: name, installed version, latest known version and
-/// whether it is outdated (computed in Rust: the UI never re-derives it).
+/// whether it is outdated (computed in Rust: the UI never re-derives
+/// it). `tipo` distinguishes a manager's package KINDS (brew: formula /
+/// cask); it is `None` for managers with a single kind and never
+/// reaches their tables.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalPackage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tipo: Option<String>,
     pub name: String,
     pub installed: String,
     pub latest: Option<String>,
@@ -153,6 +158,7 @@ pub(crate) fn armar(
                 .unwrap_or_else(|| installed.clone());
             let outdated_flag = latest != installed;
             GlobalPackage {
+                tipo: None,
                 name,
                 installed,
                 latest: Some(latest),

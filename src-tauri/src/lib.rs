@@ -5,6 +5,7 @@
 //! flag): the cores are tested through their interface with toy managers,
 //! no Tauri, no environment.
 
+mod brew;
 mod bun;
 mod cola;
 mod exclusiones;
@@ -60,6 +61,20 @@ fn runner_bun() -> std::io::Result<Box<dyn Runner>> {
     Ok(Box::new(bun::RealBunRunner::discover()?))
 }
 
+fn runner_brew() -> std::io::Result<Box<dyn Runner>> {
+    Ok(Box::new(brew::RealBrewRunner::discover()?))
+}
+
+/// brew's update line: the row's type picks the flag — always explicit,
+/// collision or not (`brew upgrade --formula wget`).
+fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+    let flag = match tipo {
+        Some(brew::TIPO_CASK) => "--cask",
+        _ => "--formula",
+    };
+    vec!["upgrade".into(), flag.into(), name.into()]
+}
+
 const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "npm",
@@ -84,6 +99,14 @@ const GESTORES: &[DefinicionGestor] = &[
         instalado: bun::instalado,
         runner: runner_bun,
         snapshot: bun::snapshot,
+    },
+    DefinicionGestor {
+        nombre: "brew",
+        comando: "brew upgrade",
+        args_update: args_brew,
+        instalado: brew::instalado,
+        runner: runner_brew,
+        snapshot: brew::snapshot,
     },
 ];
 
@@ -517,10 +540,11 @@ mod tests {
     // ---- dispatch over the table ----
 
     #[test]
-    fn npm_pnpm_y_bun_soportados() {
+    fn npm_pnpm_bun_y_brew_soportados() {
         assert!(validar_gestor("npm").is_ok());
         assert!(validar_gestor("pnpm").is_ok());
         assert!(validar_gestor("bun").is_ok());
+        assert!(validar_gestor("brew").is_ok());
     }
 
     #[test]
