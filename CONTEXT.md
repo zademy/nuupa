@@ -1,12 +1,12 @@
 # Nuupa
 
 Contexto de una app de escritorio (Tauri) para ver y actualizar los paquetes
-globales de los gestores instalados (npm, pnpm, bun), sin escribir comandos.
+globales de los gestores instalados (npm, pnpm, bun, brew), sin escribir comandos.
 
 ## Language
 
 **Gestor**:
-Programa que administra paquetes globales: npm, pnpm o bun.
+Programa que administra paquetes globales: npm, pnpm, bun o brew.
 _Avoid_: manager, instalador, runtime
 
 **Espacio global**:
@@ -14,11 +14,27 @@ El conjunto de paquetes globales de un gestor; cada gestor tiene el suyo e indep
 _Avoid_: lista global (singular), store
 
 **Paquete global**:
-Paquete instalado con `-g`, perteneciente al espacio global de un gestor.
+Paquete perteneciente al espacio global de un gestor: en los gestores de node se instala con `-g`; en brew son fórmulas hoja y casks.
 _Avoid_: módulo, dependencia, librería
 
+**Fórmula**:
+Paquete de brew que instala herramientas o librerías de línea de comandos.
+_Avoid_: paquete cli, librería
+
+**Cask**:
+Paquete de brew (solo macOS) que instala aplicaciones de usuario.
+_Avoid_: app, aplicación
+
+**Fórmula hoja**:
+Fórmula que el usuario instaló a propósito (no llegó como dependencia de otra): las únicas fórmulas del espacio global de brew.
+_Avoid_: top-level, principal
+
+**Pineada**:
+Fórmula marcada en brew para no actualizarse; Nuupa la muestra como Excluida de solo lectura.
+_Avoid_: bloqueada, congelada, fija
+
 **Paquete del gestor**:
-Paquete global cuyo nombre es el de un gestor (npm, pnpm, bun): se actualiza fuera de Nuupa (npm viene con node; pnpm y bun los instala su instalador oficial) y por eso nunca aparece en el espacio global de ningún gestor.
+Paquete global cuyo nombre es el de un gestor (npm, pnpm, bun; brew tampoco se lista a sí mismo): se actualiza fuera de Nuupa (npm viene con node; pnpm y bun los instala su instalador oficial) y por eso nunca aparece en el espacio global de ningún gestor.
 _Avoid_: excluido (la actualización individual sigue disponible), bloqueado, especial
 
 **Versión activa**:
@@ -30,7 +46,7 @@ Paquete global cuya última versión publicada difiere de la instalada.
 _Avoid_: viejo, obsoleto, pendiente
 
 **Actualizar**:
-Instalar la última versión publicada de un paquete global (`npm i -g pkg@latest`).
+Instalar la última versión publicada de un paquete global (`npm i -g pkg@latest`, `brew upgrade --formula pkg`).
 _Avoid_: upgradear, refrescar
 
 **Actualizar todo**:
@@ -68,47 +84,3 @@ _Avoid_: esquema, colores sueltos
 **Rol**:
 La función semántica de un color (fondo, superficie, borde, texto tenue…): igual en todos los temas; cambia el color, no el rol.
 _Avoid_: variable, token
-
-**Habilidad**:
-Conjunto de instrucciones para agentes (una carpeta con SKILL.md) que Nuupa gestiona a nivel de usuario en la carpeta de habilidades.
-_Avoid_: skill, plugin, extensión
-
-**Carpeta de habilidades**:
-La ruta `~/.agents/skills/`: nivel de usuario, única ruta que Nuupa toca; todos los agentes leen las habilidades de ahí.
-_Avoid_: skills globales, directorio de skills
-
-**Origen**:
-De dónde vino una Habilidad gestionada: repositorio, ruta dentro de él y SHA del árbol al momento de instalarla o actualizarla.
-_Avoid_: fuente, repositorio (a secas), procedencia
-
-**Gestionada**:
-Habilidad cuyo Origen registró Nuupa; única clase que Actualizar puede tocar.
-_Avoid_: instalada, trackeada
-
-**No gestionada**:
-Habilidad presente en la carpeta de habilidades sin Origen conocido (la puso otra herramienta): visible, sin Actualizar.
-_Avoid_: externa, huérfana, manual
-
-**Validación**:
-Comprobación de conformidad del contenido de una habilidad; se exige al agregarla y antes de aplicar una actualización. Sin Validación no se activa ni se actualiza.
-_Avoid_: chequeo, lint, escaneo
-
-**Conforme**:
-Contenido que pasa la Validación: SKILL.md presente, con frontmatter válido (name en minúsculas-con-guiones y description presentes, sin etiquetas XML) y el resto de archivos dentro de la carpeta de la habilidad.
-_Avoid_: válido (como estado de fila), correcto
-
-**Inválida**:
-Habilidad presente cuyo contenido ya no es Conforme: solo lectura, sin Actualizar hasta resolverse.
-_Avoid_: rota, corrupta, dañada
-
-**Actual**:
-Habilidad Gestionada cuyo SHA guardado coincide con el actual en su Origen remoto.
-_Avoid_: al día, sincronizada, vigente
-
-**Actualización disponible**:
-Habilidad Gestionada cuyo SHA guardado difiere del actual en su Origen remoto.
-_Avoid_: desactualizada (reservado a paquetes), pendiente, atrás
-
-**Sin verificar**:
-Habilidad Gestionada cuyo SHA no se pudo consultar ahora (fallo de red en SU fila): nunca es un veredicto; las demás filas refrescan igual.
-_Avoid_: error (a secas), fallida, desactualizada
