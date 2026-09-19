@@ -203,6 +203,11 @@ fn correr_activa(
             saltados += 1;
             continue;
         }
+        // Same contract as the individual path: the caller validates
+        // the name before building the update line (kernel::instalar
+        // only runs what it receives) — before the row announces, so a
+        // rejection never leaves a stuck updating row.
+        crate::kernel::validar_nombre(name).map_err(|e| e.to_string())?;
         emitir(&EventoCola::Empieza {
             paquete: name.clone(),
         });
@@ -344,40 +349,66 @@ mod tests {
         assert_eq!(resumen.ok, 1);
     }
 
+    // ---- brew-shaped queue fixtures (shared helpers) ----
+
+    /// brew's update line, as in the real table (see crate::args_brew).
+    fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+        let flag = match tipo {
+            Some("cask") => "--cask",
+            _ => "--formula",
+        };
+        vec!["upgrade".into(), flag.into(), name.into()]
+    }
+
+    fn paquete_brew(
+        tipo: &str,
+        nombre: &str,
+        installed: &str,
+        latest: &str,
+        outdated: bool,
+        pinned: bool,
+    ) -> Paquete {
+        Paquete {
+            tipo: Some(tipo.to_string()),
+            name: nombre.to_string(),
+            installed: installed.to_string(),
+            latest: Some(latest.to_string()),
+            outdated,
+            pinned,
+        }
+    }
+
+    fn espacio_brew(paquetes: Vec<Paquete>) -> EspacioGlobal {
+        EspacioGlobal {
+            version_gestor: "7.0.4".into(),
+            version_node: None,
+            packages: paquetes,
+        }
+    }
+
+    fn def_brew_con(
+        runner: fn() -> io::Result<Box<dyn Runner>>,
+        snapshot: fn(&dyn Runner) -> io::Result<EspacioGlobal>,
+    ) -> DefinicionGestor {
+        DefinicionGestor {
+            nombre: "brew",
+            comando: "brew upgrade",
+            args_update: args_brew,
+            instalado: || true,
+            runner,
+            snapshot,
+        }
+    }
+
     #[test]
     fn salta_a_los_pineados_de_brew() {
         // A Pineada is brew's own skip (#38): the queue is built without
         // it — attempting it would find no exact-line answer and fail.
-        fn snapshot_pineada(_r: &dyn Runner) -> io::Result<EspacioGlobal> {
-            Ok(EspacioGlobal {
-                version_gestor: "7.0.4".into(),
-                version_node: None,
-                packages: vec![
-                    Paquete {
-                        tipo: Some("formula".into()),
-                        name: "ffmpeg".into(),
-                        installed: "7.1".into(),
-                        latest: Some("8.0".into()),
-                        outdated: true,
-                        pinned: true,
-                    },
-                    Paquete {
-                        tipo: Some("formula".into()),
-                        name: "wget".into(),
-                        installed: "1.25.0".into(),
-                        latest: Some("1.26.0".into()),
-                        outdated: true,
-                        pinned: false,
-                    },
-                ],
-            })
-        }
-        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
-            let flag = match tipo {
-                Some("cask") => "--cask",
-                _ => "--formula",
-            };
-            vec!["upgrade".into(), flag.into(), name.into()]
+        fn snapshot_pineada(_: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(espacio_brew(vec![
+                paquete_brew("formula", "ffmpeg", "7.1", "8.0", true, true),
+                paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
+            ]))
         }
         fn runner_brew() -> io::Result<Box<dyn Runner>> {
             Ok(Box::new(
@@ -389,14 +420,7 @@ mod tests {
             ) as Box<dyn Runner>)
         }
         let dir = tempfile::tempdir().unwrap();
-        let def = DefinicionGestor {
-            nombre: "brew",
-            comando: "brew upgrade",
-            args_update: args_brew,
-            instalado: || true,
-            runner: runner_brew,
-            snapshot: snapshot_pineada,
-        };
+        let def = def_brew_con(runner_brew, snapshot_pineada);
         let (resumen, _) = cola_con(&def, dir.path());
         assert_eq!(resumen.total, 1); // only wget: ffmpeg never enqueued
         assert_eq!(resumen.ok, 1);
@@ -407,36 +431,11 @@ mod tests {
     fn la_cola_de_brew_actualiza_formula_y_cask_con_sus_flags() {
         // Both kinds outdated: each row runs with ITS flag, in list
         // order (formulae first).
-        fn snapshot_brew(_r: &dyn Runner) -> io::Result<EspacioGlobal> {
-            Ok(EspacioGlobal {
-                version_gestor: "7.0.4".into(),
-                version_node: None,
-                packages: vec![
-                    Paquete {
-                        tipo: Some("formula".into()),
-                        name: "wget".into(),
-                        installed: "1.25.0".into(),
-                        latest: Some("1.26.0".into()),
-                        outdated: true,
-                        pinned: false,
-                    },
-                    Paquete {
-                        tipo: Some("cask".into()),
-                        name: "firefox".into(),
-                        installed: "142.0".into(),
-                        latest: Some("142.1".into()),
-                        outdated: true,
-                        pinned: false,
-                    },
-                ],
-            })
-        }
-        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
-            let flag = match tipo {
-                Some("cask") => "--cask",
-                _ => "--formula",
-            };
-            vec!["upgrade".into(), flag.into(), name.into()]
+        fn snapshot_brew(_: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(espacio_brew(vec![
+                paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
+                paquete_brew("cask", "firefox", "142.0", "142.1", true, false),
+            ]))
         }
         fn runner_brew() -> io::Result<Box<dyn Runner>> {
             Ok(Box::new(
@@ -445,14 +444,7 @@ mod tests {
                     .respuesta_exacta("upgrade --cask firefox", "Upgrading firefox", 0),
             ) as Box<dyn Runner>)
         }
-        let def = DefinicionGestor {
-            nombre: "brew",
-            comando: "brew upgrade",
-            args_update: args_brew,
-            instalado: || true,
-            runner: runner_brew,
-            snapshot: snapshot_brew,
-        };
+        let def = def_brew_con(runner_brew, snapshot_brew);
         let dir = tempfile::tempdir().unwrap();
         let mut empiezan = Vec::new();
         let banderas = Banderas::nuevas();
@@ -472,36 +464,11 @@ mod tests {
     fn las_exclusiones_de_nuupa_aplican_tambien_a_los_casks() {
         // Excluding the cask by (gestor=brew, paquete=firefox) — the
         // same granular mechanism as npm, over brew's cask row.
-        fn snapshot_brew(_r: &dyn Runner) -> io::Result<EspacioGlobal> {
-            Ok(EspacioGlobal {
-                version_gestor: "7.0.4".into(),
-                version_node: None,
-                packages: vec![
-                    Paquete {
-                        tipo: Some("formula".into()),
-                        name: "wget".into(),
-                        installed: "1.25.0".into(),
-                        latest: Some("1.26.0".into()),
-                        outdated: true,
-                        pinned: false,
-                    },
-                    Paquete {
-                        tipo: Some("cask".into()),
-                        name: "firefox".into(),
-                        installed: "142.0".into(),
-                        latest: Some("142.1".into()),
-                        outdated: true,
-                        pinned: false,
-                    },
-                ],
-            })
-        }
-        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
-            let flag = match tipo {
-                Some("cask") => "--cask",
-                _ => "--formula",
-            };
-            vec!["upgrade".into(), flag.into(), name.into()]
+        fn snapshot_brew(_: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(espacio_brew(vec![
+                paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
+                paquete_brew("cask", "firefox", "142.0", "142.1", true, false),
+            ]))
         }
         fn runner_brew() -> io::Result<Box<dyn Runner>> {
             Ok(Box::new(
@@ -516,14 +483,7 @@ mod tests {
         let mut mapa = std::collections::BTreeMap::new();
         mapa.insert("brew".to_string(), vec!["firefox".to_string()]);
         crate::exclusiones::guardar(dir.path(), &mapa).unwrap();
-        let def = DefinicionGestor {
-            nombre: "brew",
-            comando: "brew upgrade",
-            args_update: args_brew,
-            instalado: || true,
-            runner: runner_brew,
-            snapshot: snapshot_brew,
-        };
+        let def = def_brew_con(runner_brew, snapshot_brew);
         let (resumen, _) = cola_con(&def, dir.path());
         assert_eq!(resumen.total, 1); // only wget: the cask is excluded
         assert_eq!(resumen.ok, 1);

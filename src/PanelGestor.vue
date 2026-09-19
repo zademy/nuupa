@@ -310,7 +310,11 @@ onUnmounted(() => {
                           ? t('quitarExclusion')
                           : t('excluir')
                     "
-                    :aria-label="t('excluirPaquete', { paquete: p.name })"
+                    :aria-label="
+                      p.pinned
+                        ? t('pineadaTitulo')
+                        : t('excluirPaquete', { paquete: p.name })
+                    "
                     @click="toggleExcluded(p.name)"
                   >
                     <Icono nombre="excluir" :tamano="13" />

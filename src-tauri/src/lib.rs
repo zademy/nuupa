@@ -24,7 +24,8 @@ use tauri::{Emitter, Manager};
 /// A supported manager: visible command and how to build ONE package's
 /// update arguments. Both live HERE, once per manager: the UI receives
 /// the visible one through the seam (Snapshot), it never duplicates it.
-/// Adding a manager = adding one entry.
+/// Adding a manager is ONE entry here plus its adapter module; shared
+/// behavior (kernel, queue, exclusions) already knows how to treat it.
 #[derive(Clone)]
 pub(crate) struct DefinicionGestor {
     pub(crate) nombre: &'static str,

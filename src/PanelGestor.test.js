@@ -144,10 +144,44 @@ describe("PanelGestor montado", () => {
     const togglePineado = ffmpeg.get("button.excluir");
     expect(togglePineado.attributes("disabled")).toBeDefined();
     expect(togglePineado.attributes("title")).toContain("Pinned in brew");
+    // the pinned state is announced, not just shown
+    expect(togglePineado.attributes("aria-label")).toContain("Pinned in brew");
     // a normal row's toggle stays enabled
     expect(
       filaDe(c, "wget").get("button.excluir").attributes("disabled"),
     ).toBeUndefined();
+  });
+
+  it("actualizar una pineada refleja el rechazo de brew con error visible", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", {
+      version_gestor: "7.0.4",
+      version_node: null,
+      comando_actualizar: "brew upgrade",
+      packages: [
+        {
+          tipo: "formula",
+          name: "ffmpeg",
+          installed: "7.1",
+          latest: "8.0",
+          outdated: true,
+          pinned: true,
+        },
+      ],
+    });
+    const c = montar("brew");
+    await flushPromises();
+    const fila = filaDe(c, "ffmpeg");
+    // brew refuses a pinned upgrade (exit != 0): the row shows the
+    // failure with brew's real output — never a silence
+    tauri.responder("update_package", () => ({
+      success: false,
+      output: "Error: ffmpeg is pinned at 7.1",
+    }));
+    await fila.get("button.actualizar").trigger("click");
+    await flushPromises();
+    expect(fila.classes()).toContain("error");
+    expect(fila.attributes("title")).toContain("pinned at 7.1");
   });
 
   it("los eventos pm-cola mueven las fila por los cuatro motivos", async () => {
