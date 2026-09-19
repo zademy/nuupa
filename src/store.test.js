@@ -195,7 +195,7 @@ describe("store de paquetes globales", () => {
       calls.push(cmd);
       if (cmd === "list_globals") return SNAPSHOT;
       if (cmd === "update_package") {
-        expect(args).toEqual({ gestor: "npm", name: "hunkdiff" });
+        expect(args).toEqual({ gestor: "npm", name: "hunkdiff", tipo: null });
         return { success: true };
       }
       throw new Error(`unexpected command: ${cmd}`);

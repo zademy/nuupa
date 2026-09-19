@@ -10,7 +10,7 @@
 //!   deadline) and never starts the next one;
 //! * on finish it returns summary + final snapshot (a single refresh).
 
-use crate::kernel::Snapshot;
+use crate::kernel::{GlobalPackage, Snapshot};
 use crate::DefinicionGestor;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -113,44 +113,15 @@ impl Banderas {
         self.suave.store(true, Ordering::Relaxed);
     }
 
-    /// A fresh flag set sharing the ONE-active guard with an existing
-    /// one (#30): different queues (paquetes, habilidades), one gate —
-    /// while their Stop/abandonment stay independent.
-    pub fn con_guarda_compartida(activa: &Arc<AtomicBool>) -> Self {
-        Self {
-            parar: Arc::new(AtomicBool::new(false)),
-            suave: Arc::new(AtomicBool::new(false)),
-            activa: Arc::clone(activa),
-        }
-    }
-
-    /// The ONE-active flag itself, to share the gate with another
-    /// queue's flag set (#30).
-    pub fn activa(&self) -> &Arc<AtomicBool> {
-        &self.activa
-    }
-
-    /// The ONE-active-queue gate (#12, shared across queues since #30):
-    /// swaps the flag on entry; the guard releases it on return AND on a
-    /// panic — a crashed queue must not block the next one forever. An
-    /// error while another queue holds it.
+    /// The ONE-active-queue gate (#12): swaps the flag on entry; the
+    /// guard releases it on return AND on a panic — a crashed queue must
+    /// not block the next one forever. An error while another queue
+    /// holds it.
     pub fn entrar(&self) -> Result<GuardaActiva<'_>, String> {
         if self.activa.swap(true, Ordering::AcqRel) {
             return Err("solo una Actualizar todo a la vez".to_string());
         }
         Ok(GuardaActiva(&self.activa))
-    }
-
-    /// Every accepted queue starts clean: Stop and abandonment reset.
-    pub fn reiniciar(&self) {
-        self.parar.store(false, Ordering::Relaxed);
-        self.suave.store(false, Ordering::Relaxed);
-    }
-
-    /// Whether the NEXT item must not start: Stop cut the queue (#16) or
-    /// the panel went away (graceful).
-    pub fn proximo_detenido(&self) -> bool {
-        self.parar.load(Ordering::Relaxed) || self.suave.load(Ordering::Relaxed)
     }
 }
 
@@ -205,18 +176,23 @@ fn correr_activa(
     let runner = (def.runner)().map_err(|e| e.to_string())?;
 
     // The queue is built on the real state at start: outdated, not
-    // excluded, in list order.
+    // excluded, not pinned (a Pineada is brew's own skip — Nuupa shows
+    // it as excluded and never updates it), in list order. Packages
+    // travel WHOLE: the type (brew) decides each row's update flag.
     let snap0 = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
-    let pendientes: Vec<String> = snap0
+    let pendientes: Vec<GlobalPackage> = snap0
         .packages
         .iter()
-        .filter(|p| p.outdated && !excluidos_de(dir_config, def.nombre).contains(&p.name))
-        .map(|p| p.name.clone())
+        .filter(|p| {
+            p.outdated && !p.pinned && !excluidos_de(dir_config, def.nombre).contains(&p.name)
+        })
+        .cloned()
         .collect();
     let total = pendientes.len();
     let (mut ok, mut failed, mut detenidos, mut saltados) = (0usize, 0usize, 0usize, 0usize);
 
-    for name in &pendientes {
+    for paquete in &pendientes {
+        let name = &paquete.name;
         if parar.load(Ordering::Relaxed) || suave.load(Ordering::Relaxed) {
             break;
         }
@@ -227,13 +203,21 @@ fn correr_activa(
             saltados += 1;
             continue;
         }
+        // Same contract as the individual path: the caller validates
+        // the name before building the update line (kernel::instalar
+        // only runs what it receives) — before the row announces, so a
+        // rejection never leaves a stuck updating row.
+        crate::kernel::validar_nombre(name).map_err(|e| e.to_string())?;
         emitir(&EventoCola::Empieza {
             paquete: name.clone(),
         });
+        // The update line is built per package by the def (single
+        // source of the verb; brew's per-row flag arrives with it).
+        let args = (def.args_update)(name, paquete.tipo.as_deref());
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let resultado = crate::kernel::instalar(
             runner.as_ref(),
-            def.verbo,
-            name,
+            &refs,
             &mut |linea| {
                 emitir(&EventoCola::Linea {
                     paquete: name.clone(),
@@ -297,7 +281,7 @@ fn correr_activa(
 mod tests {
     use super::*;
     use crate::kernel::testutil::FakeRunner;
-    use crate::kernel::{Runner, RunnerOutput};
+    use crate::kernel::{EspacioGlobal, GlobalPackage as Paquete, Runner, RunnerOutput};
     use std::io;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -316,7 +300,7 @@ mod tests {
         DefinicionGestor {
             nombre: "npm",
             comando: "npm i -g",
-            verbo: "install",
+            args_update: crate::args_npm,
             instalado: || true,
             runner: || {
                 Ok(Box::new(
@@ -362,6 +346,146 @@ mod tests {
         let (resumen, _) = cola_con(&def_de_prueba(), dir.path());
         // hunkdiff excluded: the queue is built WITHOUT it
         assert_eq!(resumen.total, 1);
+        assert_eq!(resumen.ok, 1);
+    }
+
+    // ---- brew-shaped queue fixtures (shared helpers) ----
+
+    /// brew's update line, as in the real table (see crate::args_brew).
+    fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+        let flag = match tipo {
+            Some("cask") => "--cask",
+            _ => "--formula",
+        };
+        vec!["upgrade".into(), flag.into(), name.into()]
+    }
+
+    fn paquete_brew(
+        tipo: &str,
+        nombre: &str,
+        installed: &str,
+        latest: &str,
+        outdated: bool,
+        pinned: bool,
+    ) -> Paquete {
+        Paquete {
+            tipo: Some(tipo.to_string()),
+            name: nombre.to_string(),
+            installed: installed.to_string(),
+            latest: Some(latest.to_string()),
+            outdated,
+            pinned,
+        }
+    }
+
+    fn espacio_brew(paquetes: Vec<Paquete>) -> EspacioGlobal {
+        EspacioGlobal {
+            version_gestor: "7.0.4".into(),
+            version_node: None,
+            packages: paquetes,
+        }
+    }
+
+    fn def_brew_con(
+        runner: fn() -> io::Result<Box<dyn Runner>>,
+        snapshot: fn(&dyn Runner) -> io::Result<EspacioGlobal>,
+    ) -> DefinicionGestor {
+        DefinicionGestor {
+            nombre: "brew",
+            comando: "brew upgrade",
+            args_update: args_brew,
+            instalado: || true,
+            runner,
+            snapshot,
+        }
+    }
+
+    #[test]
+    fn salta_a_los_pineados_de_brew() {
+        // A Pineada is brew's own skip (#38): the queue is built without
+        // it — attempting it would find no exact-line answer and fail.
+        fn snapshot_pineada(_: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(espacio_brew(vec![
+                paquete_brew("formula", "ffmpeg", "7.1", "8.0", true, true),
+                paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
+            ]))
+        }
+        fn runner_brew() -> io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                crate::kernel::testutil::FakeRunner::new("7.0.4").respuesta_exacta(
+                    "upgrade --formula wget",
+                    "Upgrading wget",
+                    0,
+                ),
+            ) as Box<dyn Runner>)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let def = def_brew_con(runner_brew, snapshot_pineada);
+        let (resumen, _) = cola_con(&def, dir.path());
+        assert_eq!(resumen.total, 1); // only wget: ffmpeg never enqueued
+        assert_eq!(resumen.ok, 1);
+        assert_eq!(resumen.failed, 0);
+    }
+
+    #[test]
+    fn la_cola_de_brew_actualiza_formula_y_cask_con_sus_flags() {
+        // Both kinds outdated: each row runs with ITS flag, in list
+        // order (formulae first).
+        fn snapshot_brew(_: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(espacio_brew(vec![
+                paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
+                paquete_brew("cask", "firefox", "142.0", "142.1", true, false),
+            ]))
+        }
+        fn runner_brew() -> io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                crate::kernel::testutil::FakeRunner::new("7.0.4")
+                    .respuesta_exacta("upgrade --formula wget", "Upgrading wget", 0)
+                    .respuesta_exacta("upgrade --cask firefox", "Upgrading firefox", 0),
+            ) as Box<dyn Runner>)
+        }
+        let def = def_brew_con(runner_brew, snapshot_brew);
+        let dir = tempfile::tempdir().unwrap();
+        let mut empiezan = Vec::new();
+        let banderas = Banderas::nuevas();
+        let (resumen, _) = correr(&def, dir.path(), &banderas, &mut |ev| {
+            if let EventoCola::Empieza { paquete } = ev {
+                empiezan.push(paquete.clone());
+            }
+        })
+        .unwrap();
+        assert_eq!(resumen.total, 2);
+        assert_eq!(resumen.ok, 2);
+        let esperado: Vec<String> = vec!["wget".into(), "firefox".into()];
+        assert_eq!(empiezan, esperado); // list order
+    }
+
+    #[test]
+    fn las_exclusiones_de_nuupa_aplican_tambien_a_los_casks() {
+        // Excluding the cask by (gestor=brew, paquete=firefox) — the
+        // same granular mechanism as npm, over brew's cask row.
+        fn snapshot_brew(_: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(espacio_brew(vec![
+                paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
+                paquete_brew("cask", "firefox", "142.0", "142.1", true, false),
+            ]))
+        }
+        fn runner_brew() -> io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                crate::kernel::testutil::FakeRunner::new("7.0.4").respuesta_exacta(
+                    "upgrade --formula wget",
+                    "Upgrading wget",
+                    0,
+                ),
+            ) as Box<dyn Runner>)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut mapa = std::collections::BTreeMap::new();
+        mapa.insert("brew".to_string(), vec!["firefox".to_string()]);
+        crate::exclusiones::guardar(dir.path(), &mapa).unwrap();
+        let def = def_brew_con(runner_brew, snapshot_brew);
+        let (resumen, _) = cola_con(&def, dir.path());
+        assert_eq!(resumen.total, 1); // only wget: the cask is excluded
         assert_eq!(resumen.ok, 1);
     }
 

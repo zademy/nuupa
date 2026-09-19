@@ -3,7 +3,6 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PanelGestor from "./PanelGestor.vue";
-import PanelHabilidades from "./PanelHabilidades.vue";
 import Icono from "./Icono.vue";
 import AcercaDe from "./AcercaDe.vue";
 import { crearLog } from "./store";
@@ -115,15 +114,6 @@ onUnmounted(() => desubscribir?.());
         >
           {{ g }}
         </button>
-        <!-- The skills tab does NOT depend on manager discovery: it is
-             always available (#26). -->
-        <button
-          :class="{ activa: activo === 'habilidades' }"
-          :aria-current="activo === 'habilidades' ? 'page' : undefined"
-          @click="activo = 'habilidades'"
-        >
-          {{ t("habilidades") }}
-        </button>
       </nav>
       <!-- Language toggle: shows the language it switches TO; English is
            the default on first launch. -->
@@ -161,8 +151,7 @@ onUnmounted(() => desubscribir?.());
       </button>
     </header>
 
-    <PanelHabilidades v-if="activo === 'habilidades'" :log="log" />
-    <PanelGestor v-else :key="activo" :gestor="activo" :log="log" />
+    <PanelGestor :key="activo" :gestor="activo" :log="log" />
 
     <AcercaDe v-if="mostrarAcerca" @cerrar="mostrarAcerca = false" />
   </main>

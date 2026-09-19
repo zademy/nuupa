@@ -22,13 +22,25 @@ use std::time::Duration;
 use std::os::unix::process::CommandExt;
 
 /// Global package: name, installed version, latest known version and
-/// whether it is outdated (computed in Rust: the UI never re-derives it).
+/// whether it is outdated (computed in Rust: the UI never re-derives
+/// it). `tipo` distinguishes a manager's package KINDS (brew: formula /
+/// cask); it is `None` for managers with a single kind and never
+/// reaches their tables. `pinned` is brew's own pin ("Pineada" in the
+/// glossary): shown as excluded, read-only — Nuupa never writes pins.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalPackage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tipo: Option<String>,
     pub name: String,
     pub installed: String,
     pub latest: Option<String>,
     pub outdated: bool,
+    #[serde(default, skip_serializing_if = "es_falso")]
+    pub pinned: bool,
+}
+
+fn es_falso(b: &bool) -> bool {
+    !*b
 }
 
 /// A manager's global space: its packages and versions, in the
@@ -153,10 +165,12 @@ pub(crate) fn armar(
                 .unwrap_or_else(|| installed.clone());
             let outdated_flag = latest != installed;
             GlobalPackage {
+                tipo: None,
                 name,
                 installed,
                 latest: Some(latest),
                 outdated: outdated_flag,
+                pinned: false,
             }
         })
         .collect::<Vec<_>>();
@@ -195,18 +209,17 @@ pub(crate) fn validar_nombre(name: &str) -> std::io::Result<()> {
 }
 
 /// Installs the latest version of a global package with the manager's
-/// verb (npm: install · pnpm/bun: add), streaming each line to `on_line`.
-/// The verb comes from the manager definition: single source.
+/// update arguments — the WHOLE command line, built per package by the
+/// manager definition (single source: npm/pnpm/bun differ in the verb,
+/// brew will differ in a per-row flag). Each output line streams to
+/// `on_line`. The name is validated by the caller (it builds the args).
 pub fn instalar(
     runner: &dyn Runner,
-    verbo: &str,
-    name: &str,
+    args: &[&str],
     on_line: &mut dyn FnMut(&str),
     parar: &std::sync::Arc<AtomicBool>,
 ) -> std::io::Result<UpdateOutcome> {
-    validar_nombre(name)?;
-    let spec = format!("{name}@latest");
-    let out = runner.run_streaming(&[verbo, "-g", &spec], on_line, parar)?;
+    let out = runner.run_streaming(args, on_line, parar)?;
     let mut output = out.stdout;
     if !out.stderr.trim().is_empty() {
         output.push('\n');
@@ -620,6 +633,8 @@ pub(crate) mod testutil {
         node: Option<String>,
         /// (first argument, stdout, exit) — matched by first argument.
         salidas: Vec<(&'static str, String, i32)>,
+        /// (joined arguments, stdout, exit) — matched by the WHOLE line.
+        exactas: Vec<(&'static str, String, i32)>,
         llamadas: RefCell<Vec<String>>,
     }
 
@@ -629,6 +644,7 @@ pub(crate) mod testutil {
                 gestor: gestor.into(),
                 node: Some("26.2.0".into()),
                 salidas: Vec::new(),
+                exactas: Vec::new(),
                 llamadas: RefCell::new(Vec::new()),
             }
         }
@@ -641,6 +657,13 @@ pub(crate) mod testutil {
         /// Answer for the command whose FIRST argument is `cmd`.
         pub fn respuesta(mut self, cmd: &'static str, stdout: &str, exit: i32) -> Self {
             self.salidas.push((cmd, stdout.into(), exit));
+            self
+        }
+
+        /// Answer for the command whose JOINED arguments are exactly
+        /// `linea` (asserts the whole command line: per-package args).
+        pub fn respuesta_exacta(mut self, linea: &'static str, stdout: &str, exit: i32) -> Self {
+            self.exactas.push((linea, stdout.into(), exit));
             self
         }
 
@@ -657,11 +680,13 @@ pub(crate) mod testutil {
             self.node.clone()
         }
         fn run(&self, args: &[&str]) -> std::io::Result<RunnerOutput> {
-            self.llamadas.borrow_mut().push(args.join(" "));
+            let linea = args.join(" ");
+            self.llamadas.borrow_mut().push(linea.clone());
             let primero = args.first().copied().unwrap_or_default();
-            self.salidas
+            self.exactas
                 .iter()
-                .find(|(cmd, _, _)| *cmd == primero)
+                .find(|(cmd, _, _)| *cmd == linea)
+                .or_else(|| self.salidas.iter().find(|(cmd, _, _)| *cmd == primero))
                 .map(|(_, stdout, exit)| RunnerOutput {
                     stdout: stdout.clone(),
                     stderr: String::new(),
@@ -670,7 +695,7 @@ pub(crate) mod testutil {
                 .ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("unexpected command: {primero}"),
+                        format!("unexpected command: {linea}"),
                     )
                 })
         }
@@ -773,13 +798,12 @@ mod tests {
     }
 
     #[test]
-    fn instalar_usa_el_verbo_del_gestor_y_streamea() {
+    fn instalar_usa_los_args_del_gestor_y_streamea() {
         let runner = runner_npm();
         let mut lineas = Vec::new();
         let out = instalar(
             &runner,
-            "install",
-            "hunkdiff",
+            &["install", "-g", "hunkdiff@latest"],
             &mut |l| lineas.push(l.to_string()),
             &sin_parar(),
         )
@@ -790,9 +814,15 @@ mod tests {
     }
 
     #[test]
-    fn instalar_con_verbo_add_sirve_a_pnpm_y_bun() {
+    fn instalar_con_add_g_sirve_a_pnpm_y_bun() {
         let runner = FakeRunner::new("10.33.0").respuesta("add", "Done in 1.5s", 0);
-        let out = instalar(&runner, "add", "cowsay", &mut |_| {}, &sin_parar()).unwrap();
+        let out = instalar(
+            &runner,
+            &["add", "-g", "cowsay@latest"],
+            &mut |_| {},
+            &sin_parar(),
+        )
+        .unwrap();
         assert!(out.success);
         assert!(runner.se_llamo_a("add -g cowsay@latest"));
     }
@@ -800,15 +830,36 @@ mod tests {
     #[test]
     fn instalar_fallido_devuelve_success_false() {
         let runner = FakeRunner::new("11.4.2").respuesta("install", "EACCES", 1);
-        let out = instalar(&runner, "install", "hunkdiff", &mut |_| {}, &sin_parar()).unwrap();
+        let out = instalar(
+            &runner,
+            &["install", "-g", "hunkdiff@latest"],
+            &mut |_| {},
+            &sin_parar(),
+        )
+        .unwrap();
         assert!(!out.success);
     }
 
     #[test]
-    fn instalar_rechaza_nombres_invalidos() {
-        let runner = runner_npm();
-        assert!(instalar(&runner, "install", "", &mut |_| {}, &sin_parar()).is_err());
-        assert!(instalar(&runner, "install", "--force", &mut |_| {}, &sin_parar()).is_err());
+    fn instalar_con_args_arbitrarios_no_valida_el_nombre() {
+        // Validation moved to the arg builders' callers: instalar only
+        // runs what it receives (the callers own the name).
+        let runner = FakeRunner::new("11.4.2").respuesta("upgrade", "ok", 0);
+        let out = instalar(
+            &runner,
+            &["upgrade", "--cask", "wine"],
+            &mut |_| {},
+            &sin_parar(),
+        );
+        assert!(out.is_ok());
+    }
+
+    #[test]
+    fn validar_nombre_rechaza_vacios_y_flags_disfrazados() {
+        assert!(validar_nombre("").is_err());
+        assert!(validar_nombre("--force").is_err());
+        assert!(validar_nombre("hunkdiff").is_ok());
+        assert!(validar_nombre("@alibaba-group/open-code-review").is_ok());
     }
 
     #[test]
@@ -816,8 +867,7 @@ mod tests {
         let runner = runner_npm();
         let out = instalar(
             &runner,
-            "install",
-            "@alibaba-group/open-code-review",
+            &["install", "-g", "@alibaba-group/open-code-review@latest"],
             &mut |_| {},
             &sin_parar(),
         )

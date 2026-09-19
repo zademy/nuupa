@@ -5,10 +5,10 @@
 //! flag): the cores are tested through their interface with toy managers,
 //! no Tauri, no environment.
 
+mod brew;
 mod bun;
 mod cola;
 mod exclusiones;
-mod habilidades;
 mod kernel;
 mod npm;
 mod plazo;
@@ -21,19 +21,33 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
-/// A supported manager: visible command, install verb and how its
-/// runners and its global space are discovered. The verb lives HERE,
-/// once per manager: the UI receives it through the seam (Snapshot), it
-/// never duplicates it. Adding a manager = adding one entry.
+/// A supported manager: visible command and how to build ONE package's
+/// update arguments. Both live HERE, once per manager: the UI receives
+/// the visible one through the seam (Snapshot), it never duplicates it.
+/// Adding a manager is ONE entry here plus its adapter module; shared
+/// behavior (kernel, queue, exclusions) already knows how to treat it.
+#[derive(Clone)]
 pub(crate) struct DefinicionGestor {
     pub(crate) nombre: &'static str,
     /// Visible command for the UI (tooltip): "npm i -g".
     pub(crate) comando: &'static str,
-    /// Install argument (install/add) that kernel::instalar runs.
-    pub(crate) verbo: &'static str,
+    /// The WHOLE update command line for ONE package, built from its
+    /// name and (brew-only) type: single source of the verb — node
+    /// managers differ in the verb, brew in a per-row flag.
+    pub(crate) args_update: fn(&str, Option<&str>) -> Vec<String>,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
     pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::EspacioGlobal>,
+}
+
+/// npm's update line: `npm i -g pkg@latest`.
+fn args_npm(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["install".into(), "-g".into(), format!("{name}@latest")]
+}
+
+/// pnpm/bun's update line: `<gestor> add -g pkg@latest`.
+fn args_add(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["add".into(), "-g".into(), format!("{name}@latest")]
 }
 
 fn runner_npm() -> std::io::Result<Box<dyn Runner>> {
@@ -48,11 +62,25 @@ fn runner_bun() -> std::io::Result<Box<dyn Runner>> {
     Ok(Box::new(bun::RealBunRunner::discover()?))
 }
 
+fn runner_brew() -> std::io::Result<Box<dyn Runner>> {
+    Ok(Box::new(brew::RealBrewRunner::discover()?))
+}
+
+/// brew's update line: the row's type picks the flag — always explicit,
+/// collision or not (`brew upgrade --formula wget`).
+fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+    let flag = match tipo {
+        Some(brew::TIPO_CASK) => "--cask",
+        _ => "--formula",
+    };
+    vec!["upgrade".into(), flag.into(), name.into()]
+}
+
 const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "npm",
         comando: "npm i -g",
-        verbo: "install",
+        args_update: args_npm,
         instalado: npm::instalado,
         runner: runner_npm,
         snapshot: npm::snapshot,
@@ -60,7 +88,7 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "pnpm",
         comando: "pnpm add -g",
-        verbo: "add",
+        args_update: args_add,
         instalado: pnpm::instalado,
         runner: runner_pnpm,
         snapshot: pnpm::snapshot,
@@ -68,10 +96,18 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "bun",
         comando: "bun add -g",
-        verbo: "add",
+        args_update: args_add,
         instalado: bun::instalado,
         runner: runner_bun,
         snapshot: bun::snapshot,
+    },
+    DefinicionGestor {
+        nombre: "brew",
+        comando: "brew upgrade",
+        args_update: args_brew,
+        instalado: brew::instalado,
+        runner: runner_brew,
+        snapshot: brew::snapshot,
     },
 ];
 
@@ -99,18 +135,22 @@ fn correr_snapshot(def: &DefinicionGestor) -> Result<Snapshot, String> {
     Ok(espacio.con_comando(def.comando))
 }
 
-/// Updates a package with the manager's verb; each output line leaves
+/// Updates a package with the manager's update line (built per package:
+/// verb and — for brew — the row's type flag); each output line leaves
 /// through `on_line` (the wrapper streams it as a `pm-output` event).
 fn correr_update(
     def: &DefinicionGestor,
     name: &str,
+    tipo: Option<&str>,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<UpdateOutcome, String> {
+    kernel::validar_nombre(name).map_err(|e| e.to_string())?;
     let runner = (def.runner)().map_err(|e| e.to_string())?;
+    let args = (def.args_update)(name, tipo);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     // An individual update has no Stop: a flag that never fires.
     let sin_parar = kernel::sin_parar();
-    kernel::instalar(runner.as_ref(), def.verbo, name, on_line, &sin_parar)
-        .map_err(|e| e.to_string())
+    kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar).map_err(|e| e.to_string())
 }
 
 /// The exclusions file's state for the UI (#17): "corrupto" BLOCKS all
@@ -260,13 +300,6 @@ struct Contexto {
     /// granular commands (even from different gestores' stores) must
     /// never interleave cargar/guardar — a lost update loses an exclusion.
     candado_exclusiones: Arc<Mutex<()>>,
-    /// Same single-writer rule for the skills manifest (#27): an install
-    /// is one read-modify-write, never interleaved.
-    candado_habilidades: Arc<Mutex<()>>,
-    /// The skills queue's OWN Stop/abandonment flags (#30) sharing the
-    /// ONE-active gate with the packages queue: both queues can never
-    /// run together.
-    banderas_habilidades: cola::Banderas,
 }
 
 /// Available tabs: supported AND installed managers on this machine
@@ -278,89 +311,6 @@ fn gestores_instalados() -> Vec<String> {
         .filter(|g| (g.instalado)())
         .map(|g| g.nombre.to_string())
         .collect()
-}
-
-// ---- Habilidades (#26) ----
-
-/// The skills tab's single data path (#28): scan + per-Gestionada SHA
-/// check. The scan is filesystem and network work: blocking on a pool
-/// thread like the package queries. A network failure marks ITS row
-/// (SinVerificar + reason); it never blocks the rest of the list.
-#[tauri::command]
-async fn listar_habilidades() -> Result<habilidades::SalidaHabilidades, String> {
-    let raiz = habilidades::carpeta_del_usuario()?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let proveedor = habilidades::ProveedorReal::nuevo()?;
-        Ok(habilidades::refrescar(&raiz, &proveedor))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Resolves the corrupt-manifest emergency by starting clean (#17):
-/// evidence (.corrupt) first, then a valid empty map — only with the
-/// user's explicit choice.
-#[tauri::command]
-fn habilidades_de_cero() -> Result<(), String> {
-    let raiz = habilidades::carpeta_del_usuario()?;
-    habilidades::empezar_de_cero(&raiz).map_err(|e| e.to_string())
-}
-
-/// Scans ONE origin (a GitHub repo or a direct skill's URL) and reports
-/// every skill found: Conforme or Inválida with its reason. NOTHING is
-/// activated here — the download lives in a throwaway staging dir.
-#[tauri::command]
-async fn escanear_origen(origen: String) -> Result<Vec<habilidades::HabilidadEscaneada>, String> {
-    let url = habilidades::parsear_origen(&origen)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let proveedor = habilidades::ProveedorReal::nuevo()?;
-        let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
-        habilidades::escanear(&proveedor, &url, staging.path())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Installs the selected rutas of ONE origin (the add flow's second
-/// step): per ruta — validate, fetch its SHA, activate by copy-and-swap,
-/// record the Origen. The manifest is written ONCE with every confirmed
-/// entry under the manifest's lock (#17: a corrupt one refuses writes).
-#[tauri::command]
-async fn instalar_habilidades(
-    origen: String,
-    rutas: Vec<String>,
-    estado: tauri::State<'_, Contexto>,
-) -> Result<Vec<habilidades::ResultadoInstalacion>, String> {
-    let url = habilidades::parsear_origen(&origen)?;
-    let candado = estado.candado_habilidades.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _candado = candado.lock().unwrap();
-        let raiz = habilidades::carpeta_del_usuario()?;
-        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
-        let proveedor = habilidades::ProveedorReal::nuevo()?;
-        let ahora = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let resultados = habilidades::instalar(&proveedor, &url, &rutas, &raiz, &mut mapa, ahora)?;
-        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())?;
-        Ok(resultados)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Opens ONE Habilidad's folder in the system file manager: the name is
-/// validated as a single safe component under the skills root — never a
-/// path, never a hidden or parent entry.
-#[tauri::command]
-async fn abrir_habilidad(nombre: String, app: tauri::AppHandle) -> Result<(), String> {
-    habilidades::nombre_seguro(&nombre)?;
-    let ruta = habilidades::carpeta_del_usuario()?.join(&nombre);
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_path(ruta.to_string_lossy(), None::<&str>)
-        .map_err(|e| e.to_string())
 }
 
 /// Lists the global packages of the manager's space.
@@ -383,16 +333,19 @@ struct OutputLine {
 }
 
 /// Updates a global package to its latest version; each output line
-/// arrives as a `pm-output` event for the log panel.
+/// arrives as a `pm-output` event for the log panel. `tipo` is the
+/// row's type when the manager has more than one kind of package
+/// (brew: formula/cask) — it decides the update line's flag.
 #[tauri::command]
 async fn update_package(
     gestor: String,
     name: String,
+    tipo: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<UpdateOutcome, String> {
     let def = def_gestor_en(GESTORES, &gestor)?;
     tauri::async_runtime::spawn_blocking(move || {
-        correr_update(def, &name, &mut |line| {
+        correr_update(def, &name, tipo.as_deref(), &mut |line| {
             let _ = app.emit(
                 "pm-output",
                 OutputLine {
@@ -454,113 +407,6 @@ fn quitar_exclusion(
         &gestor,
         &paquete,
     )
-}
-
-/// Updates ONE managed Habilidad to the latest content of its Origen
-/// (#29): the two-phase install over the SAVED origen — validate the new
-/// content before activation, then record the new SHA. Managed-only: a
-/// No gestionada has nothing to update FROM. One manifest write on
-/// success, under the manifest's lock.
-#[tauri::command]
-async fn actualizar_habilidad(
-    nombre: String,
-    estado: tauri::State<'_, Contexto>,
-) -> Result<(), String> {
-    habilidades::nombre_seguro(&nombre)?;
-    let candado = estado.candado_habilidades.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _candado = candado.lock().unwrap();
-        let raiz = habilidades::carpeta_del_usuario()?;
-        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
-        let proveedor = habilidades::ProveedorReal::nuevo()?;
-        let ahora = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        habilidades::actualizar(&proveedor, &nombre, &raiz, &mut mapa, ahora)?;
-        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// The skills queue's row event (`skills-cola`). Success is derivable:
-/// `motivo === "ok"`.
-#[derive(Clone, Serialize)]
-struct EventoHabilidad {
-    tipo: &'static str, // "empieza" | "resultado"
-    habilidad: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    salida: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    motivo: Option<Motivo>,
-}
-
-/// "Actualizar todo" over the skills (#30): sequential queue sharing the
-/// packages queue's ONE-active gate. Progress via `skills-cola`; on
-/// finish the UI refreshes (the manifest's new SHAs decide the states).
-#[tauri::command]
-async fn actualizar_habilidades_todo(
-    estado: tauri::State<'_, Contexto>,
-    app: tauri::AppHandle,
-) -> Result<Resumen, String> {
-    let candado = estado.candado_habilidades.clone();
-    let banderas = estado.banderas_habilidades.compartidas();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _candado = candado.lock().unwrap();
-        let raiz = habilidades::carpeta_del_usuario()?;
-        let mut mapa = habilidades::mapa_escriturable(&raiz)?;
-        let proveedor = habilidades::ProveedorReal::nuevo()?;
-        let ahora = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let resumen = habilidades::actualizar_todo(
-            &proveedor,
-            &raiz,
-            &mut mapa,
-            &banderas,
-            ahora,
-            &mut |ev| {
-                let e = match ev {
-                    habilidades::EventoColaHabilidades::Empieza { habilidad } => EventoHabilidad {
-                        tipo: "empieza",
-                        habilidad: habilidad.clone(),
-                        salida: None,
-                        motivo: None,
-                    },
-                    habilidades::EventoColaHabilidades::Resultado {
-                        habilidad,
-                        motivo,
-                        salida,
-                    } => EventoHabilidad {
-                        tipo: "resultado",
-                        habilidad: habilidad.clone(),
-                        salida: Some(salida.clone()),
-                        motivo: Some(*motivo),
-                    },
-                };
-                let _ = app.emit("skills-cola", e);
-            },
-        )?;
-        habilidades::guardar(&raiz, &mapa).map_err(|e| e.to_string())?;
-        Ok(resumen)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Stops the skills queue: nothing pending starts; the in-flight update
-/// finishes naturally (HTTP is bounded by its timeouts).
-#[tauri::command]
-fn detener_habilidades_todo(estado: tauri::State<Contexto>) {
-    estado.banderas_habilidades.detener();
-}
-
-/// The panel went away: finish the in-flight, start nothing new.
-#[tauri::command]
-fn abandonar_habilidades_todo(estado: tauri::State<Contexto>) {
-    estado.banderas_habilidades.abandonar();
 }
 
 /// "Update all": sequential queue in Rust. Progress via `pm-cola`
@@ -657,7 +503,6 @@ fn abandonar_actualizar_todo(estado: tauri::State<Contexto>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let dir_config = app
                 .path()
@@ -666,10 +511,8 @@ pub fn run() {
             let banderas = cola::Banderas::nuevas();
             app.manage(Contexto {
                 dir_config,
-                banderas_habilidades: cola::Banderas::con_guarda_compartida(banderas.activa()),
                 banderas,
                 candado_exclusiones: Arc::new(Mutex::new(())),
-                candado_habilidades: Arc::new(Mutex::new(())),
             });
             Ok(())
         })
@@ -681,15 +524,6 @@ pub fn run() {
             quitar_exclusion,
             exclusiones_de_cero,
             gestores_instalados,
-            listar_habilidades,
-            habilidades_de_cero,
-            abrir_habilidad,
-            escanear_origen,
-            instalar_habilidades,
-            actualizar_habilidad,
-            actualizar_habilidades_todo,
-            detener_habilidades_todo,
-            abandonar_habilidades_todo,
             actualizar_todo,
             detener_actualizar_todo,
             abandonar_actualizar_todo,
@@ -707,10 +541,19 @@ mod tests {
     // ---- dispatch over the table ----
 
     #[test]
-    fn npm_pnpm_y_bun_soportados() {
+    fn npm_pnpm_bun_y_brew_soportados() {
         assert!(validar_gestor("npm").is_ok());
         assert!(validar_gestor("pnpm").is_ok());
         assert!(validar_gestor("bun").is_ok());
+        assert!(validar_gestor("brew").is_ok());
+    }
+
+    #[test]
+    fn la_tabla_de_gestores_es_los_cuatro_en_orden() {
+        // The table drives tabs AND the diagnostics copy: brew closes
+        // the list.
+        let nombres: Vec<&str> = GESTORES.iter().map(|g| g.nombre).collect();
+        assert_eq!(nombres, vec!["npm", "pnpm", "bun", "brew"]);
     }
 
     #[test]
@@ -728,7 +571,7 @@ mod tests {
         DefinicionGestor {
             nombre: "falso",
             comando: "falso i -g",
-            verbo: "install",
+            args_update: args_npm,
             instalado: || true,
             runner: || {
                 Ok(Box::new(
@@ -753,12 +596,54 @@ mod tests {
     #[test]
     fn correr_update_usa_el_verbo_del_def_y_streamea_lineas() {
         let mut lineas = Vec::new();
-        let out = correr_update(&def_falsa(), "hunkdiff", &mut |l| {
+        let out = correr_update(&def_falsa(), "hunkdiff", None, &mut |l| {
             lineas.push(l.to_string())
         })
         .expect("valid update");
         assert!(out.success);
         assert_eq!(lineas, vec!["added 1 package in 2s"]);
+    }
+
+    #[test]
+    fn correr_update_arma_los_args_por_paquete() {
+        // A brew-shaped def: the args builder owns the WHOLE command line
+        // and varies it by the row's type — the seam brew needs (#36).
+        // The exact-line answers make a wrong command FAIL: only the
+        // built line succeeds.
+        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+            let flag = match tipo {
+                Some("cask") => "--cask",
+                _ => "--formula",
+            };
+            vec!["upgrade".into(), flag.into(), name.into()]
+        }
+        fn runner_brew() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                FakeRunner::new("7.0.4")
+                    .respuesta_exacta("upgrade --formula wget", "Upgrading wget", 0)
+                    .respuesta_exacta("upgrade --cask wine", "Upgrading wine", 0),
+            ) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            nombre: "brew",
+            comando: "brew upgrade",
+            args_update: args_brew,
+            instalado: || true,
+            runner: runner_brew,
+            snapshot: npm::snapshot,
+        };
+        correr_update(&def, "wget", None, &mut |_| {}).expect("formula line");
+        correr_update(&def, "wine", Some("cask"), &mut |_| {}).expect("cask line");
+    }
+
+    #[test]
+    fn correr_update_rechaza_nombres_invalidos() {
+        for nombre in ["", "--force"] {
+            assert!(
+                correr_update(&def_falsa(), nombre, None, &mut |_| {}).is_err(),
+                "{nombre} must not pass"
+            );
+        }
     }
 
     #[test]
@@ -772,7 +657,7 @@ mod tests {
             },
             ..def_falsa()
         };
-        let err = correr_update(&def, "hunkdiff", &mut |_| {}).unwrap_err();
+        let err = correr_update(&def, "hunkdiff", None, &mut |_| {}).unwrap_err();
         assert!(err.contains("no binary"));
     }
 

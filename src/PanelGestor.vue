@@ -254,15 +254,24 @@ onUnmounted(() => {
         <tbody>
           <tr
             v-for="p in packages"
-            :key="p.name"
+            :key="p.tipo ? `${p.tipo}/${p.name}` : p.name"
             :class="{
               desactualizado: p.outdated,
               error: hasError(p.name),
-              excluido: isExcluded(p.name),
+              excluido: isExcluded(p.name) || p.pinned,
             }"
             :title="hasError(p.name) ? detalleFallo(p.name) : undefined"
           >
-            <td class="nombre mono">{{ p.name }}</td>
+            <td class="nombre mono">
+              {{ p.name }}<!-- brew's kinds: a small type mark tells
+                   formula from cask apart (a collision shows two rows). -->
+              <span
+                v-if="p.tipo"
+                class="tipo"
+                :title="p.tipo === 'cask' ? t('tipoCask') : t('tipoFormula')"
+                >{{ p.tipo === "cask" ? "c" : "f" }}</span
+              >
+            </td>
             <td class="version mono">{{ p.installed }}</td>
             <td class="mono">
               <template v-if="p.outdated">
@@ -282,18 +291,30 @@ onUnmounted(() => {
                   {{ queue.stopped ? t("deteniendo") : t("actualizando") }}
                 </span>
                 <template v-else>
+                  <!-- A Pineada is brew's own exclusion: read-only — the
+                       toggle is disabled and says so; unpinning lives in
+                       brew, never here. -->
                   <button
                     class="excluir"
                     :class="{ activo: isExcluded(p.name) }"
                     :disabled="
+                      p.pinned ||
                       (!p.outdated && !isExcluded(p.name)) ||
                       excluyendoAhora(p.name) ||
                       estadoExclusiones !== 'ok'
                     "
                     :title="
-                      isExcluded(p.name) ? t('quitarExclusion') : t('excluir')
+                      p.pinned
+                        ? t('pineadaTitulo')
+                        : isExcluded(p.name)
+                          ? t('quitarExclusion')
+                          : t('excluir')
                     "
-                    :aria-label="t('excluirPaquete', { paquete: p.name })"
+                    :aria-label="
+                      p.pinned
+                        ? t('pineadaTitulo')
+                        : t('excluirPaquete', { paquete: p.name })
+                    "
                     @click="toggleExcluded(p.name)"
                   >
                     <Icono nombre="excluir" :tamano="13" />
@@ -308,7 +329,7 @@ onUnmounted(() => {
                       })
                     "
                     :aria-label="t('actualizarPaquete', { paquete: p.name })"
-                    @click="update(p.name)"
+                    @click="update(p.name, p.tipo)"
                   >
                     <Icono nombre="actualizar" :tamano="14" />
                   </button>
@@ -577,6 +598,14 @@ tbody tr:hover td {
 .nombre {
   font-weight: 500;
   color: var(--fg);
+}
+
+/* brew's kind mark (f/c): muted, one space from the name. */
+.tipo {
+  margin-left: 5px;
+  color: var(--fg-faint);
+  font-weight: 400;
+  cursor: help;
 }
 
 .version {
