@@ -201,10 +201,13 @@ fn correr_activa(
         emitir(&EventoCola::Empieza {
             paquete: name.clone(),
         });
+        // The update line is built per package by the def (single
+        // source of the verb; brew's per-row flag arrives with it).
+        let args = (def.args_update)(name, None);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let resultado = crate::kernel::instalar(
             runner.as_ref(),
-            def.verbo,
-            name,
+            &refs,
             &mut |linea| {
                 emitir(&EventoCola::Linea {
                     paquete: name.clone(),
@@ -287,7 +290,7 @@ mod tests {
         DefinicionGestor {
             nombre: "npm",
             comando: "npm i -g",
-            verbo: "install",
+            args_update: crate::args_npm,
             instalado: || true,
             runner: || {
                 Ok(Box::new(

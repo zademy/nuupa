@@ -20,19 +20,32 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
-/// A supported manager: visible command, install verb and how its
-/// runners and its global space are discovered. The verb lives HERE,
-/// once per manager: the UI receives it through the seam (Snapshot), it
-/// never duplicates it. Adding a manager = adding one entry.
+/// A supported manager: visible command and how to build ONE package's
+/// update arguments. Both live HERE, once per manager: the UI receives
+/// the visible one through the seam (Snapshot), it never duplicates it.
+/// Adding a manager = adding one entry.
+#[derive(Clone)]
 pub(crate) struct DefinicionGestor {
     pub(crate) nombre: &'static str,
     /// Visible command for the UI (tooltip): "npm i -g".
     pub(crate) comando: &'static str,
-    /// Install argument (install/add) that kernel::instalar runs.
-    pub(crate) verbo: &'static str,
+    /// The WHOLE update command line for ONE package, built from its
+    /// name and (brew-only) type: single source of the verb — node
+    /// managers differ in the verb, brew in a per-row flag.
+    pub(crate) args_update: fn(&str, Option<&str>) -> Vec<String>,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
     pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::EspacioGlobal>,
+}
+
+/// npm's update line: `npm i -g pkg@latest`.
+fn args_npm(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["install".into(), "-g".into(), format!("{name}@latest")]
+}
+
+/// pnpm/bun's update line: `<gestor> add -g pkg@latest`.
+fn args_add(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["add".into(), "-g".into(), format!("{name}@latest")]
 }
 
 fn runner_npm() -> std::io::Result<Box<dyn Runner>> {
@@ -51,7 +64,7 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "npm",
         comando: "npm i -g",
-        verbo: "install",
+        args_update: args_npm,
         instalado: npm::instalado,
         runner: runner_npm,
         snapshot: npm::snapshot,
@@ -59,7 +72,7 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "pnpm",
         comando: "pnpm add -g",
-        verbo: "add",
+        args_update: args_add,
         instalado: pnpm::instalado,
         runner: runner_pnpm,
         snapshot: pnpm::snapshot,
@@ -67,7 +80,7 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "bun",
         comando: "bun add -g",
-        verbo: "add",
+        args_update: args_add,
         instalado: bun::instalado,
         runner: runner_bun,
         snapshot: bun::snapshot,
@@ -98,18 +111,22 @@ fn correr_snapshot(def: &DefinicionGestor) -> Result<Snapshot, String> {
     Ok(espacio.con_comando(def.comando))
 }
 
-/// Updates a package with the manager's verb; each output line leaves
+/// Updates a package with the manager's update line (built per package:
+/// verb and — for brew — the row's type flag); each output line leaves
 /// through `on_line` (the wrapper streams it as a `pm-output` event).
 fn correr_update(
     def: &DefinicionGestor,
     name: &str,
+    tipo: Option<&str>,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<UpdateOutcome, String> {
+    kernel::validar_nombre(name).map_err(|e| e.to_string())?;
     let runner = (def.runner)().map_err(|e| e.to_string())?;
+    let args = (def.args_update)(name, tipo);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     // An individual update has no Stop: a flag that never fires.
     let sin_parar = kernel::sin_parar();
-    kernel::instalar(runner.as_ref(), def.verbo, name, on_line, &sin_parar)
-        .map_err(|e| e.to_string())
+    kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar).map_err(|e| e.to_string())
 }
 
 /// The exclusions file's state for the UI (#17): "corrupto" BLOCKS all
@@ -292,16 +309,19 @@ struct OutputLine {
 }
 
 /// Updates a global package to its latest version; each output line
-/// arrives as a `pm-output` event for the log panel.
+/// arrives as a `pm-output` event for the log panel. `tipo` is the
+/// row's type when the manager has more than one kind of package
+/// (brew: formula/cask) — it decides the update line's flag.
 #[tauri::command]
 async fn update_package(
     gestor: String,
     name: String,
+    tipo: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<UpdateOutcome, String> {
     let def = def_gestor_en(GESTORES, &gestor)?;
     tauri::async_runtime::spawn_blocking(move || {
-        correr_update(def, &name, &mut |line| {
+        correr_update(def, &name, tipo.as_deref(), &mut |line| {
             let _ = app.emit(
                 "pm-output",
                 OutputLine {
@@ -518,7 +538,7 @@ mod tests {
         DefinicionGestor {
             nombre: "falso",
             comando: "falso i -g",
-            verbo: "install",
+            args_update: args_npm,
             instalado: || true,
             runner: || {
                 Ok(Box::new(
@@ -543,12 +563,54 @@ mod tests {
     #[test]
     fn correr_update_usa_el_verbo_del_def_y_streamea_lineas() {
         let mut lineas = Vec::new();
-        let out = correr_update(&def_falsa(), "hunkdiff", &mut |l| {
+        let out = correr_update(&def_falsa(), "hunkdiff", None, &mut |l| {
             lineas.push(l.to_string())
         })
         .expect("valid update");
         assert!(out.success);
         assert_eq!(lineas, vec!["added 1 package in 2s"]);
+    }
+
+    #[test]
+    fn correr_update_arma_los_args_por_paquete() {
+        // A brew-shaped def: the args builder owns the WHOLE command line
+        // and varies it by the row's type — the seam brew needs (#36).
+        // The exact-line answers make a wrong command FAIL: only the
+        // built line succeeds.
+        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+            let flag = match tipo {
+                Some("cask") => "--cask",
+                _ => "--formula",
+            };
+            vec!["upgrade".into(), flag.into(), name.into()]
+        }
+        fn runner_brew() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                FakeRunner::new("7.0.4")
+                    .respuesta_exacta("upgrade --formula wget", "Upgrading wget", 0)
+                    .respuesta_exacta("upgrade --cask wine", "Upgrading wine", 0),
+            ) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            nombre: "brew",
+            comando: "brew upgrade",
+            args_update: args_brew,
+            instalado: || true,
+            runner: runner_brew,
+            snapshot: npm::snapshot,
+        };
+        correr_update(&def, "wget", None, &mut |_| {}).expect("formula line");
+        correr_update(&def, "wine", Some("cask"), &mut |_| {}).expect("cask line");
+    }
+
+    #[test]
+    fn correr_update_rechaza_nombres_invalidos() {
+        for nombre in ["", "--force"] {
+            assert!(
+                correr_update(&def_falsa(), nombre, None, &mut |_| {}).is_err(),
+                "{nombre} must not pass"
+            );
+        }
     }
 
     #[test]
@@ -562,7 +624,7 @@ mod tests {
             },
             ..def_falsa()
         };
-        let err = correr_update(&def, "hunkdiff", &mut |_| {}).unwrap_err();
+        let err = correr_update(&def, "hunkdiff", None, &mut |_| {}).unwrap_err();
         assert!(err.contains("no binary"));
     }
 
