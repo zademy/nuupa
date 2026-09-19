@@ -25,7 +25,8 @@ use std::os::unix::process::CommandExt;
 /// whether it is outdated (computed in Rust: the UI never re-derives
 /// it). `tipo` distinguishes a manager's package KINDS (brew: formula /
 /// cask); it is `None` for managers with a single kind and never
-/// reaches their tables.
+/// reaches their tables. `pinned` is brew's own pin ("Pineada" in the
+/// glossary): shown as excluded, read-only — Nuupa never writes pins.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalPackage {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,6 +35,12 @@ pub struct GlobalPackage {
     pub installed: String,
     pub latest: Option<String>,
     pub outdated: bool,
+    #[serde(default, skip_serializing_if = "es_falso")]
+    pub pinned: bool,
+}
+
+fn es_falso(b: &bool) -> bool {
+    !*b
 }
 
 /// A manager's global space: its packages and versions, in the
@@ -163,6 +170,7 @@ pub(crate) fn armar(
                 installed,
                 latest: Some(latest),
                 outdated: outdated_flag,
+                pinned: false,
             }
         })
         .collect::<Vec<_>>();

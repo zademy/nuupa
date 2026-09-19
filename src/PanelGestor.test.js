@@ -108,6 +108,48 @@ describe("PanelGestor montado", () => {
     expect(recibido).toEqual({ gestor: "brew", name: "wine", tipo: "cask" });
   });
 
+  it("una fila pineada de brew se ve excluida y su toggle queda de solo lectura", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", {
+      version_gestor: "7.0.4",
+      version_node: null,
+      comando_actualizar: "brew upgrade",
+      packages: [
+        {
+          tipo: "formula",
+          name: "ffmpeg",
+          installed: "7.1",
+          latest: "8.0",
+          outdated: true,
+          pinned: true,
+        },
+        {
+          tipo: "formula",
+          name: "wget",
+          installed: "1.25.0",
+          latest: "1.26.0",
+          outdated: true,
+          pinned: false,
+        },
+      ],
+    });
+    const c = montar("brew");
+    await flushPromises();
+    const ffmpeg = filaDe(c, "ffmpeg");
+    const wget = filaDe(c, "wget");
+    // the pinned row LOOKS excluded (brew's own skip)…
+    expect(ffmpeg.classes()).toContain("excluido");
+    expect(wget.classes()).not.toContain("excluido");
+    // …but its exclusion toggle is disabled and explains why
+    const togglePineado = ffmpeg.get("button.excluir");
+    expect(togglePineado.attributes("disabled")).toBeDefined();
+    expect(togglePineado.attributes("title")).toContain("Pinned in brew");
+    // a normal row's toggle stays enabled
+    expect(
+      filaDe(c, "wget").get("button.excluir").attributes("disabled"),
+    ).toBeUndefined();
+  });
+
   it("los eventos pm-cola mueven las fila por los cuatro motivos", async () => {
     const c = await montarCargado();
     const fila = filaDe(c, "hunkdiff");

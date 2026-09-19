@@ -258,7 +258,7 @@ onUnmounted(() => {
             :class="{
               desactualizado: p.outdated,
               error: hasError(p.name),
-              excluido: isExcluded(p.name),
+              excluido: isExcluded(p.name) || p.pinned,
             }"
             :title="hasError(p.name) ? detalleFallo(p.name) : undefined"
           >
@@ -291,16 +291,24 @@ onUnmounted(() => {
                   {{ queue.stopped ? t("deteniendo") : t("actualizando") }}
                 </span>
                 <template v-else>
+                  <!-- A Pineada is brew's own exclusion: read-only — the
+                       toggle is disabled and says so; unpinning lives in
+                       brew, never here. -->
                   <button
                     class="excluir"
                     :class="{ activo: isExcluded(p.name) }"
                     :disabled="
+                      p.pinned ||
                       (!p.outdated && !isExcluded(p.name)) ||
                       excluyendoAhora(p.name) ||
                       estadoExclusiones !== 'ok'
                     "
                     :title="
-                      isExcluded(p.name) ? t('quitarExclusion') : t('excluir')
+                      p.pinned
+                        ? t('pineadaTitulo')
+                        : isExcluded(p.name)
+                          ? t('quitarExclusion')
+                          : t('excluir')
                     "
                     :aria-label="t('excluirPaquete', { paquete: p.name })"
                     @click="toggleExcluded(p.name)"

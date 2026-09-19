@@ -208,7 +208,9 @@ fn tipo_orden(tipo: Option<&str>) -> u8 {
     }
 }
 
-/// One row from the parts: the outdated map decides latest + flag.
+/// One row from the parts: the outdated map decides latest + flag +
+/// pinned. A pinned formula only shows its pin when there IS an update
+/// to skip — exactly when it matters (brew reports pins in `outdated`).
 fn paquete(
     tipo: &str,
     nombre: String,
@@ -222,6 +224,7 @@ fn paquete(
             installed,
             latest: Some(d.latest.clone()),
             outdated: true,
+            pinned: d.pinned,
         },
         None => GlobalPackage {
             tipo: Some(tipo.to_string()),
@@ -229,6 +232,7 @@ fn paquete(
             latest: Some(installed.clone()),
             installed,
             outdated: false,
+            pinned: false,
         },
     }
 }
@@ -344,6 +348,9 @@ mod tests {
         let ffmpeg = fila(&snap, TIPO_FORMULA, "ffmpeg");
         assert!(ffmpeg.outdated);
         assert_eq!(ffmpeg.installed, "7.1, 7.1");
+        // the pin travels with the row (shown as excluded, read-only)
+        assert!(ffmpeg.pinned);
+        assert!(!wget.pinned);
         let firefox = fila(&snap, TIPO_CASK, "firefox");
         assert!(firefox.outdated);
         assert_eq!(firefox.latest.as_deref(), Some("142.1"));

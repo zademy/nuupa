@@ -176,13 +176,16 @@ fn correr_activa(
     let runner = (def.runner)().map_err(|e| e.to_string())?;
 
     // The queue is built on the real state at start: outdated, not
-    // excluded, in list order. Packages travel WHOLE: the type (brew)
-    // decides each row's update flag.
+    // excluded, not pinned (a Pineada is brew's own skip — Nuupa shows
+    // it as excluded and never updates it), in list order. Packages
+    // travel WHOLE: the type (brew) decides each row's update flag.
     let snap0 = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
     let pendientes: Vec<GlobalPackage> = snap0
         .packages
         .iter()
-        .filter(|p| p.outdated && !excluidos_de(dir_config, def.nombre).contains(&p.name))
+        .filter(|p| {
+            p.outdated && !p.pinned && !excluidos_de(dir_config, def.nombre).contains(&p.name)
+        })
         .cloned()
         .collect();
     let total = pendientes.len();
@@ -273,7 +276,7 @@ fn correr_activa(
 mod tests {
     use super::*;
     use crate::kernel::testutil::FakeRunner;
-    use crate::kernel::{Runner, RunnerOutput};
+    use crate::kernel::{EspacioGlobal, GlobalPackage as Paquete, Runner, RunnerOutput};
     use std::io;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -339,6 +342,65 @@ mod tests {
         // hunkdiff excluded: the queue is built WITHOUT it
         assert_eq!(resumen.total, 1);
         assert_eq!(resumen.ok, 1);
+    }
+
+    #[test]
+    fn salta_a_los_pineados_de_brew() {
+        // A Pineada is brew's own skip (#38): the queue is built without
+        // it — attempting it would find no exact-line answer and fail.
+        fn snapshot_pineada(_r: &dyn Runner) -> io::Result<EspacioGlobal> {
+            Ok(EspacioGlobal {
+                version_gestor: "7.0.4".into(),
+                version_node: None,
+                packages: vec![
+                    Paquete {
+                        tipo: Some("formula".into()),
+                        name: "ffmpeg".into(),
+                        installed: "7.1".into(),
+                        latest: Some("8.0".into()),
+                        outdated: true,
+                        pinned: true,
+                    },
+                    Paquete {
+                        tipo: Some("formula".into()),
+                        name: "wget".into(),
+                        installed: "1.25.0".into(),
+                        latest: Some("1.26.0".into()),
+                        outdated: true,
+                        pinned: false,
+                    },
+                ],
+            })
+        }
+        fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+            let flag = match tipo {
+                Some("cask") => "--cask",
+                _ => "--formula",
+            };
+            vec!["upgrade".into(), flag.into(), name.into()]
+        }
+        fn runner_brew() -> io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                crate::kernel::testutil::FakeRunner::new("7.0.4").respuesta_exacta(
+                    "upgrade --formula wget",
+                    "Upgrading wget",
+                    0,
+                ),
+            ) as Box<dyn Runner>)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let def = DefinicionGestor {
+            nombre: "brew",
+            comando: "brew upgrade",
+            args_update: args_brew,
+            instalado: || true,
+            runner: runner_brew,
+            snapshot: snapshot_pineada,
+        };
+        let (resumen, _) = cola_con(&def, dir.path());
+        assert_eq!(resumen.total, 1); // only wget: ffmpeg never enqueued
+        assert_eq!(resumen.ok, 1);
+        assert_eq!(resumen.failed, 0);
     }
 
     /// Runner with a side effect: installing its first package marks the
