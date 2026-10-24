@@ -762,13 +762,17 @@ describe("store de paquetes globales", () => {
     let refrescos = 0;
     const store = createPackagesStore(async (cmd, args) => {
       llamadas.push(cmd);
-      if (cmd === "get_excluded") return { estado: "ok", nombres: ["hunkdiff"] };
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
       if (cmd === "list_globals") {
         refrescos++;
         // tras el comando el gestor ya no lista el paquete
         return refrescos === 1
           ? SNAPSHOT
-          : { ...SNAPSHOT, packages: SNAPSHOT.packages.filter((p) => p.name !== "hunkdiff") };
+          : {
+              ...SNAPSHOT,
+              packages: SNAPSHOT.packages.filter((p) => p.name !== "hunkdiff"),
+            };
       }
       if (cmd === "uninstall_package") {
         expect(args).toEqual({ gestor: "npm", name: "hunkdiff" });
@@ -795,7 +799,8 @@ describe("store de paquetes globales", () => {
     const llamadas = [];
     const store = createPackagesStore(async (cmd) => {
       llamadas.push(cmd);
-      if (cmd === "get_excluded") return { estado: "ok", nombres: ["hunkdiff"] };
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
       if (cmd === "list_globals") return SNAPSHOT;
       if (cmd === "uninstall_package")
         return { success: false, output: "EACCES: permission denied" };
@@ -839,7 +844,11 @@ describe("store de paquetes globales", () => {
     await store.uninstall("hunkdiff"); // cola activa: ignorada
     expect(desinstalados).toEqual([]);
     store.queue.active = false; // simula el fin de la cola
-    store.procesarEventoCola({ gestor: "npm", tipo: "empieza", paquete: "hunkdiff" });
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
     await store.uninstall("hunkdiff"); // fila en curso: ignorada
     expect(desinstalados).toEqual([]);
     cola.catch(() => {});

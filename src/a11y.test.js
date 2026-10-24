@@ -59,13 +59,10 @@ describe("axe (accesibilidad)", () => {
   });
 
   it("chequea el modal de confirmación de Desinstalar (avisos por consola, sin gate)", async () => {
-    mount(
-      ConfirmarDesinstalar,
-      {
-        props: { gestor: "npm", paquete: "hunkdiff" },
-        attachTo: document.body,
-      },
-    );
+    mount(ConfirmarDesinstalar, {
+      props: { gestor: "npm", paquete: "hunkdiff" },
+      attachTo: document.body,
+    });
     await flushPromises();
     await avisarViolaciones();
   });

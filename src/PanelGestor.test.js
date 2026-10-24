@@ -439,18 +439,22 @@ describe("PanelGestor montado", () => {
     // fila en curso (update individual colgado): la papelera no está
     await filaDe(c, "hunkdiff").find("button.actualizar").trigger("click");
     await flushPromises();
-    expect(
-      filaDe(c, "hunkdiff").find("button.desinstalar").exists(),
-    ).toBe(false);
+    expect(filaDe(c, "hunkdiff").find("button.desinstalar").exists()).toBe(
+      false,
+    );
     // otra fila sigue usable…
     expect(
-      filaDe(c, "context-mode").find("button.desinstalar").attributes("disabled"),
+      filaDe(c, "context-mode")
+        .find("button.desinstalar")
+        .attributes("disabled"),
     ).toBeUndefined();
     // …hasta que Actualizar todo arranca
     await c.get("button.primario").trigger("click");
     await flushPromises();
     expect(
-      filaDe(c, "context-mode").find("button.desinstalar").attributes("disabled"),
+      filaDe(c, "context-mode")
+        .find("button.desinstalar")
+        .attributes("disabled"),
     ).toBeDefined();
   });
 
@@ -460,7 +464,9 @@ describe("PanelGestor montado", () => {
       version_gestor: "7.0.4",
       version_node: null,
       comando_actualizar: "brew upgrade",
-      packages: [{ name: "wget", installed: "1.0", latest: "1.0", outdated: false }],
+      packages: [
+        { name: "wget", installed: "1.0", latest: "1.0", outdated: false },
+      ],
     });
     const c = montar();
     await flushPromises();

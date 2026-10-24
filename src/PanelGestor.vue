@@ -47,7 +47,6 @@ const {
 
 const { t } = useI18n();
 
-
 // The pending Desinstalar (#44): the name whose trash was clicked.
 // The modal is its brake; confirming closes it and runs the row's
 // command.

@@ -58,8 +58,7 @@ export const MENSAJES = {
     quitarExclusion: "Remove exclusion (Update all will include it again)",
     desinstalar: "Uninstall",
     desinstalarPaquete: "Uninstall {paquete}",
-    desinstalarTitulo:
-      "Uninstall from the global space ({comando} {paquete})",
+    desinstalarTitulo: "Uninstall from the global space ({comando} {paquete})",
     desinstalarTituloModal: "Uninstall package",
     desinstalarCuerpo:
       "This uninstalls {paquete} from the global space of {gestor}. It cannot be undone.",
@@ -141,8 +140,7 @@ export const MENSAJES = {
     quitarExclusion: "Quitar exclusión (Actualizar todo volverá a incluirlo)",
     desinstalar: "Desinstalar",
     desinstalarPaquete: "Desinstalar {paquete}",
-    desinstalarTitulo:
-      "Desinstalar del espacio global ({comando} {paquete})",
+    desinstalarTitulo: "Desinstalar del espacio global ({comando} {paquete})",
     desinstalarTituloModal: "Desinstalar paquete",
     desinstalarCuerpo:
       "Se desinstalará {paquete} del espacio global de {gestor}. No se puede deshacer.",
