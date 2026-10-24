@@ -306,6 +306,7 @@ mod tests {
             comando_desinstalar: Some("npm uninstall -g"),
             args_update: crate::args_npm,
             args_uninstall: Some(crate::args_uninstall),
+            args_unpin: None,
             instalado: || true,
             runner: || {
                 Ok(Box::new(
@@ -399,7 +400,8 @@ mod tests {
             nombre: "brew",
             comando: "brew upgrade",
             comando_desinstalar: None,
-            args_uninstall: None, // #46: brew todavía no
+            args_uninstall: None, // la cola nunca desinstala
+            args_unpin: None,
             args_update: args_brew,
             instalado: || true,
             runner,
