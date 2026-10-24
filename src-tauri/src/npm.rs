@@ -54,24 +54,25 @@ fn ubicaciones_npm() -> (Option<PathBuf>, Vec<PathBuf>) {
 }
 
 /// Is npm on this machine? Presence check: node's own resolution
-/// (PATH → nvm → standard dirs) and, last, the login-shell probe
-/// (#43). Feeds which tabs exist.
+/// (PATH → nvm → standard dirs) and, last, the user-configured PATH
+/// probe (#43/#45 — login shell, registry on Windows). Feeds which
+/// tabs exist.
 pub fn instalado() -> bool {
     descubrir_bin_dir().is_some()
 }
 
-/// npm's discovery chain (#43): node's own resolution (PATH → nvm →
-/// standard dirs) and, only if it missed, the login-shell probe — the
-/// probed npm sits in the bin dir that owns its node (see
-/// [`guardar_path`]).
+/// npm's discovery chain (#43/#45): node's own resolution (PATH →
+/// nvm → standard dirs) and, only if it missed, the user-configured
+/// PATH probe — the probed npm sits in the bin dir that owns its
+/// node (see [`guardar_path`]).
 fn descubrir_bin_dir() -> Option<PathBuf> {
     ubicaciones_npm()
         .0
         .or_else(|| sondeo::capa("npm").and_then(|bin| bin.parent().map(PathBuf::from)))
 }
 
-/// npm's «not found» error (#43): everything looked at — node's usual
-/// dirs and the login shell's expanded paths.
+/// npm's «not found» error (#43/#45): everything looked at — node's
+/// usual dirs and the user-configured PATH's expanded paths.
 fn no_encontrado_npm() -> std::io::Error {
     let (_, mut buscadas) = ubicaciones_npm();
     buscadas.extend(sondeo::buscadas("npm"));

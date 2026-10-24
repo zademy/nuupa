@@ -37,14 +37,16 @@ fn ubicaciones_brew() -> Vec<PathBuf> {
 
 /// Is there a brew on this machine? Presence check: the environment
 /// PATH, the official prefixes, the login-shell probe (#43 — the
-/// probe layer skips brew on Windows by itself). Feeds which tabs
-/// exist: never true on Windows.
+/// probe layer skips brew on Windows by itself; the registry sondador
+/// never feeds it, #45). Feeds which tabs exist: never true on
+/// Windows.
 pub fn instalado() -> bool {
     descubrir_bin().is_some()
 }
 
 /// brew's discovery chain (#43): PATH → official prefixes → login
-/// shell probe. First hit wins.
+/// shell probe — the registry sondador (#45) never runs for brew:
+/// `sondeo_aplica` already keeps it out of Windows. First hit wins.
 fn descubrir_bin() -> Option<PathBuf> {
     descubrir_por_capas(
         || find_in_path(&con_extension("brew")),
