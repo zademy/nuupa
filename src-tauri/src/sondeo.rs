@@ -13,12 +13,13 @@ use crate::kernel::{con_extension, correr_consulta, primer_existente};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// La costura nueva del Descubrimiento (#43): ejecuta el shell de
-/// login del usuario ($SHELL, no interactivo) y reporta el PATH que
-/// ese shell configura — el que una app GUI no hereda. Los tests
-/// inyectan falsos de shell; el real es [`SondadorShell`].
+/// La costura nueva del Descubrimiento (#43): reporta el PATH que el
+/// usuario configura donde su sistema lo define y que una app GUI no
+/// hereda — el shell de login ($SHELL, no interactivo) en macOS/Linux;
+/// el registro de Windows llega en #45 con [`SondadorWindows`]. Los
+/// tests inyectan falsos de shell; el real es [`SondadorShell`].
 pub(crate) trait Sondador {
-    fn path_del_shell(&self) -> std::io::Result<Vec<PathBuf>>;
+    fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>>;
 }
 
 /// El sondeo de UNA sesión (#43): el PATH del shell se consulta una
@@ -26,7 +27,7 @@ pub(crate) trait Sondador {
 /// actualización y cola consumen lo cacheado, nunca re-sondean.
 #[derive(Default)]
 pub(crate) struct SesionSondeo {
-    path_shell: Option<Vec<PathBuf>>,
+    path_configurado: Option<Vec<PathBuf>>,
     binarios: BTreeMap<String, Option<PathBuf>>,
 }
 
@@ -38,12 +39,13 @@ pub(crate) fn sondeo_aplica(nombre: &str, so: &str) -> bool {
     !(nombre == "brew" && so == "windows")
 }
 
-/// Las rutas que la capa de sondeo miró para `nombre` — el PATH del
-/// shell de login, expandido a candidatos del gestor: alimentan el
-/// mensaje de «no encontrado» junto a las capas anteriores.
+/// Las rutas que la capa de sondeo miró para `nombre` — el PATH
+/// configurado por el usuario, expandido a candidatos del gestor:
+/// alimentan el mensaje de «no encontrado» junto a las capas
+/// anteriores.
 pub(crate) fn buscadas_sondeo(sesion: &SesionSondeo, nombre: &str) -> Vec<PathBuf> {
     sesion
-        .path_shell
+        .path_configurado
         .as_deref()
         .unwrap_or_default()
         .iter()
@@ -58,7 +60,7 @@ pub(crate) fn buscadas_sondeo(sesion: &SesionSondeo, nombre: &str) -> Vec<PathBu
 pub(crate) struct SondadorShell;
 
 impl Sondador for SondadorShell {
-    fn path_del_shell(&self) -> std::io::Result<Vec<PathBuf>> {
+    fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>> {
         let shell = std::env::var_os("SHELL")
             .map(PathBuf::from)
             .filter(|sh| !sh.as_os_str().is_empty())
@@ -121,13 +123,13 @@ pub(crate) fn capa_sondeo(
     if let Some(bin) = sesion.binarios.get(nombre) {
         return bin.clone();
     }
-    if sesion.path_shell.is_none() {
+    if sesion.path_configurado.is_none() {
         // El fallo (o vencimiento del Plazo) también queda cacheado:
         // la capa se omite por el resto de la sesión, no se reintenta.
-        sesion.path_shell = Some(sondador.path_del_shell().unwrap_or_default());
+        sesion.path_configurado = Some(sondador.path_configurado().unwrap_or_default());
     }
     let candidatos: Vec<PathBuf> = sesion
-        .path_shell
+        .path_configurado
         .as_deref()
         .unwrap_or_default()
         .iter()
@@ -188,7 +190,7 @@ mod tests {
     }
 
     impl Sondador for FalsoShell {
-        fn path_del_shell(&self) -> std::io::Result<Vec<PathBuf>> {
+        fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>> {
             *self.consultas.borrow_mut() += 1;
             match &self.respuesta {
                 RespuestaShell::Path(dirs) => Ok(dirs.clone()),
@@ -298,7 +300,7 @@ mod tests {
     #[ignore]
     #[cfg(not(windows))]
     fn el_shell_de_login_reporta_su_path() {
-        let dirs = SondadorShell.path_del_shell().expect("sondeo del shell");
+        let dirs = SondadorShell.path_configurado().expect("sondeo del shell");
         assert!(!dirs.is_empty(), "el PATH del shell de login llegó vacío");
     }
 
