@@ -5,9 +5,10 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, home, no_encontrado,
-    primer_existente, version_de, EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, descubrir_por_capas, find_in_path,
+    home, no_encontrado, primer_existente, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
+use crate::sondeo;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -25,9 +26,20 @@ fn ubicaciones_bun() -> Vec<PathBuf> {
     rutas
 }
 
-/// Is there a bun binary on this machine? Presence check (no spawn).
+/// Is there a bun on this machine? Presence check: the environment
+/// PATH, the standard locations, the login-shell probe (#43).
 pub fn instalado() -> bool {
-    find_in_path(&con_extension("bun")).is_some() || primer_existente(ubicaciones_bun()).is_some()
+    descubrir_bin().is_some()
+}
+
+/// bun's discovery chain (#43): PATH → standard locations → login
+/// shell probe. First hit wins.
+fn descubrir_bin() -> Option<PathBuf> {
+    descubrir_por_capas(
+        || find_in_path(&con_extension("bun")),
+        || primer_existente(ubicaciones_bun()),
+        || sondeo::capa("bun"),
+    )
 }
 
 /// bun's real runner: PATH or standard locations. bun does not depend on
@@ -39,10 +51,11 @@ pub struct RealBunRunner {
 
 impl RealBunRunner {
     pub fn discover() -> std::io::Result<Self> {
-        let buscadas = ubicaciones_bun();
-        let bin = find_in_path(&con_extension("bun"))
-            .or_else(|| primer_existente(buscadas.clone()))
-            .ok_or_else(|| no_encontrado("bun", &buscadas))?;
+        let bin = descubrir_bin().ok_or_else(|| {
+            let mut buscadas = ubicaciones_bun();
+            buscadas.extend(sondeo::buscadas("bun"));
+            no_encontrado("bun", &buscadas)
+        })?;
         let mut probe = std::process::Command::new(&bin);
         probe.arg("--version");
         let bun_version = version_de(probe).unwrap_or_else(|| "unknown".to_string());

@@ -5,9 +5,11 @@
 //! (`upgrade --formula|--cask`) lives in [`crate`]'s manager table.
 
 use crate::kernel::{
-    con_extension, correr_consulta, correr_instalacion, find_in_path, home, no_encontrado,
-    primer_existente, version_de, EspacioGlobal, GlobalPackage, Runner, RunnerOutput,
+    con_extension, correr_consulta, correr_instalacion, descubrir_por_capas, find_in_path, home,
+    no_encontrado, primer_existente, version_de, EspacioGlobal, GlobalPackage, Runner,
+    RunnerOutput,
 };
+use crate::sondeo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -33,10 +35,22 @@ fn ubicaciones_brew() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Is there a brew on this machine? Presence check (no spawn): feeds
-/// which tabs exist. Never true on Windows (no prefix, no binary).
+/// Is there a brew on this machine? Presence check: the environment
+/// PATH, the official prefixes, the login-shell probe (#43 — the
+/// probe layer skips brew on Windows by itself). Feeds which tabs
+/// exist: never true on Windows.
 pub fn instalado() -> bool {
-    find_in_path(&con_extension("brew")).is_some() || primer_existente(ubicaciones_brew()).is_some()
+    descubrir_bin().is_some()
+}
+
+/// brew's discovery chain (#43): PATH → official prefixes → login
+/// shell probe. First hit wins.
+fn descubrir_bin() -> Option<PathBuf> {
+    descubrir_por_capas(
+        || find_in_path(&con_extension("brew")),
+        || primer_existente(ubicaciones_brew()),
+        || sondeo::capa("brew"),
+    )
 }
 
 /// brew's real runner: the discovered binary. No node involved.
@@ -47,10 +61,11 @@ pub struct RealBrewRunner {
 
 impl RealBrewRunner {
     pub fn discover() -> std::io::Result<Self> {
-        let buscadas = ubicaciones_brew();
-        let bin = find_in_path(&con_extension("brew"))
-            .or_else(|| primer_existente(buscadas.clone()))
-            .ok_or_else(|| no_encontrado("brew", &buscadas))?;
+        let bin = descubrir_bin().ok_or_else(|| {
+            let mut buscadas = ubicaciones_brew();
+            buscadas.extend(sondeo::buscadas("brew"));
+            no_encontrado("brew", &buscadas)
+        })?;
         // `brew --version` answers "Homebrew 7.0.4\n...": the version
         // is the last token of the first line.
         let brew_version = version_de(Self::command(&bin, &["--version"]))
