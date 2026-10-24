@@ -12,6 +12,7 @@ const SNAPSHOT = {
   version_gestor: "11.4.2",
   version_node: "26.2.0",
   comando_actualizar: "npm i -g",
+  comando_desinstalar: "npm uninstall -g",
   packages: [
     {
       name: "@alibaba-group/open-code-review",
@@ -379,5 +380,111 @@ describe("PanelGestor montado", () => {
     // leaving the panel (tab switch): graceful, nothing cut
     c.unmount();
     expect(tauri.registradas("abandonar_actualizar_todo")).toHaveLength(1);
+  });
+
+  // ---- Desinstalar (#44): papelera → confirmación → fila fuera ----
+
+  it("la papelera es la tercera acción por fila y abre el modal con gestor y nombre", async () => {
+    const c = await montarCargado();
+    const papelera = filaDe(c, "hunkdiff").find("button.desinstalar");
+    expect(papelera.exists()).toBe(true);
+    expect(papelera.attributes("title")).toContain("npm uninstall -g hunkdiff");
+    expect(papelera.attributes("aria-label")).toContain("hunkdiff");
+    await papelera.trigger("click");
+    const dialogo = c.get('[role="dialog"]');
+    expect(dialogo.attributes("aria-modal")).toBe("true");
+    expect(dialogo.text()).toContain("npm");
+    expect(dialogo.text()).toContain("hunkdiff");
+    // Cancelar no tiene consecuencia
+    expect(tauri.registradas("uninstall_package")).toHaveLength(0);
+    await c.get("button.cancelar").trigger("click");
+    expect(c.find('[role="dialog"]').exists()).toBe(false);
+    expect(tauri.registradas("uninstall_package")).toHaveLength(0);
+  });
+
+  it("confirmar desinstala y la fila sale del listado tras el comando", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    let refrescos = 0;
+    tauri.responder("list_globals", () =>
+      ++refrescos === 1
+        ? SNAPSHOT
+        : {
+            ...SNAPSHOT,
+            packages: SNAPSHOT.packages.filter((p) => p.name !== "hunkdiff"),
+          },
+    );
+    tauri.responder("uninstall_package", {
+      success: true,
+      output: "removed 1 package in 1s",
+    });
+    const c = montar();
+    await flushPromises();
+    await filaDe(c, "hunkdiff").find("button.desinstalar").trigger("click");
+    await c.get("button.peligro").trigger("click");
+    await flushPromises();
+    expect(tauri.ultima("uninstall_package")?.args).toEqual({
+      gestor: "npm",
+      name: "hunkdiff",
+    });
+    expect(filaDe(c, "hunkdiff")).toBeUndefined();
+  });
+
+  it("deshabilitada durante Actualizar todo y ausente con la fila en curso", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", SNAPSHOT);
+    tauri.responder("actualizar_todo", () => new Promise(() => {})); // cuelga
+    tauri.responder("update_package", () => new Promise(() => {})); // cuelga
+    const c = montar();
+    await flushPromises();
+    // fila en curso (update individual colgado): la papelera no está
+    await filaDe(c, "hunkdiff").find("button.actualizar").trigger("click");
+    await flushPromises();
+    expect(
+      filaDe(c, "hunkdiff").find("button.desinstalar").exists(),
+    ).toBe(false);
+    // otra fila sigue usable…
+    expect(
+      filaDe(c, "context-mode").find("button.desinstalar").attributes("disabled"),
+    ).toBeUndefined();
+    // …hasta que Actualizar todo arranca
+    await c.get("button.primario").trigger("click");
+    await flushPromises();
+    expect(
+      filaDe(c, "context-mode").find("button.desinstalar").attributes("disabled"),
+    ).toBeDefined();
+  });
+
+  it("sin comando de desinstalación (brew hoy) no hay papelera", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", {
+      version_gestor: "7.0.4",
+      version_node: null,
+      comando_actualizar: "brew upgrade",
+      packages: [{ name: "wget", installed: "1.0", latest: "1.0", outdated: false }],
+    });
+    const c = montar();
+    await flushPromises();
+    expect(c.findAll("button.desinstalar")).toHaveLength(0);
+  });
+
+  it("el fallo del gestor deja el error visible en la fila y el panel sigue usable", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", SNAPSHOT);
+    tauri.responder("uninstall_package", {
+      success: false,
+      output: "EACCES: permission denied",
+    });
+    const c = montar();
+    await flushPromises();
+    await filaDe(c, "hunkdiff").find("button.desinstalar").trigger("click");
+    await c.get("button.peligro").trigger("click");
+    await flushPromises();
+    const fila = filaDe(c, "hunkdiff");
+    expect(fila.classes()).toContain("error");
+    expect(fila.attributes("title")).toContain("EACCES");
+    // reintentable: la papelera sigue ahí y habilitada
+    expect(
+      fila.find("button.desinstalar").attributes("disabled"),
+    ).toBeUndefined();
   });
 });
