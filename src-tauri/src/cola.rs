@@ -274,7 +274,7 @@ fn correr_activa(
         detenidos,
         detenida: ok + failed + detenidos + saltados < total,
     };
-    Ok((resumen, snapshot_final.con_comando(def.comando)))
+    Ok((resumen, snapshot_final.con_comando(def.comando, def.comando_desinstalar)))
 }
 
 #[cfg(test)]
@@ -671,6 +671,18 @@ mod tests {
             }
         );
         assert!(snap.espacio.packages.iter().all(|p| !p.outdated));
+    }
+
+    #[test]
+    fn el_snapshot_final_conserva_el_comando_de_desinstalar() {
+        // #44: without carrying it through, the trash would vanish
+        // from the table after "Update all" refreshes the list.
+        let dir = tempfile::tempdir().unwrap();
+        let (_, snap) = cola_con(&def_de_prueba(), dir.path());
+        assert_eq!(
+            snap.comando_desinstalar.as_deref(),
+            Some("npm uninstall -g")
+        );
     }
 
     #[test]

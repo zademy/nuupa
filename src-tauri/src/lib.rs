@@ -157,7 +157,7 @@ fn validar_gestor(gestor: &str) -> Result<(), String> {
 fn correr_snapshot(def: &DefinicionGestor) -> Result<Snapshot, String> {
     let runner = (def.runner)().map_err(|e| e.to_string())?;
     let espacio = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
-    Ok(espacio.con_comando(def.comando))
+    Ok(espacio.con_comando(def.comando, def.comando_desinstalar))
 }
 
 /// Updates a package with the manager's update line (built per package:
@@ -416,6 +416,36 @@ async fn update_package(
     .map_err(|e| e.to_string())?
 }
 
+/// Uninstalls a global package from its manager (#44): the mirror of
+/// `update_package` — blocking run in the pool, each output line as a
+/// `pm-output` event, update Plazo. On success the core already
+/// deleted the package's Excluded record (single writer).
+#[tauri::command]
+async fn uninstall_package(
+    gestor: String,
+    name: String,
+    app: tauri::AppHandle,
+    estado: tauri::State<'_, Contexto>,
+) -> Result<UpdateOutcome, String> {
+    let def = def_gestor_en(GESTORES, &gestor)?;
+    let dir = estado.dir_config.clone();
+    let candado = Arc::clone(&estado.candado_exclusiones);
+    tauri::async_runtime::spawn_blocking(move || {
+        correr_uninstall(def, &candado, &dir, &gestor, &name, &mut |line| {
+            let _ = app.emit(
+                "pm-output",
+                OutputLine {
+                    gestor: gestor.clone(),
+                    package: name.clone(),
+                    line: line.to_string(),
+                },
+            );
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn get_excluded(
     gestor: String,
@@ -575,6 +605,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_globals,
             update_package,
+            uninstall_package,
             get_excluded,
             excluir_paquete,
             quitar_exclusion,
@@ -909,6 +940,25 @@ mod tests {
         assert_eq!(
             nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
             ["hunkdiff"]
+        );
+    }
+
+    #[test]
+    fn correr_snapshot_incluye_el_comando_de_desinstalar() {
+        let snap = correr_snapshot(&def_falsa()).expect("valid snapshot");
+        assert_eq!(snap.comando_actualizar, "falso i -g");
+        assert_eq!(
+            snap.comando_desinstalar.as_deref(),
+            Some("falso uninstall -g")
+        );
+        // A gestor without the flow yet (brew, #46) crosses as None.
+        let sin_desinstalar = DefinicionGestor {
+            comando_desinstalar: None,
+            ..def_falsa()
+        };
+        assert_eq!(
+            correr_snapshot(&sin_desinstalar).unwrap().comando_desinstalar,
+            None
         );
     }
 
