@@ -38,16 +38,18 @@ pub(crate) struct DefinicionGestor {
     /// Visible command for the UI (tooltip): "npm i -g".
     pub(crate) comando: &'static str,
     /// Visible uninstall command for the UI (tooltip): "npm uninstall -g".
-    /// None while the manager has no uninstall flow (brew, #46).
     pub(crate) comando_desinstalar: Option<&'static str>,
     /// The WHOLE update command line for ONE package, built from its
     /// name and (brew-only) type: single source of the verb — node
     /// managers differ in the verb, brew in a per-row flag.
     pub(crate) args_update: ArgsPorPaquete,
     /// The WHOLE uninstall command line for ONE package, when the
-    /// manager supports it (node managers, #44); the shape mirrors
-    /// `args_update` so brew's flags (#46) drop in unchanged.
+    /// manager supports it (#44); the shape mirrors `args_update`.
     pub(crate) args_uninstall: Option<ArgsPorPaquete>,
+    /// The pin-removal line of a Pineada's Desinstalar (#46): brew
+    /// runs it BEFORE the uninstall — one sequence, both steps in
+    /// the log. None: the manager has no pins.
+    pub(crate) args_unpin: Option<fn(&str) -> Vec<String>>,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
     pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::EspacioGlobal>,
@@ -99,6 +101,22 @@ fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
     vec!["upgrade".into(), flag.into(), name.into()]
 }
 
+/// brew's uninstall line (#46): the row's type picks the flag,
+/// same shape as the update — never `--zap` (out of scope, #41).
+fn args_uninstall_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+    let flag = match tipo {
+        Some(brew::TIPO_CASK) => "--cask",
+        _ => "--formula",
+    };
+    vec!["uninstall".into(), flag.into(), name.into()]
+}
+
+/// brew's pin-removal line (#46): `brew unpin name`, the first
+/// half of a Pineada's Desinstalar.
+fn args_unpin_brew(name: &str) -> Vec<String> {
+    vec!["unpin".into(), name.into()]
+}
+
 const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "npm",
@@ -106,6 +124,7 @@ const GESTORES: &[DefinicionGestor] = &[
         comando_desinstalar: Some("npm uninstall -g"),
         args_update: args_npm,
         args_uninstall: Some(args_uninstall),
+        args_unpin: None,
         instalado: npm::instalado,
         runner: runner_npm,
         snapshot: npm::snapshot,
@@ -116,6 +135,7 @@ const GESTORES: &[DefinicionGestor] = &[
         comando_desinstalar: Some("pnpm rm -g"),
         args_update: args_add,
         args_uninstall: Some(args_rm),
+        args_unpin: None,
         instalado: pnpm::instalado,
         runner: runner_pnpm,
         snapshot: pnpm::snapshot,
@@ -126,6 +146,7 @@ const GESTORES: &[DefinicionGestor] = &[
         comando_desinstalar: Some("bun rm -g"),
         args_update: args_add,
         args_uninstall: Some(args_rm),
+        args_unpin: None,
         instalado: bun::instalado,
         runner: runner_bun,
         snapshot: bun::snapshot,
@@ -133,9 +154,10 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "brew",
         comando: "brew upgrade",
-        comando_desinstalar: None, // la papelera de brew llega en #46
+        comando_desinstalar: Some("brew uninstall"),
         args_update: args_brew,
-        args_uninstall: None,
+        args_uninstall: Some(args_uninstall_brew),
+        args_unpin: Some(args_unpin_brew),
         instalado: brew::instalado,
         runner: runner_brew,
         snapshot: brew::snapshot,
@@ -186,14 +208,16 @@ fn correr_update(
 
 /// Uninstalls a package with the manager's uninstall line (#44): a
 /// mirror of `correr_update` — name validation, blocking run under
-/// the update Plazo, line streaming. Node managers only: a gestor
-/// without `args_uninstall` (brew, #46) is refused here.
+/// the update Plazo, line streaming. brew's row type picks the
+/// uninstall flag (#46) and a Pineada runs its pin removal FIRST;
+/// a gestor without `args_uninstall` is refused here.
 fn correr_uninstall(
     def: &DefinicionGestor,
     candado: &Mutex<()>,
     dir: &Path,
-    gestor: &str,
     name: &str,
+    tipo: Option<&str>,
+    pineada: bool,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<UpdateOutcome, String> {
     kernel::validar_nombre(name).map_err(|e| e.to_string())?;
@@ -201,16 +225,29 @@ fn correr_uninstall(
         .args_uninstall
         .ok_or_else(|| format!("{} no admite Desinstalar todavía", def.nombre))?;
     let runner = (def.runner)().map_err(|e| e.to_string())?;
-    let args = args_uninstall(name, None);
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     // An individual uninstall has no Stop: a flag that never fires.
     let sin_parar = kernel::sin_parar();
+    if pineada {
+        if let Some(args_unpin) = def.args_unpin {
+            let args = args_unpin(name);
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let quitar_pineo = kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar)
+                .map_err(|e| e.to_string())?;
+            if !quitar_pineo.success {
+                // brew refused the unpin: nothing is uninstalled and
+                // the Excluded record survives with its package.
+                return Ok(quitar_pineo);
+            }
+        }
+    }
+    let args = args_uninstall(name, tipo);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let salida =
         kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar).map_err(|e| e.to_string())?;
     if salida.success {
         // The Excluded record dies with its package (#44); the single
         // writer keeps a neighbor's and another gestor's records.
-        nucleo_quitar(candado, dir, gestor, name)?;
+        nucleo_quitar(candado, dir, def.nombre, name)?;
     }
     Ok(salida)
 }
@@ -430,6 +467,8 @@ async fn update_package(
 async fn uninstall_package(
     gestor: String,
     name: String,
+    tipo: Option<String>,
+    pineada: bool,
     app: tauri::AppHandle,
     estado: tauri::State<'_, Contexto>,
 ) -> Result<UpdateOutcome, String> {
@@ -437,16 +476,24 @@ async fn uninstall_package(
     let dir = estado.dir_config.clone();
     let candado = Arc::clone(&estado.candado_exclusiones);
     tauri::async_runtime::spawn_blocking(move || {
-        correr_uninstall(def, &candado, &dir, &gestor, &name, &mut |line| {
-            let _ = app.emit(
-                "pm-output",
-                OutputLine {
-                    gestor: gestor.clone(),
-                    package: name.clone(),
-                    line: line.to_string(),
-                },
-            );
-        })
+        correr_uninstall(
+            def,
+            &candado,
+            &dir,
+            &name,
+            tipo.as_deref(),
+            pineada,
+            &mut |line| {
+                let _ = app.emit(
+                    "pm-output",
+                    OutputLine {
+                        gestor: gestor.clone(),
+                        package: name.clone(),
+                        line: line.to_string(),
+                    },
+                );
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -667,6 +714,7 @@ mod tests {
             comando_desinstalar: Some("falso uninstall -g"),
             args_update: args_npm,
             args_uninstall: Some(args_uninstall),
+            args_unpin: None,
             instalado: || true,
             runner: || {
                 Ok(Box::new(
@@ -726,6 +774,7 @@ mod tests {
             comando_desinstalar: None,
             args_update: args_brew,
             args_uninstall: None,
+            args_unpin: None,
             instalado: || true,
             runner: runner_brew,
             snapshot: npm::snapshot,
@@ -763,8 +812,8 @@ mod tests {
 
     #[test]
     fn args_de_desinstalacion_por_gestor_en_la_tabla() {
-        // Node managers only — brew's row arrives with its pineada
-        // flow (#46). npm: `uninstall -g`; pnpm/bun: `rm -g`.
+        // The table owns the verb: npm `uninstall -g`, pnpm/bun
+        // `rm -g`, brew the row's type flag (#46) — never `--zap`.
         let lineas: Vec<(&str, Option<String>)> = GESTORES
             .iter()
             .map(|g| {
@@ -780,8 +829,13 @@ mod tests {
                 ("npm", Some("uninstall -g cowsay".into())),
                 ("pnpm", Some("rm -g cowsay".into())),
                 ("bun", Some("rm -g cowsay".into())),
-                ("brew", None),
+                ("brew", Some("uninstall --formula cowsay".into())),
             ]
+        );
+        let brew = def_gestor_en(GESTORES, "brew").unwrap();
+        assert_eq!(
+            (brew.args_uninstall.unwrap())("cowsay", Some(brew::TIPO_CASK)).join(" "),
+            "uninstall --cask cowsay"
         );
     }
 
@@ -797,7 +851,7 @@ mod tests {
                 ("npm", Some("npm uninstall -g")),
                 ("pnpm", Some("pnpm rm -g")),
                 ("bun", Some("bun rm -g")),
-                ("brew", None),
+                ("brew", Some("brew uninstall")),
             ]
         );
     }
@@ -810,8 +864,9 @@ mod tests {
             &def_falsa(),
             &Mutex::new(()),
             dir.path(),
-            "falso",
             "hunkdiff",
+            None,
+            false,
             &mut |l| lineas.push(l.to_string()),
         )
         .expect("valid uninstall");
@@ -840,12 +895,179 @@ mod tests {
                 &def,
                 &Mutex::new(()),
                 dir.path(),
-                gestor,
                 "hunkdiff",
+                None,
+                false,
                 &mut |_| {},
             )
             .unwrap_or_else(|e| panic!("{gestor}: {e}"));
         }
+    }
+
+    #[test]
+    fn desinstalar_en_brew_lleva_el_flag_del_tipo_de_la_fila() {
+        // Exact-line answers: a wrong flag — or `--zap` — is an
+        // unexpected command and fails.
+        fn runner_brew() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                FakeRunner::new("7.0.4")
+                    .respuesta_exacta(
+                        "uninstall --formula wget",
+                        "Uninstalling /opt/homebrew/Cellar/wget",
+                        0,
+                    )
+                    .respuesta_exacta("uninstall --cask firefox", "Uninstalling firefox", 0),
+            ) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            runner: runner_brew,
+            ..def_gestor_en(GESTORES, "brew").unwrap().clone()
+        };
+        // formula and cask rows; a row without type defaults to formula
+        for (tipo, nombre) in [
+            (Some(brew::TIPO_FORMULA), "wget"),
+            (Some(brew::TIPO_CASK), "firefox"),
+            (None, "wget"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            correr_uninstall(
+                &def,
+                &Mutex::new(()),
+                dir.path(),
+                nombre,
+                tipo,
+                false,
+                &mut |_| {},
+            )
+            .unwrap_or_else(|e| panic!("{nombre}: {e}"));
+        }
+    }
+
+    #[test]
+    fn desinstalar_una_pineada_de_brew_ejecuta_unpin_y_luego_uninstall() {
+        fn runner_pineada() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                FakeRunner::new("7.0.4")
+                    .respuesta_exacta("unpin ffmpeg", "Unpinned ffmpeg", 0)
+                    .respuesta_exacta(
+                        "uninstall --formula ffmpeg",
+                        "Uninstalling /opt/homebrew/Cellar/ffmpeg",
+                        0,
+                    ),
+            ) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            runner: runner_pineada,
+            ..def_gestor_en(GESTORES, "brew").unwrap().clone()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "brew", "ffmpeg").unwrap();
+        let mut lineas = Vec::new();
+        let out = correr_uninstall(
+            &def,
+            &candado,
+            dir.path(),
+            "ffmpeg",
+            Some(brew::TIPO_FORMULA),
+            true,
+            &mut |l| lineas.push(l.to_string()),
+        )
+        .expect("valid sequence");
+        assert!(out.success);
+        // both steps in the log, in order: the pin goes first
+        assert_eq!(
+            lineas,
+            vec![
+                "Unpinned ffmpeg",
+                "Uninstalling /opt/homebrew/Cellar/ffmpeg"
+            ]
+        );
+        // the Excluded record died with its package
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "brew").unwrap().nombres,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn desinstalar_una_pineada_con_unpin_fallido_no_desinstala() {
+        // No answer for the uninstall line exists: running it after
+        // a failed unpin would be an unexpected command and fail.
+        fn runner_unpin_falla() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(FakeRunner::new("7.0.4").respuesta_exacta(
+                "unpin ffmpeg",
+                "Error: ffmpeg is not pinned",
+                1,
+            )) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            runner: runner_unpin_falla,
+            ..def_gestor_en(GESTORES, "brew").unwrap().clone()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "brew", "ffmpeg").unwrap();
+        let out = correr_uninstall(
+            &def,
+            &candado,
+            dir.path(),
+            "ffmpeg",
+            Some(brew::TIPO_FORMULA),
+            true,
+            &mut |_| {},
+        )
+        .expect("a failed unpin is a result, not an error");
+        assert!(!out.success);
+        assert!(out.output.contains("not pinned"));
+        // nothing was uninstalled: the Excluded record survives
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "brew").unwrap().nombres,
+            ["ffmpeg"]
+        );
+    }
+
+    #[test]
+    fn desinstalar_sin_pineo_no_ejecuta_unpin() {
+        // A normal brew row goes straight to its uninstall line.
+        fn runner_sin_unpin() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(FakeRunner::new("7.0.4").respuesta_exacta(
+                "uninstall --formula wget",
+                "Uninstalling wget",
+                0,
+            )) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            runner: runner_sin_unpin,
+            ..def_gestor_en(GESTORES, "brew").unwrap().clone()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let out = correr_uninstall(
+            &def,
+            &Mutex::new(()),
+            dir.path(),
+            "wget",
+            Some(brew::TIPO_FORMULA),
+            false,
+            &mut |_| {},
+        )
+        .expect("valid uninstall");
+        assert!(out.success);
+        // a confused pineada flag on a manager without pins (node)
+        // must not break its uninstall: there is no unpin to run
+        let mut lineas = Vec::new();
+        let out = correr_uninstall(
+            &def_falsa(),
+            &Mutex::new(()),
+            dir.path(),
+            "hunkdiff",
+            None,
+            true,
+            &mut |l| lineas.push(l.to_string()),
+        )
+        .expect("valid uninstall");
+        assert!(out.success);
+        assert_eq!(lineas, vec!["removed 1 package in 1s"]);
     }
 
     #[test]
@@ -857,8 +1079,9 @@ mod tests {
                     &def_falsa(),
                     &Mutex::new(()),
                     dir.path(),
-                    "falso",
                     nombre,
+                    None,
+                    false,
                     &mut |_| {},
                 )
                 .is_err(),
@@ -869,7 +1092,7 @@ mod tests {
 
     #[test]
     fn correr_uninstall_rechaza_un_gestor_sin_desinstalacion() {
-        // brew's row has no trash yet: its flow (with pineadas) is #46.
+        // A gestor without an uninstall flow never crosses this door.
         let def = DefinicionGestor {
             args_uninstall: None,
             ..def_falsa()
@@ -879,8 +1102,9 @@ mod tests {
             &def,
             &Mutex::new(()),
             dir.path(),
-            "falso",
             "hunkdiff",
+            None,
+            false,
             &mut |_| {},
         )
         .unwrap_err();
@@ -898,8 +1122,9 @@ mod tests {
             &def_falsa(),
             &candado,
             dir.path(),
-            "falso",
             "hunkdiff",
+            None,
+            false,
             &mut |_| {},
         )
         .expect("valid uninstall");
@@ -931,8 +1156,16 @@ mod tests {
             },
             ..def_falsa()
         };
-        let out = correr_uninstall(&def, &candado, dir.path(), "falso", "hunkdiff", &mut |_| {})
-            .expect("a gestor failure is a result, not an error");
+        let out = correr_uninstall(
+            &def,
+            &candado,
+            dir.path(),
+            "hunkdiff",
+            None,
+            false,
+            &mut |_| {},
+        )
+        .expect("a gestor failure is a result, not an error");
         assert!(!out.success);
         assert_eq!(
             nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
@@ -948,7 +1181,7 @@ mod tests {
             snap.comando_desinstalar.as_deref(),
             Some("falso uninstall -g")
         );
-        // A gestor without the flow yet (brew, #46) crosses as None.
+        // A gestor without the flow crosses as None.
         let sin_desinstalar = DefinicionGestor {
             comando_desinstalar: None,
             ..def_falsa()

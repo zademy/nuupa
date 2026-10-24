@@ -144,16 +144,23 @@ export function createPackagesStore(
 
   // Desinstalar (glossary): removes the package from ITS gestor's
   // global space. Mirror of `update` — row state, live log via
-  // pm-output, failure detail in the row. On success the row leaves
+  // pm-output, failure detail in the row. brew's row travels its
+  // type (formula/cask flag) and pin state (#46: a Pineada runs
+  // unpin + uninstall in the backend). On success the row leaves
   // the list (a refresh) and the Excluded record is gone: the
   // backend's single writer already deleted it, the store applies
   // exactly that (#44). Returns true/false; undefined if it was
   // refused (queue active or row in progress).
-  async function uninstall(name) {
+  async function uninstall(name, tipo = null, pineada = false) {
     if (queue.active || enCurso(name)) return;
     status[name] = ESTADO.DESINSTALANDO;
     try {
-      const res = await invokeFn("uninstall_package", { gestor, name });
+      const res = await invokeFn("uninstall_package", {
+        gestor,
+        name,
+        tipo,
+        pineada,
+      });
       if (res?.success) {
         delete status[name];
         delete detalle[name];
