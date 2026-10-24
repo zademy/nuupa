@@ -94,6 +94,16 @@ fn args_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
     vec!["upgrade".into(), flag.into(), name.into()]
 }
 
+/// brew's uninstall line (#46): the row's type picks the flag,
+/// same shape as the update — never `--zap` (out of scope, #41).
+fn args_uninstall_brew(name: &str, tipo: Option<&str>) -> Vec<String> {
+    let flag = match tipo {
+        Some(brew::TIPO_CASK) => "--cask",
+        _ => "--formula",
+    };
+    vec!["uninstall".into(), flag.into(), name.into()]
+}
+
 const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "npm",
@@ -128,9 +138,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "brew",
         comando: "brew upgrade",
-        comando_desinstalar: None, // la papelera de brew llega en #46
+        comando_desinstalar: Some("brew uninstall"),
         args_update: args_brew,
-        args_uninstall: None,
+        args_uninstall: Some(args_uninstall_brew),
         instalado: brew::instalado,
         runner: runner_brew,
         snapshot: brew::snapshot,
@@ -181,14 +191,16 @@ fn correr_update(
 
 /// Uninstalls a package with the manager's uninstall line (#44): a
 /// mirror of `correr_update` — name validation, blocking run under
-/// the update Plazo, line streaming. Node managers only: a gestor
-/// without `args_uninstall` (brew, #46) is refused here.
+/// the update Plazo, line streaming. brew's row type picks the
+/// uninstall flag (#46); a gestor without `args_uninstall` is
+/// refused here.
 fn correr_uninstall(
     def: &DefinicionGestor,
     candado: &Mutex<()>,
     dir: &Path,
     gestor: &str,
     name: &str,
+    tipo: Option<&str>,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<UpdateOutcome, String> {
     kernel::validar_nombre(name).map_err(|e| e.to_string())?;
@@ -196,7 +208,7 @@ fn correr_uninstall(
         .args_uninstall
         .ok_or_else(|| format!("{} no admite Desinstalar todavía", def.nombre))?;
     let runner = (def.runner)().map_err(|e| e.to_string())?;
-    let args = args_uninstall(name, None);
+    let args = args_uninstall(name, tipo);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     // An individual uninstall has no Stop: a flag that never fires.
     let sin_parar = kernel::sin_parar();
@@ -425,6 +437,7 @@ async fn update_package(
 async fn uninstall_package(
     gestor: String,
     name: String,
+    tipo: Option<String>,
     app: tauri::AppHandle,
     estado: tauri::State<'_, Contexto>,
 ) -> Result<UpdateOutcome, String> {
@@ -432,16 +445,24 @@ async fn uninstall_package(
     let dir = estado.dir_config.clone();
     let candado = Arc::clone(&estado.candado_exclusiones);
     tauri::async_runtime::spawn_blocking(move || {
-        correr_uninstall(def, &candado, &dir, &gestor, &name, &mut |line| {
-            let _ = app.emit(
-                "pm-output",
-                OutputLine {
-                    gestor: gestor.clone(),
-                    package: name.clone(),
-                    line: line.to_string(),
-                },
-            );
-        })
+        correr_uninstall(
+            def,
+            &candado,
+            &dir,
+            &gestor,
+            &name,
+            tipo.as_deref(),
+            &mut |line| {
+                let _ = app.emit(
+                    "pm-output",
+                    OutputLine {
+                        gestor: gestor.clone(),
+                        package: name.clone(),
+                        line: line.to_string(),
+                    },
+                );
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -758,8 +779,8 @@ mod tests {
 
     #[test]
     fn args_de_desinstalacion_por_gestor_en_la_tabla() {
-        // Node managers only — brew's row arrives with its pineada
-        // flow (#46). npm: `uninstall -g`; pnpm/bun: `rm -g`.
+        // The table owns the verb: npm `uninstall -g`, pnpm/bun
+        // `rm -g`, brew the row's type flag (#46) — never `--zap`.
         let lineas: Vec<(&str, Option<String>)> = GESTORES
             .iter()
             .map(|g| {
@@ -775,8 +796,13 @@ mod tests {
                 ("npm", Some("uninstall -g cowsay".into())),
                 ("pnpm", Some("rm -g cowsay".into())),
                 ("bun", Some("rm -g cowsay".into())),
-                ("brew", None),
+                ("brew", Some("uninstall --formula cowsay".into())),
             ]
+        );
+        let brew = def_gestor_en(GESTORES, "brew").unwrap();
+        assert_eq!(
+            (brew.args_uninstall.unwrap())("cowsay", Some(brew::TIPO_CASK)).join(" "),
+            "uninstall --cask cowsay"
         );
     }
 
@@ -792,7 +818,7 @@ mod tests {
                 ("npm", Some("npm uninstall -g")),
                 ("pnpm", Some("pnpm rm -g")),
                 ("bun", Some("bun rm -g")),
-                ("brew", None),
+                ("brew", Some("brew uninstall")),
             ]
         );
     }
@@ -807,6 +833,7 @@ mod tests {
             dir.path(),
             "falso",
             "hunkdiff",
+            None,
             &mut |l| lineas.push(l.to_string()),
         )
         .expect("valid uninstall");
@@ -837,9 +864,49 @@ mod tests {
                 dir.path(),
                 gestor,
                 "hunkdiff",
+                None,
                 &mut |_| {},
             )
             .unwrap_or_else(|e| panic!("{gestor}: {e}"));
+        }
+    }
+
+    #[test]
+    fn desinstalar_en_brew_lleva_el_flag_del_tipo_de_la_fila() {
+        // Exact-line answers: a wrong flag — or `--zap` — is an
+        // unexpected command and fails.
+        fn runner_brew() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                FakeRunner::new("7.0.4")
+                    .respuesta_exacta(
+                        "uninstall --formula wget",
+                        "Uninstalling /opt/homebrew/Cellar/wget",
+                        0,
+                    )
+                    .respuesta_exacta("uninstall --cask firefox", "Uninstalling firefox", 0),
+            ) as Box<dyn Runner>)
+        }
+        let def = DefinicionGestor {
+            runner: runner_brew,
+            ..def_gestor_en(GESTORES, "brew").unwrap().clone()
+        };
+        // formula and cask rows; a row without type defaults to formula
+        for (tipo, nombre) in [
+            (Some(brew::TIPO_FORMULA), "wget"),
+            (Some(brew::TIPO_CASK), "firefox"),
+            (None, "wget"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            correr_uninstall(
+                &def,
+                &Mutex::new(()),
+                dir.path(),
+                "brew",
+                nombre,
+                tipo,
+                &mut |_| {},
+            )
+            .unwrap_or_else(|e| panic!("{nombre}: {e}"));
         }
     }
 
@@ -854,6 +921,7 @@ mod tests {
                     dir.path(),
                     "falso",
                     nombre,
+                    None,
                     &mut |_| {},
                 )
                 .is_err(),
@@ -864,7 +932,7 @@ mod tests {
 
     #[test]
     fn correr_uninstall_rechaza_un_gestor_sin_desinstalacion() {
-        // brew's row has no trash yet: its flow (with pineadas) is #46.
+        // A gestor without an uninstall flow never crosses this door.
         let def = DefinicionGestor {
             args_uninstall: None,
             ..def_falsa()
@@ -876,6 +944,7 @@ mod tests {
             dir.path(),
             "falso",
             "hunkdiff",
+            None,
             &mut |_| {},
         )
         .unwrap_err();
@@ -895,6 +964,7 @@ mod tests {
             dir.path(),
             "falso",
             "hunkdiff",
+            None,
             &mut |_| {},
         )
         .expect("valid uninstall");
@@ -926,8 +996,16 @@ mod tests {
             },
             ..def_falsa()
         };
-        let out = correr_uninstall(&def, &candado, dir.path(), "falso", "hunkdiff", &mut |_| {})
-            .expect("a gestor failure is a result, not an error");
+        let out = correr_uninstall(
+            &def,
+            &candado,
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            None,
+            &mut |_| {},
+        )
+        .expect("a gestor failure is a result, not an error");
         assert!(!out.success);
         assert_eq!(
             nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
@@ -943,7 +1021,7 @@ mod tests {
             snap.comando_desinstalar.as_deref(),
             Some("falso uninstall -g")
         );
-        // A gestor without the flow yet (brew, #46) crosses as None.
+        // A gestor without the flow crosses as None.
         let sin_desinstalar = DefinicionGestor {
             comando_desinstalar: None,
             ..def_falsa()
