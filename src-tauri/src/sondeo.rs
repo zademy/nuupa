@@ -1,49 +1,56 @@
-//! Capa de sondeo del Descubrimiento (#43): el PATH que el usuario
-//! configura en su shell de login — el que una app GUI no hereda.
+//! Capa de sondeo del Descubrimiento (#43/#45): el PATH que el
+//! usuario configura donde su sistema lo define y que una app GUI
+//! no hereda — el shell de login en macOS/Linux, el registro de
+//! usuario y de máquina en Windows.
 //!
 //! Tercera capa, después del PATH del entorno y de las ubicaciones
 //! habituales: se consulta UNA vez por sesión (al arranque, cuando se
 //! deciden las pestañas) y su resultado lo consumen listado,
 //! actualización y cola a través del binario cacheado. Corre bajo el
 //! Plazo de consultas: si el shell falla o vence, la capa se omite y
-//! el arranque sigue. Windows lee el registro (#45, aún no): hoy sin
-//! `$SHELL` la capa simplemente se omite.
+//! el arranque sigue; en Windows, la rama del registro que falle no
+//! suma y las demás siguen. brew jamás se sondea en Windows.
 
 use crate::kernel::{con_extension, correr_consulta, primer_existente};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// La costura nueva del Descubrimiento (#43): ejecuta el shell de
-/// login del usuario ($SHELL, no interactivo) y reporta el PATH que
-/// ese shell configura — el que una app GUI no hereda. Los tests
-/// inyectan falsos de shell; el real es [`SondadorShell`].
+/// La costura nueva del Descubrimiento (#43, extendida en #45):
+/// reporta el PATH que el usuario configura donde su sistema lo
+/// define y que una app GUI no hereda — el shell de login ($SHELL,
+/// no interactivo) en macOS/Linux; en Windows, [`SondadorWindows`]
+/// lee el registro. Los tests inyectan falsos de shell; el real es
+/// [`SondadorShell`].
 pub(crate) trait Sondador {
-    fn path_del_shell(&self) -> std::io::Result<Vec<PathBuf>>;
+    fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>>;
 }
 
-/// El sondeo de UNA sesión (#43): el PATH del shell se consulta una
-/// sola vez y el binario resuelto por gestor queda cacheado — listado,
-/// actualización y cola consumen lo cacheado, nunca re-sondean.
+/// El sondeo de UNA sesión (#43): el PATH configurado se consulta
+/// una sola vez y el binario resuelto por gestor queda cacheado —
+/// listado, actualización y cola consumen lo cacheado, nunca
+/// re-sondean. En Windows aplica igual: el registro se lee una vez
+/// (#45).
 #[derive(Default)]
 pub(crate) struct SesionSondeo {
-    path_shell: Option<Vec<PathBuf>>,
+    path_configurado: Option<Vec<PathBuf>>,
     binarios: BTreeMap<String, Option<PathBuf>>,
 }
 
 /// ¿El gestor `nombre` se sondea en el sistema `so`? brew no existe
-/// en Windows (#43); los gestores de node van en todas las plataformas
-/// (el registro de Windows llega con #45: hoy, sin `$SHELL`, su capa
-/// simplemente se omite).
+/// en Windows (#43): ni se sondea ni su pestaña puede existir ahí;
+/// los gestores de node van en todas las plataformas (en Windows el
+/// sondeo lee el registro, #45).
 pub(crate) fn sondeo_aplica(nombre: &str, so: &str) -> bool {
     !(nombre == "brew" && so == "windows")
 }
 
-/// Las rutas que la capa de sondeo miró para `nombre` — el PATH del
-/// shell de login, expandido a candidatos del gestor: alimentan el
-/// mensaje de «no encontrado» junto a las capas anteriores.
+/// Las rutas que la capa de sondeo miró para `nombre` — el PATH
+/// configurado por el usuario, expandido a candidatos del gestor:
+/// alimentan el mensaje de «no encontrado» junto a las capas
+/// anteriores.
 pub(crate) fn buscadas_sondeo(sesion: &SesionSondeo, nombre: &str) -> Vec<PathBuf> {
     sesion
-        .path_shell
+        .path_configurado
         .as_deref()
         .unwrap_or_default()
         .iter()
@@ -58,7 +65,7 @@ pub(crate) fn buscadas_sondeo(sesion: &SesionSondeo, nombre: &str) -> Vec<PathBu
 pub(crate) struct SondadorShell;
 
 impl Sondador for SondadorShell {
-    fn path_del_shell(&self) -> std::io::Result<Vec<PathBuf>> {
+    fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>> {
         let shell = std::env::var_os("SHELL")
             .map(PathBuf::from)
             .filter(|sh| !sh.as_os_str().is_empty())
@@ -81,6 +88,90 @@ impl Sondador for SondadorShell {
     }
 }
 
+/// La costura del registro de Windows (#45): el PATH crudo —con
+/// `%REFERENCIAS%` sin expandir— que el usuario configura para sí
+/// (usuario) y para toda la máquina (máquina). El real es
+/// [`RegistroReg`] (`reg query`, bajo el Plazo de consultas, solo
+/// Windows); los tests inyectan falsos de registro en todas las
+/// plataformas.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) trait Registro {
+    fn path_usuario(&self) -> std::io::Result<String>;
+    fn path_maquina(&self) -> std::io::Result<String>;
+}
+
+/// El sondador de Windows (#45): donde el usuario configura su PATH
+/// es el registro — se suman el de usuario y el de máquina al del
+/// entorno ([`paths_de_registro`]). Una rama sin valor `Path` no tira
+/// la capa: aporta lo que haya, como el shell que falla deja la capa
+/// en lo que ya existe. Solo Windows lo ejerce desde [`capa`]; los
+/// tests lo ejercen en todas las plataformas con falsos de registro.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) struct SondadorWindows<'a> {
+    registro: &'a dyn Registro,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl<'a> SondadorWindows<'a> {
+    pub(crate) fn new(registro: &'a dyn Registro) -> Self {
+        Self { registro }
+    }
+}
+
+impl Sondador for SondadorWindows<'_> {
+    fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>> {
+        let usuario = self.registro.path_usuario().unwrap_or_default();
+        let maquina = self.registro.path_maquina().unwrap_or_default();
+        let entorno = std::env::var_os("PATH")
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        Ok(paths_de_registro(&entorno, &usuario, &maquina, &|nombre| {
+            std::env::var(nombre).ok()
+        }))
+    }
+}
+
+/// El registro de verdad (#45): `reg query` a las dos ramas donde
+/// Windows guarda el PATH — `HKCU\Environment` (usuario) y
+/// `HKLM\…\Session Manager\Environment` (máquina). Corre bajo el
+/// Plazo de consultas, como el sondaje del shell: un `reg.exe`
+/// colgado vence y esa rama no suma, sin congelar el arranque. El
+/// valor llega crudo (`%REFERENCIAS%` incluidas), como lo imprime
+/// reg.exe.
+#[cfg(windows)]
+pub(crate) struct RegistroReg;
+
+#[cfg(windows)]
+impl Registro for RegistroReg {
+    fn path_usuario(&self) -> std::io::Result<String> {
+        consultar(r"HKCU\Environment")
+    }
+
+    fn path_maquina(&self) -> std::io::Result<String> {
+        consultar(r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
+    }
+}
+
+/// Una consulta `reg query <rama> /v Path` bajo el Plazo: si la rama
+/// no trae el valor (exit != 0) es error — esa rama simplemente no
+/// suma a la capa.
+#[cfg(windows)]
+fn consultar(rama: &str) -> std::io::Result<String> {
+    let mut cmd = std::process::Command::new("reg");
+    cmd.args(["query", rama, "/v", "Path"]);
+    let out = correr_consulta(cmd)?;
+    if out.exit_code != 0 {
+        return Err(std::io::Error::other(format!(
+            "reg query de {rama} terminó con {}: la rama no suma",
+            out.exit_code
+        )));
+    }
+    path_del_reg(&out.stdout)
+        .map(str::to_string)
+        .ok_or_else(|| std::io::Error::other(format!("sin valor Path en {rama}")))
+}
+
 /// La sesión de sondeo de esta ejecución de la app: se llena al
 /// arranque (las pestañas) y la consumen listado, actualización y
 /// cola — el binario queda cacheado, no se re-sondea (#43).
@@ -97,7 +188,22 @@ pub(crate) fn capa(nombre: &str) -> Option<PathBuf> {
     SESION
         .lock()
         .ok()
-        .and_then(|mut sesion| capa_sondeo(nombre, &SondadorShell, &mut sesion))
+        .and_then(|mut sesion| capa_del_sistema(nombre, &mut sesion))
+}
+
+/// La capa de sondeo que toca a ESTE sistema: el registro en Windows
+/// (#45), el shell de login en macOS/Linux (#43). Mismo caché por
+/// sesión, mismo Plazo de consultas — solo cambia dónde vive el PATH
+/// configurado.
+#[cfg(windows)]
+fn capa_del_sistema(nombre: &str, sesion: &mut SesionSondeo) -> Option<PathBuf> {
+    static REGISTRO: RegistroReg = RegistroReg;
+    capa_sondeo(nombre, &SondadorWindows::new(&REGISTRO), sesion)
+}
+
+#[cfg(not(windows))]
+fn capa_del_sistema(nombre: &str, sesion: &mut SesionSondeo) -> Option<PathBuf> {
+    capa_sondeo(nombre, &SondadorShell, sesion)
 }
 
 /// Las rutas que la capa de sondeo miró para `nombre` en esta sesión:
@@ -110,9 +216,9 @@ pub(crate) fn buscadas(nombre: &str) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// La capa de sondeo como función pura: cache primero, shell UNA vez
-/// por sesión (su fallo también queda cacheado), y el binario es el
-/// primer hallazgo en el PATH del shell.
+/// La capa de sondeo como función pura: cache primero, sondaje UNA
+/// vez por sesión (su fallo también queda cacheado), y el binario es
+/// el primer hallazgo en el PATH configurado.
 pub(crate) fn capa_sondeo(
     nombre: &str,
     sondador: &dyn Sondador,
@@ -121,13 +227,13 @@ pub(crate) fn capa_sondeo(
     if let Some(bin) = sesion.binarios.get(nombre) {
         return bin.clone();
     }
-    if sesion.path_shell.is_none() {
+    if sesion.path_configurado.is_none() {
         // El fallo (o vencimiento del Plazo) también queda cacheado:
         // la capa se omite por el resto de la sesión, no se reintenta.
-        sesion.path_shell = Some(sondador.path_del_shell().unwrap_or_default());
+        sesion.path_configurado = Some(sondador.path_configurado().unwrap_or_default());
     }
     let candidatos: Vec<PathBuf> = sesion
-        .path_shell
+        .path_configurado
         .as_deref()
         .unwrap_or_default()
         .iter()
@@ -152,6 +258,94 @@ pub(crate) fn path_del_env(salida: &str) -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Lee el valor `Path` de la salida de `reg query ... /v Path` tal
+/// como la imprime reg.exe: la fila sangrada `    Path    TIPO
+/// VALOR`, donde el tipo (`REG_SZ`, `REG_EXPAND_SZ`, …) precede al
+/// valor separado por espacios y el valor puede contenerlos. Sin fila
+/// de valor (la rama existe pero el valor no) no hay nada que leer.
+/// La referencia cruda, sin expandir: eso lo hace
+/// [`expandir_referencias`]. La consume [`RegistroReg`] en Windows;
+/// los tests la ejercen en todas las plataformas.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn path_del_reg(salida: &str) -> Option<&str> {
+    salida.lines().find_map(|linea| {
+        let linea = linea.trim();
+        let resto = linea
+            .strip_prefix("Path")
+            .filter(|resto| resto.starts_with(char::is_whitespace))?
+            .trim_start();
+        let (tipo, valor) = resto.split_once(char::is_whitespace)?;
+        if !tipo.starts_with("REG_") {
+            return None;
+        }
+        let valor = valor.trim();
+        (!valor.is_empty()).then_some(valor)
+    })
+}
+
+/// Expande las `%REFERENCIAS%` de un valor del registro (los PATH de
+/// usuario y de máquina suelen ser `REG_EXPAND_SZ`): cada referencia
+/// con valor se reemplaza, las que no tienen valor quedan literales —
+/// el comportamiento de Windows — y un `%` suelto no se toca.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn expandir_referencias(valor: &str, vars: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut resultado = String::with_capacity(valor.len());
+    let mut resto = valor;
+    while let Some(inicio) = resto.find('%') {
+        resultado.push_str(&resto[..inicio]);
+        resto = &resto[inicio + 1..];
+        match resto.find('%') {
+            Some(fin) => {
+                let nombre = &resto[..fin];
+                match vars(nombre) {
+                    Some(valor_de_variable) => resultado.push_str(&valor_de_variable),
+                    // sin valor no hay nada que sustituir: queda literal
+                    None => resultado.push_str(&format!("%{nombre}%")),
+                }
+                resto = &resto[fin + 1..];
+            }
+            None => {
+                resultado.push('%');
+                break;
+            }
+        }
+    }
+    resultado.push_str(resto);
+    resultado
+}
+
+/// El PATH configurado en Windows (#45), como lógica pura: el del
+/// entorno más el de máquina y el de usuario del registro, separados
+/// por `;`, vacíos fuera y sin repetidos. El orden es el del ticket:
+/// primero el entorno (la combinación que el inicio de sesión ya
+/// hizo), luego el registro en el orden en que Windows lo construye —
+/// máquina antes que usuario. Las `%REFERENCIAS%` de los valores del
+/// registro se expanden con `vars`; el entorno ya llega expandido.
+/// En Windows la ejerce [`SondadorWindows`]; los tests la ejercen en
+/// todas las plataformas.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn paths_de_registro(
+    entorno: &str,
+    usuario: &str,
+    maquina: &str,
+    vars: &dyn Fn(&str) -> Option<String>,
+) -> Vec<PathBuf> {
+    let usuario = expandir_referencias(usuario, vars);
+    let maquina = expandir_referencias(maquina, vars);
+    let mut vistas: std::collections::BTreeSet<std::ffi::OsString> = Default::default();
+    entorno
+        .split(';')
+        .chain(maquina.split(';'))
+        .chain(usuario.split(';'))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        // el registro repite lo que el entorno ya trae: gana la
+        // primera aparición, las repetidas no generan candidatos
+        .filter(|dir| vistas.insert(dir.clone().into_os_string()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -188,7 +382,7 @@ mod tests {
     }
 
     impl Sondador for FalsoShell {
-        fn path_del_shell(&self) -> std::io::Result<Vec<PathBuf>> {
+        fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>> {
             *self.consultas.borrow_mut() += 1;
             match &self.respuesta {
                 RespuestaShell::Path(dirs) => Ok(dirs.clone()),
@@ -298,8 +492,23 @@ mod tests {
     #[ignore]
     #[cfg(not(windows))]
     fn el_shell_de_login_reporta_su_path() {
-        let dirs = SondadorShell.path_del_shell().expect("sondeo del shell");
+        let dirs = SondadorShell.path_configurado().expect("sondeo del shell");
         assert!(!dirs.is_empty(), "el PATH del shell de login llegó vacío");
+    }
+
+    /// Smoke manual en la máquina REAL de Windows (`cargo test --
+    /// --ignored`): el registro reporta un PATH usable, con las ramas
+    /// de usuario y de máquina sumadas al del entorno. La ejecución
+    /// normal no lo corre: lee el registro de verdad.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn el_registro_reporta_los_paths() {
+        let registro = RegistroReg;
+        let dirs = SondadorWindows::new(&registro)
+            .path_configurado()
+            .expect("sondeo del registro");
+        assert!(!dirs.is_empty(), "el PATH del registro llegó vacío");
     }
 
     #[test]
@@ -318,5 +527,222 @@ mod tests {
     #[test]
     fn path_del_env_sin_linea_path_es_vacio() {
         assert!(path_del_env("HOME=/Users/ejemplo\nSHELL=/bin/zsh").is_empty());
+    }
+
+    // ---- Registro de Windows (#45): lógica pura con falsos de registro ----
+
+    /// Falso de variables de entorno para expandir `%REFERENCIAS%` sin
+    /// depender del entorno real de la máquina que corre el test.
+    fn sin_variables(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn paths_de_registro_suma_entorno_y_registro_en_orden() {
+        assert_eq!(
+            paths_de_registro(
+                "C:\\Windows\\system32;C:\\Windows",
+                "%HOMEDRIVE%\\herramientas",
+                "C:\\Archivos de programa\\nodejs;;C:\\Windows",
+                &sin_variables,
+            ),
+            vec![
+                PathBuf::from("C:\\Windows\\system32"),
+                PathBuf::from("C:\\Windows"),
+                PathBuf::from("C:\\Archivos de programa\\nodejs"),
+                // una referencia sin valor queda literal, como en Windows
+                PathBuf::from("%HOMEDRIVE%\\herramientas"),
+            ]
+        );
+    }
+
+    #[test]
+    fn expandir_referencias_resuelve_las_variables_y_deja_las_desconocidas() {
+        let appdata = |nombre: &str| {
+            (nombre == "APPDATA").then(|| "C:\\Usuarios\\ej\\AppData\\Roaming".to_string())
+        };
+        assert_eq!(
+            expandir_referencias("%APPDATA%\\npm;%DESCONOCIDA%\\bin", &appdata),
+            "C:\\Usuarios\\ej\\AppData\\Roaming\\npm;%DESCONOCIDA%\\bin"
+        );
+        // un % suelto (un directorio llamado «100%») no se toca
+        assert_eq!(
+            expandir_referencias("D:\\100%\\listo", &appdata),
+            "D:\\100%\\listo"
+        );
+    }
+
+    #[test]
+    fn paths_de_registro_expande_las_referencias_del_registro() {
+        let appdata = |nombre: &str| {
+            (nombre == "APPDATA").then(|| "C:\\Usuarios\\ej\\AppData\\Roaming".to_string())
+        };
+        assert_eq!(
+            paths_de_registro("C:\\Windows", "%APPDATA%\\npm", "", &appdata),
+            vec![
+                PathBuf::from("C:\\Windows"),
+                PathBuf::from("C:\\Usuarios\\ej\\AppData\\Roaming\\npm"),
+            ]
+        );
+    }
+
+    #[test]
+    fn path_del_reg_toma_el_valor_tras_el_tipo() {
+        // salida de `reg query HKCU\Environment /v Path` (REG_EXPAND_SZ)
+        let usuario = "\r\n\
+             HKEY_CURRENT_USER\\Environment\r\n\
+             \x20   Path    REG_EXPAND_SZ    %USERPROFILE%\\bin;%APPDATA%\\npm\r\n\r\n";
+        assert_eq!(
+            path_del_reg(usuario),
+            Some("%USERPROFILE%\\bin;%APPDATA%\\npm")
+        );
+        // salida de la rama de máquina (REG_SZ, valor con espacios)
+        let maquina = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n\
+             \x20   Path    REG_SZ    C:\\Program Files\\nodejs;C:\\Windows\r\n";
+        assert_eq!(
+            path_del_reg(maquina),
+            Some("C:\\Program Files\\nodejs;C:\\Windows")
+        );
+    }
+
+    #[test]
+    fn path_del_reg_sin_fila_de_valor_es_ninguno() {
+        // la rama existe pero el valor Path no: reg.exe responde con error
+        // (exit != 0) y sin fila de valor — nada que leer
+        assert_eq!(path_del_reg("HKEY_CURRENT_USER\\Environment\r\n"), None);
+        // una fila de valor sin contenido tampoco aporta
+        assert_eq!(path_del_reg("    Path    REG_SZ    \r\n"), None);
+    }
+
+    /// Falso de registro (#45): responde los PATH crudos de usuario y
+    /// de máquina contando las lecturas — el contrato de «una vez por
+    /// sesión» se prueba aquí, sin tocar el registro de verdad.
+    struct FalsoRegistro {
+        usuario: Result<String, String>,
+        maquina: Result<String, String>,
+        lecturas: std::cell::RefCell<usize>,
+    }
+
+    impl FalsoRegistro {
+        fn con_paths(usuario: &str, maquina: &str) -> Self {
+            Self {
+                usuario: Ok(usuario.to_string()),
+                maquina: Ok(maquina.to_string()),
+                lecturas: std::cell::RefCell::new(0),
+            }
+        }
+
+        fn que_falla() -> Self {
+            Self {
+                usuario: Err("registro inaccesible".to_string()),
+                maquina: Err("registro inaccesible".to_string()),
+                lecturas: std::cell::RefCell::new(0),
+            }
+        }
+    }
+
+    impl Registro for FalsoRegistro {
+        fn path_usuario(&self) -> std::io::Result<String> {
+            *self.lecturas.borrow_mut() += 1;
+            self.usuario.clone().map_err(std::io::Error::other)
+        }
+
+        fn path_maquina(&self) -> std::io::Result<String> {
+            *self.lecturas.borrow_mut() += 1;
+            self.maquina.clone().map_err(std::io::Error::other)
+        }
+    }
+
+    #[test]
+    fn el_sondador_de_windows_suma_entorno_y_registro() {
+        // nombres de archivo que no existen en el PATH de ningún runner:
+        // la resolución no puede colisionar con binarios preinstalados
+        let dir = tempfile::tempdir().unwrap();
+        let del_usuario = dir.path().join("del_usuario");
+        let de_maquina = dir.path().join("de_maquina");
+        dir_con_bin(&del_usuario, "fantasma45");
+        dir_con_bin(&de_maquina, "fantasma45b");
+        // los PATH del registro llegan crudos, con `%REFERENCIAS%` sin
+        // expandir incluidas: aquí van expandidos para no depender del
+        // entorno de la máquina que corre el test
+        let falso = FalsoRegistro::con_paths(
+            &del_usuario.display().to_string(),
+            &de_maquina.display().to_string(),
+        );
+        let mut sesion = SesionSondeo::default();
+        // la capa resuelve el binario de usuario…
+        assert_eq!(
+            capa_sondeo("fantasma45", &SondadorWindows::new(&falso), &mut sesion),
+            Some(del_usuario.join(con_extension("fantasma45")))
+        );
+        // …y el de máquina: ambos quedaron en el PATH configurado
+        assert_eq!(
+            capa_sondeo("fantasma45b", &SondadorWindows::new(&falso), &mut sesion),
+            Some(de_maquina.join(con_extension("fantasma45b")))
+        );
+    }
+
+    #[test]
+    fn el_registro_se_consulta_una_vez_por_sesion() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("volta");
+        dir_con_bin(&bin_dir, "fantasma45");
+        let falso = FalsoRegistro::con_paths(&bin_dir.display().to_string(), "C:\\Windows");
+        let sondador = SondadorWindows::new(&falso);
+        let mut sesion = SesionSondeo::default();
+        assert!(capa_sondeo("fantasma45", &sondador, &mut sesion).is_some());
+        let _ = capa_sondeo("fantasma45", &sondador, &mut sesion);
+        let _ = capa_sondeo("otro", &sondador, &mut sesion);
+        assert_eq!(
+            *falso.lecturas.borrow(),
+            2,
+            "usuario y máquina se leen una sola vez por sesión, ni por gestor ni por comando"
+        );
+    }
+
+    #[test]
+    fn si_una_rama_del_registro_falla_las_demas_suman() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("por_maquina");
+        dir_con_bin(&bin_dir, "fantasma45");
+        let mut falso =
+            FalsoRegistro::con_paths("C:\\Usuarios\\ej\\bin", &bin_dir.display().to_string());
+        falso.usuario = Err("sin valor Path de usuario".to_string());
+        let mut sesion = SesionSondeo::default();
+        // el PATH de usuario no existe (valor ausente): la capa no se
+        // cae — la máquina sigue sumando
+        assert_eq!(
+            capa_sondeo("fantasma45", &SondadorWindows::new(&falso), &mut sesion),
+            Some(bin_dir.join(con_extension("fantasma45")))
+        );
+        // y con el registro entero inaccesible la capa tampoco es
+        // error: aporta el PATH del entorno, lo que haya
+        let inaccesible = FalsoRegistro::que_falla();
+        let roto = SondadorWindows::new(&inaccesible);
+        assert!(roto.path_configurado().is_ok());
+    }
+
+    #[test]
+    fn el_no_encontrado_lista_tambien_el_registro_de_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        // el registro reporta un PATH donde el gestor NO está: la capa
+        // miró esas rutas y el mensaje de «no encontrado» las lista
+        let mirada = dir.path().join("npm_global");
+        std::fs::create_dir_all(&mirada).unwrap();
+        let falso = FalsoRegistro::con_paths(&mirada.display().to_string(), "");
+        let mut sesion = SesionSondeo::default();
+        assert!(capa_sondeo("fantasma45", &SondadorWindows::new(&falso), &mut sesion).is_none());
+        let mut buscadas = vec![PathBuf::from("C:\\pnpm")];
+        buscadas.extend(buscadas_sondeo(&sesion, "fantasma45"));
+        let msg = crate::kernel::no_encontrado("pnpm", &buscadas).to_string();
+        assert!(
+            msg.contains(
+                &mirada
+                    .join(con_extension("fantasma45"))
+                    .display()
+                    .to_string()
+            ),
+            "{msg}"
+        );
     }
 }

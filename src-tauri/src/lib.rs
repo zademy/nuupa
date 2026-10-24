@@ -22,6 +22,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+/// Command-line arguments for ONE package, built from its name and
+/// (brew-only) type: the shape `args_update` and `args_uninstall`
+/// share, so brew's flags (#46) drop in unchanged.
+pub(crate) type ArgsPorPaquete = fn(&str, Option<&str>) -> Vec<String>;
+
 /// A supported manager: visible command and how to build ONE package's
 /// update arguments. Both live HERE, once per manager: the UI receives
 /// the visible one through the seam (Snapshot), it never duplicates it.
@@ -33,16 +38,14 @@ pub(crate) struct DefinicionGestor {
     /// Visible command for the UI (tooltip): "npm i -g".
     pub(crate) comando: &'static str,
     /// Visible uninstall command for the UI (tooltip): "npm uninstall -g".
-    /// None while the manager has no uninstall flow (brew, #46).
     pub(crate) comando_desinstalar: Option<&'static str>,
     /// The WHOLE update command line for ONE package, built from its
     /// name and (brew-only) type: single source of the verb — node
     /// managers differ in the verb, brew in a per-row flag.
-    pub(crate) args_update: fn(&str, Option<&str>) -> Vec<String>,
+    pub(crate) args_update: ArgsPorPaquete,
     /// The WHOLE uninstall command line for ONE package, when the
-    /// manager supports it (node managers, #44); the shape mirrors
-    /// `args_update` so brew's flags (#46) drop in unchanged.
-    pub(crate) args_uninstall: Option<fn(&str, Option<&str>) -> Vec<String>>,
+    /// manager supports it (#44); the shape mirrors `args_update`.
+    pub(crate) args_uninstall: Option<ArgsPorPaquete>,
     /// The pin-removal line of a Pineada's Desinstalar (#46): brew
     /// runs it BEFORE the uninstall — one sequence, both steps in
     /// the log. None: the manager has no pins.
@@ -212,7 +215,6 @@ fn correr_uninstall(
     def: &DefinicionGestor,
     candado: &Mutex<()>,
     dir: &Path,
-    gestor: &str,
     name: &str,
     tipo: Option<&str>,
     pineada: bool,
@@ -245,7 +247,7 @@ fn correr_uninstall(
     if salida.success {
         // The Excluded record dies with its package (#44); the single
         // writer keeps a neighbor's and another gestor's records.
-        nucleo_quitar(candado, dir, gestor, name)?;
+        nucleo_quitar(candado, dir, def.nombre, name)?;
     }
     Ok(salida)
 }
@@ -478,7 +480,6 @@ async fn uninstall_package(
             def,
             &candado,
             &dir,
-            &gestor,
             &name,
             tipo.as_deref(),
             pineada,
@@ -863,7 +864,6 @@ mod tests {
             &def_falsa(),
             &Mutex::new(()),
             dir.path(),
-            "falso",
             "hunkdiff",
             None,
             false,
@@ -895,7 +895,6 @@ mod tests {
                 &def,
                 &Mutex::new(()),
                 dir.path(),
-                gestor,
                 "hunkdiff",
                 None,
                 false,
@@ -935,7 +934,6 @@ mod tests {
                 &def,
                 &Mutex::new(()),
                 dir.path(),
-                "brew",
                 nombre,
                 tipo,
                 false,
@@ -970,7 +968,6 @@ mod tests {
             &def,
             &candado,
             dir.path(),
-            "brew",
             "ffmpeg",
             Some(brew::TIPO_FORMULA),
             true,
@@ -1015,7 +1012,6 @@ mod tests {
             &def,
             &candado,
             dir.path(),
-            "brew",
             "ffmpeg",
             Some(brew::TIPO_FORMULA),
             true,
@@ -1050,7 +1046,6 @@ mod tests {
             &def,
             &Mutex::new(()),
             dir.path(),
-            "brew",
             "wget",
             Some(brew::TIPO_FORMULA),
             false,
@@ -1065,7 +1060,6 @@ mod tests {
             &def_falsa(),
             &Mutex::new(()),
             dir.path(),
-            "falso",
             "hunkdiff",
             None,
             true,
@@ -1085,7 +1079,6 @@ mod tests {
                     &def_falsa(),
                     &Mutex::new(()),
                     dir.path(),
-                    "falso",
                     nombre,
                     None,
                     false,
@@ -1109,7 +1102,6 @@ mod tests {
             &def,
             &Mutex::new(()),
             dir.path(),
-            "falso",
             "hunkdiff",
             None,
             false,
@@ -1130,7 +1122,6 @@ mod tests {
             &def_falsa(),
             &candado,
             dir.path(),
-            "falso",
             "hunkdiff",
             None,
             false,
@@ -1169,7 +1160,6 @@ mod tests {
             &def,
             &candado,
             dir.path(),
-            "falso",
             "hunkdiff",
             None,
             false,
