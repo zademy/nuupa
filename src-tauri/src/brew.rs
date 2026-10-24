@@ -1,7 +1,7 @@
 //! brew adapter (Homebrew on macOS, Linuxbrew on Linux): its global
 //! space is the user's LEAVES (top-level formulae) plus every cask —
 //! dependencies never appear, they update with their parent (same
-//! semantics as `npm -g`, vocabulary in CONTEXT.md). The update line
+//! semantics as `npm -g`, vocabulary in GLOSSARY.md). The update line
 //! (`upgrade --formula|--cask`) lives in [`crate`]'s manager table.
 
 use crate::kernel::{

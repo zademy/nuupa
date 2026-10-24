@@ -45,7 +45,7 @@ fn es_falso(b: &bool) -> bool {
 
 /// A manager's global space: its packages and versions, in the
 /// manager-agnostic shape each adapter produces (vocabulary in
-/// CONTEXT.md). [`Snapshot`] adds the visible command when crossing the IPC.
+/// GLOSSARY.md). [`Snapshot`] adds the visible command when crossing the IPC.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EspacioGlobal {
     /// Version of the manager itself (`npm --version`).

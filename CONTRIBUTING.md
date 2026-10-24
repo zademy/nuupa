@@ -49,7 +49,7 @@ cargo tauri dev
 | `src-tauri/src/`     | Rust backend: one module per package manager (`npm`, `pnpm`, `bun`), plus exclusions |
 | `.github/workflows/` | CI: multi-platform builds and automated releases                                     |
 
-Domain vocabulary is defined in `CONTEXT.md` — use those terms in issues,
+Domain vocabulary is defined in `GLOSSARY.md` — use those terms in issues,
 PRs, tests and code so discussions stay unambiguous.
 
 ## Commits

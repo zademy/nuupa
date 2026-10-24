@@ -1,5 +1,5 @@
 //! "Update all": sequential queue over the outdated packages of ONE
-//! manager's global space (concept in CONTEXT.md's glossary).
+//! manager's global space (concept in GLOSSARY.md's glossary).
 //!
 //! Semantics — the same that lived in the frontend store, now with
 //! locality below the Rust seam:
