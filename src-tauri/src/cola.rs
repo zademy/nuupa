@@ -274,7 +274,10 @@ fn correr_activa(
         detenidos,
         detenida: ok + failed + detenidos + saltados < total,
     };
-    Ok((resumen, snapshot_final.con_comando(def.comando)))
+    Ok((
+        resumen,
+        snapshot_final.con_comando(def.comando, def.comando_desinstalar),
+    ))
 }
 
 #[cfg(test)]
@@ -300,7 +303,10 @@ mod tests {
         DefinicionGestor {
             nombre: "npm",
             comando: "npm i -g",
+            comando_desinstalar: Some("npm uninstall -g"),
             args_update: crate::args_npm,
+            args_uninstall: Some(crate::args_uninstall),
+            args_unpin: None,
             instalado: || true,
             runner: || {
                 Ok(Box::new(
@@ -393,6 +399,9 @@ mod tests {
         DefinicionGestor {
             nombre: "brew",
             comando: "brew upgrade",
+            comando_desinstalar: None,
+            args_uninstall: None, // la cola nunca desinstala
+            args_unpin: None,
             args_update: args_brew,
             instalado: || true,
             runner,
@@ -667,6 +676,18 @@ mod tests {
             }
         );
         assert!(snap.espacio.packages.iter().all(|p| !p.outdated));
+    }
+
+    #[test]
+    fn el_snapshot_final_conserva_el_comando_de_desinstalar() {
+        // #44: without carrying it through, the trash would vanish
+        // from the table after "Update all" refreshes the list.
+        let dir = tempfile::tempdir().unwrap();
+        let (_, snap) = cola_con(&def_de_prueba(), dir.path());
+        assert_eq!(
+            snap.comando_desinstalar.as_deref(),
+            Some("npm uninstall -g")
+        );
     }
 
     #[test]

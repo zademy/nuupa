@@ -62,15 +62,20 @@ pub struct EspacioGlobal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub comando_actualizar: String,
+    /// The uninstall command, when the gestor has the flow (#44;
+    /// brew joins in #46) — the UI keys the trash row action on it.
+    #[serde(default)]
+    pub comando_desinstalar: Option<String>,
     #[serde(flatten)]
     pub espacio: EspacioGlobal,
 }
 
 impl EspacioGlobal {
-    /// Completes the global space with its visible command for the IPC.
-    pub fn con_comando(self, comando: &str) -> Snapshot {
+    /// Completes the global space with its visible commands for the IPC.
+    pub fn con_comando(self, comando: &str, desinstalar: Option<&str>) -> Snapshot {
         Snapshot {
             comando_actualizar: comando.to_string(),
+            comando_desinstalar: desinstalar.map(str::to_string),
             espacio: self,
         }
     }
@@ -531,6 +536,20 @@ pub fn primer_existente(candidatos: Vec<PathBuf>) -> Option<PathBuf> {
     candidatos.into_iter().find(|c| c.is_file())
 }
 
+/// The Descubrimiento layer order (#43), written once for the four
+/// gestores: the environment PATH first, the usual locations next,
+/// the user-configured PATH probe last (login shell on macOS/Linux,
+/// registry on Windows). First hit wins and a layer only runs
+/// when the previous ones missed — the probe is the costly one (ONE
+/// probe per session, cached).
+pub fn descubrir_por_capas<T>(
+    en_path: impl FnOnce() -> Option<T>,
+    habitual: impl FnOnce() -> Option<T>,
+    sondado: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    en_path().or_else(habitual).or_else(sondado)
+}
+
 /// Standard POSIX node locations a GUI app's PATH lacks — the
 /// counterpart of Windows's `%ProgramFiles%\nodejs`: the macOS
 /// installer and Intel Homebrew write to `/usr/local/bin`, Apple
@@ -883,9 +902,12 @@ mod tests {
             version_node: Some("26.2.0".into()),
             packages: Vec::new(),
         };
-        let snap = espacio.con_comando("npm i -g");
+        let snap = espacio.con_comando("npm i -g", Some("npm uninstall -g"));
         assert_eq!(snap.comando_actualizar, "npm i -g");
-        assert_eq!(snap.espacio.version_gestor, "11.4.2");
+        assert_eq!(
+            snap.comando_desinstalar.as_deref(),
+            Some("npm uninstall -g")
+        );
         assert_eq!(snap.espacio.version_node.as_deref(), Some("26.2.0"));
     }
 
@@ -1040,6 +1062,65 @@ mod tests {
         // "a" does not exist: the search continues to "b"
         assert_eq!(primer_existente(vec![a, b.clone()]), Some(b));
         assert_eq!(primer_existente(vec![dir.path().join("nada")]), None);
+    }
+
+    // ---- Descubrimiento por capas (#43): el orden como función pura ----
+    //
+    // Las capas cuentan sus llamadas: el orden no es solo quién gana,
+    // es qué capas ni siquiera corren (el sondeo cuesta un shell).
+
+    fn capa_que_registra<T>(
+        valor: Option<T>,
+        llamadas: std::sync::Arc<std::sync::Mutex<usize>>,
+    ) -> impl FnOnce() -> Option<T> {
+        move || {
+            *llamadas.lock().unwrap() += 1;
+            valor
+        }
+    }
+
+    #[test]
+    fn el_hallazgo_del_path_no_corre_las_otras_capas() {
+        let habitual = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let sondado = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let bin = descubrir_por_capas(
+            || Some(PathBuf::from("/usr/local/bin/pnpm")),
+            capa_que_registra(None, habitual.clone()),
+            capa_que_registra(None, sondado.clone()),
+        );
+        assert_eq!(bin, Some(PathBuf::from("/usr/local/bin/pnpm")));
+        assert_eq!(*habitual.lock().unwrap(), 0);
+        assert_eq!(*sondado.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn sin_path_las_ubicaciones_ganan_y_el_sondeo_no_corre() {
+        let sondado = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let bin = descubrir_por_capas(
+            || None,
+            || Some(PathBuf::from("/opt/homebrew/bin/brew")),
+            capa_que_registra(None, sondado.clone()),
+        );
+        assert_eq!(bin, Some(PathBuf::from("/opt/homebrew/bin/brew")));
+        assert_eq!(*sondado.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn el_sondeo_decide_solo_cuando_las_demas_capas_fallan() {
+        let bin = descubrir_por_capas(
+            || None,
+            || None,
+            || Some(PathBuf::from("/Users/ejemplo/.volta/bin/bun")),
+        );
+        assert_eq!(bin, Some(PathBuf::from("/Users/ejemplo/.volta/bin/bun")));
+    }
+
+    #[test]
+    fn todas_las_capas_fallan_devuelven_none() {
+        assert_eq!(
+            descubrir_por_capas::<PathBuf>(|| None, || None, || None),
+            None
+        );
     }
 
     #[test]
