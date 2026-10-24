@@ -178,6 +178,37 @@ fn correr_update(
     kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar).map_err(|e| e.to_string())
 }
 
+/// Uninstalls a package with the manager's uninstall line (#44): a
+/// mirror of `correr_update` — name validation, blocking run under
+/// the update Plazo, line streaming. Node managers only: a gestor
+/// without `args_uninstall` (brew, #46) is refused here.
+fn correr_uninstall(
+    def: &DefinicionGestor,
+    candado: &Mutex<()>,
+    dir: &Path,
+    gestor: &str,
+    name: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<UpdateOutcome, String> {
+    kernel::validar_nombre(name).map_err(|e| e.to_string())?;
+    let args_uninstall = def
+        .args_uninstall
+        .ok_or_else(|| format!("{} no admite Desinstalar todavía", def.nombre))?;
+    let runner = (def.runner)().map_err(|e| e.to_string())?;
+    let args = args_uninstall(name, None);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // An individual uninstall has no Stop: a flag that never fires.
+    let sin_parar = kernel::sin_parar();
+    let salida =
+        kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar).map_err(|e| e.to_string())?;
+    if salida.success {
+        // The Excluded record dies with its package (#44); the single
+        // writer keeps a neighbor's and another gestor's records.
+        nucleo_quitar(candado, dir, gestor, name)?;
+    }
+    Ok(salida)
+}
+
 /// The exclusions file's state for the UI (#17): "corrupto" BLOCKS all
 /// writes until the user resolves; "ilegible" shows why it cannot read.
 #[derive(Serialize)]
@@ -731,6 +762,153 @@ mod tests {
                 ("bun", Some("bun rm -g")),
                 ("brew", None),
             ]
+        );
+    }
+
+    #[test]
+    fn correr_uninstall_usa_el_verbo_del_def_y_streamea_lineas() {
+        let mut lineas = Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let out = correr_uninstall(
+            &def_falsa(),
+            &Mutex::new(()),
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            &mut |l| lineas.push(l.to_string()),
+        )
+        .expect("valid uninstall");
+        assert!(out.success);
+        assert_eq!(lineas, vec!["removed 1 package in 1s"]);
+    }
+
+    #[test]
+    fn correr_uninstall_arma_los_args_por_gestor() {
+        // The exact-line answers make a wrong verb FAIL: only the
+        // line each manager's table entry builds succeeds.
+        fn runner_tres_verbos() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                FakeRunner::new("1.0.0")
+                    .respuesta_exacta("uninstall -g hunkdiff", "removed", 0)
+                    .respuesta_exacta("rm -g hunkdiff", "removed", 0),
+            ) as Box<dyn Runner>)
+        }
+        for gestor in ["npm", "pnpm", "bun"] {
+            let def = DefinicionGestor {
+                runner: runner_tres_verbos,
+                ..def_gestor_en(GESTORES, gestor).unwrap().clone()
+            };
+            let dir = tempfile::tempdir().unwrap();
+            correr_uninstall(
+                &def,
+                &Mutex::new(()),
+                dir.path(),
+                gestor,
+                "hunkdiff",
+                &mut |_| {},
+            )
+            .unwrap_or_else(|e| panic!("{gestor}: {e}"));
+        }
+    }
+
+    #[test]
+    fn correr_uninstall_rechaza_nombres_invalidos() {
+        let dir = tempfile::tempdir().unwrap();
+        for nombre in ["", "--force"] {
+            assert!(
+                correr_uninstall(
+                    &def_falsa(),
+                    &Mutex::new(()),
+                    dir.path(),
+                    "falso",
+                    nombre,
+                    &mut |_| {},
+                )
+                .is_err(),
+                "{nombre} must not pass"
+            );
+        }
+    }
+
+    #[test]
+    fn correr_uninstall_rechaza_un_gestor_sin_desinstalacion() {
+        // brew's row has no trash yet: its flow (with pineadas) is #46.
+        let def = DefinicionGestor {
+            args_uninstall: None,
+            ..def_falsa()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let err = correr_uninstall(
+            &def,
+            &Mutex::new(()),
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("no admite Desinstalar"), "{err}");
+    }
+
+    #[test]
+    fn desinstalar_con_exito_borra_la_exclusion_del_paquete() {
+        let dir = tempfile::tempdir().unwrap();
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "falso", "hunkdiff").unwrap();
+        nucleo_excluir(&candado, dir.path(), "falso", "vecino").unwrap();
+        nucleo_excluir(&candado, dir.path(), "otro", "hunkdiff").unwrap();
+        let out = correr_uninstall(
+            &def_falsa(),
+            &candado,
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            &mut |_| {},
+        )
+        .expect("valid uninstall");
+        assert!(out.success);
+        // only the uninstalled package's Excluded record is gone:
+        // a neighbor's and another gestor's same-name record survive
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
+            ["vecino"]
+        );
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "otro").unwrap().nombres,
+            ["hunkdiff"]
+        );
+    }
+
+    #[test]
+    fn desinstalar_con_fallo_conserva_la_exclusion() {
+        let dir = tempfile::tempdir().unwrap();
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "falso", "hunkdiff").unwrap();
+        let def = DefinicionGestor {
+            runner: || {
+                Ok(Box::new(
+                    FakeRunner::new("1.0.0").respuesta_exacta(
+                        "uninstall -g hunkdiff",
+                        "EACCES: permission denied",
+                        1,
+                    ),
+                ) as Box<dyn Runner>)
+            },
+            ..def_falsa()
+        };
+        let out = correr_uninstall(
+            &def,
+            &candado,
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            &mut |_| {},
+        )
+        .expect("a gestor failure is a result, not an error");
+        assert!(!out.success);
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
+            ["hunkdiff"]
         );
     }
 
