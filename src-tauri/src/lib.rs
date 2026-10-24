@@ -13,6 +13,7 @@ mod kernel;
 mod npm;
 mod plazo;
 mod pnpm;
+mod sondeo;
 
 use cola::{EventoCola, Motivo, ResultadoCola, Resumen};
 use kernel::{Runner, Snapshot, UpdateOutcome};

@@ -16,6 +16,7 @@ use crate::kernel::{
 use crate::kernel::{find_in_path, program_files};
 #[cfg(not(windows))]
 use crate::kernel::{guardar_path, ubicar_node};
+use crate::sondeo;
 use std::path::{Path, PathBuf};
 
 /// npm's executable: on POSIX it is the `npm` shim; on Windows it is
@@ -52,10 +53,29 @@ fn ubicaciones_npm() -> (Option<PathBuf>, Vec<PathBuf>) {
     (bin.and_then(|b| b.parent().map(PathBuf::from)), buscadas)
 }
 
-/// Is npm on this machine? Presence check (no spawn). Feeds which tabs
-/// exist.
+/// Is npm on this machine? Presence check: node's own resolution
+/// (PATH → nvm → standard dirs) and, last, the login-shell probe
+/// (#43). Feeds which tabs exist.
 pub fn instalado() -> bool {
-    ubicaciones_npm().0.is_some()
+    descubrir_bin_dir().is_some()
+}
+
+/// npm's discovery chain (#43): node's own resolution (PATH → nvm →
+/// standard dirs) and, only if it missed, the login-shell probe — the
+/// probed npm sits in the bin dir that owns its node (see
+/// [`guardar_path`]).
+fn descubrir_bin_dir() -> Option<PathBuf> {
+    ubicaciones_npm()
+        .0
+        .or_else(|| sondeo::capa("npm").and_then(|bin| bin.parent().map(PathBuf::from)))
+}
+
+/// npm's «not found» error (#43): everything looked at — node's usual
+/// dirs and the login shell's expanded paths.
+fn no_encontrado_npm() -> std::io::Error {
+    let (_, mut buscadas) = ubicaciones_npm();
+    buscadas.extend(sondeo::buscadas("npm"));
+    no_encontrado("npm", &buscadas)
 }
 
 /// Real runner: executes the npm of node's active version.
@@ -68,8 +88,7 @@ pub struct RealRunner {
 impl RealRunner {
     /// Discovers this machine's npm and resolves its versions.
     pub fn discover() -> std::io::Result<Self> {
-        let (bin_dir, buscadas) = ubicaciones_npm();
-        let bin_dir = bin_dir.ok_or_else(|| no_encontrado("npm", &buscadas))?;
+        let bin_dir = descubrir_bin_dir().ok_or_else(no_encontrado_npm)?;
         Ok(Self::de_bin_dir(bin_dir))
     }
 

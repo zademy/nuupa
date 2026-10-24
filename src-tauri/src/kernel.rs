@@ -536,6 +536,19 @@ pub fn primer_existente(candidatos: Vec<PathBuf>) -> Option<PathBuf> {
     candidatos.into_iter().find(|c| c.is_file())
 }
 
+/// The Descubrimiento layer order (#43), written once for the four
+/// gestores: the environment PATH first, the usual locations next,
+/// the login-shell probe last. First hit wins and a layer only runs
+/// when the previous ones missed — the probe is the costly one (ONE
+/// shell per session, cached).
+pub fn descubrir_por_capas<T>(
+    en_path: impl FnOnce() -> Option<T>,
+    habitual: impl FnOnce() -> Option<T>,
+    sondado: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    en_path().or_else(habitual).or_else(sondado)
+}
+
 /// Standard POSIX node locations a GUI app's PATH lacks — the
 /// counterpart of Windows's `%ProgramFiles%\nodejs`: the macOS
 /// installer and Intel Homebrew write to `/usr/local/bin`, Apple
@@ -1048,6 +1061,65 @@ mod tests {
         // "a" does not exist: the search continues to "b"
         assert_eq!(primer_existente(vec![a, b.clone()]), Some(b));
         assert_eq!(primer_existente(vec![dir.path().join("nada")]), None);
+    }
+
+    // ---- Descubrimiento por capas (#43): el orden como función pura ----
+    //
+    // Las capas cuentan sus llamadas: el orden no es solo quién gana,
+    // es qué capas ni siquiera corren (el sondeo cuesta un shell).
+
+    fn capa_que_registra<T>(
+        valor: Option<T>,
+        llamadas: std::sync::Arc<std::sync::Mutex<usize>>,
+    ) -> impl FnOnce() -> Option<T> {
+        move || {
+            *llamadas.lock().unwrap() += 1;
+            valor
+        }
+    }
+
+    #[test]
+    fn el_hallazgo_del_path_no_corre_las_otras_capas() {
+        let habitual = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let sondado = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let bin = descubrir_por_capas(
+            || Some(PathBuf::from("/usr/local/bin/pnpm")),
+            capa_que_registra(None, habitual.clone()),
+            capa_que_registra(None, sondado.clone()),
+        );
+        assert_eq!(bin, Some(PathBuf::from("/usr/local/bin/pnpm")));
+        assert_eq!(*habitual.lock().unwrap(), 0);
+        assert_eq!(*sondado.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn sin_path_las_ubicaciones_ganan_y_el_sondeo_no_corre() {
+        let sondado = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let bin = descubrir_por_capas(
+            || None,
+            || Some(PathBuf::from("/opt/homebrew/bin/brew")),
+            capa_que_registra(None, sondado.clone()),
+        );
+        assert_eq!(bin, Some(PathBuf::from("/opt/homebrew/bin/brew")));
+        assert_eq!(*sondado.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn el_sondeo_decide_solo_cuando_las_demas_capas_fallan() {
+        let bin = descubrir_por_capas(
+            || None,
+            || None,
+            || Some(PathBuf::from("/Users/ejemplo/.volta/bin/bun")),
+        );
+        assert_eq!(bin, Some(PathBuf::from("/Users/ejemplo/.volta/bin/bun")));
+    }
+
+    #[test]
+    fn todas_las_capas_fallan_devuelven_none() {
+        assert_eq!(
+            descubrir_por_capas::<PathBuf>(|| None, || None, || None),
+            None
+        );
     }
 
     #[test]
