@@ -1,6 +1,42 @@
 {
   "version": 1,
   "skills": {
+    "antislop": {
+      "source": "miqdadbadjuber/anti-slop",
+      "sourceType": "github",
+      "skillPath": "skills/antislop/SKILL.md",
+      "computedHash": "a7e132f7957d0f2cc2959c6cca8a7664033fb54f824e1843f2d2d67c46a86383"
+    },
+    "antislop-code": {
+      "source": "miqdadbadjuber/anti-slop",
+      "sourceType": "github",
+      "skillPath": "skills/antislop-code/SKILL.md",
+      "computedHash": "bac9828572f512de20122f1b0185a70315448d8fb4ae1718c2f259fff13fad6b"
+    },
+    "antislop-copywriting": {
+      "source": "miqdadbadjuber/anti-slop",
+      "sourceType": "github",
+      "skillPath": "skills/antislop-copywriting/SKILL.md",
+      "computedHash": "709209c602d6331f5b136f43a0e660dff472bc04c56381f43fcfe9e019934d0b"
+    },
+    "antislop-human": {
+      "source": "miqdadbadjuber/anti-slop",
+      "sourceType": "github",
+      "skillPath": "skills/antislop-human/SKILL.md",
+      "computedHash": "8f0c76a9521c78011cd82109f2dbafd507e699d63ac29480a92a040cb656d032"
+    },
+    "antislop-layoutmobile": {
+      "source": "miqdadbadjuber/anti-slop",
+      "sourceType": "github",
+      "skillPath": "skills/antislop-layoutmobile/SKILL.md",
+      "computedHash": "26e4ab8ebf33e7c3098aa08a327d0f0f4cd4d88ad238a768cd5735d7e0979704"
+    },
+    "antislop-ui": {
+      "source": "miqdadbadjuber/anti-slop",
+      "sourceType": "github",
+      "skillPath": "skills/antislop-ui/SKILL.md",
+      "computedHash": "4cb1cb91997ca9849438d1bb1a5194626e1255a1eaec59301fef174a3dee9c90"
+    },
     "ask-matt": {
       "source": "mattpocock/skills",
       "sourceType": "github",
