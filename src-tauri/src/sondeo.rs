@@ -9,7 +9,7 @@
 //! el arranque sigue. Windows lee el registro (#45, aún no): hoy sin
 //! `$SHELL` la capa simplemente se omite.
 
-use crate::kernel::{con_extension, primer_existente};
+use crate::kernel::{con_extension, correr_consulta, primer_existente};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -28,6 +28,86 @@ pub(crate) trait Sondador {
 pub(crate) struct SesionSondeo {
     path_shell: Option<Vec<PathBuf>>,
     binarios: BTreeMap<String, Option<PathBuf>>,
+}
+
+/// ¿El gestor `nombre` se sondea en el sistema `so`? brew no existe
+/// en Windows (#43); los gestores de node van en todas las plataformas
+/// (el registro de Windows llega con #45: hoy, sin `$SHELL`, su capa
+/// simplemente se omite).
+pub(crate) fn sondeo_aplica(nombre: &str, so: &str) -> bool {
+    !(nombre == "brew" && so == "windows")
+}
+
+/// Las rutas que la capa de sondeo miró para `nombre` — el PATH del
+/// shell de login, expandido a candidatos del gestor: alimentan el
+/// mensaje de «no encontrado» junto a las capas anteriores.
+pub(crate) fn buscadas_sondeo(sesion: &SesionSondeo, nombre: &str) -> Vec<PathBuf> {
+    sesion
+        .path_shell
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|dir| dir.join(con_extension(nombre)))
+        .collect()
+}
+
+/// El sondador real: ejecuta el shell de login del usuario (`$SHELL
+/// -l -c env`, no interactivo) y lee el PATH que ese shell configura.
+/// Corre bajo el Plazo de consultas: un shell colgado vence y la capa
+/// se omite, nunca congela el arranque.
+pub(crate) struct SondadorShell;
+
+impl Sondador for SondadorShell {
+    fn path_del_shell(&self) -> std::io::Result<Vec<PathBuf>> {
+        let shell = std::env::var_os("SHELL")
+            .map(PathBuf::from)
+            .filter(|sh| !sh.as_os_str().is_empty())
+            .ok_or_else(|| {
+                std::io::Error::other("sin shell de login ($SHELL): capa de sondeo omitida")
+            })?;
+        let mut cmd = std::process::Command::new(&shell);
+        // -l: shell de login, lee el perfil donde vive el PATH del
+        // usuario; sin -i: no interactivo.
+        cmd.args(["-l", "-c", "env"]);
+        let out = correr_consulta(cmd)?;
+        if out.exit_code != 0 {
+            return Err(std::io::Error::other(format!(
+                "el shell de login ({}) terminó con {}: capa de sondeo omitida",
+                shell.display(),
+                out.exit_code
+            )));
+        }
+        Ok(path_del_env(&out.stdout))
+    }
+}
+
+/// La sesión de sondeo de esta ejecución de la app: se llena al
+/// arranque (las pestañas) y la consumen listado, actualización y
+/// cola — el binario queda cacheado, no se re-sondea (#43).
+static SESION: std::sync::LazyLock<std::sync::Mutex<SesionSondeo>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(SesionSondeo::default()));
+
+/// La capa de sondeo del Descubrimiento para el gestor `nombre`, sobre
+/// la sesión global. Fallo, vencimiento del Plazo o brew-en-Windows la
+/// omiten: `None`, jamás un error de arranque.
+pub(crate) fn capa(nombre: &str) -> Option<PathBuf> {
+    if !sondeo_aplica(nombre, std::env::consts::OS) {
+        return None;
+    }
+    SESION
+        .lock()
+        .ok()
+        .and_then(|mut sesion| capa_sondeo(nombre, &SondadorShell, &mut sesion))
+}
+
+/// Las rutas que la capa de sondeo miró para `nombre` en esta sesión:
+/// para el mensaje de «no encontrado».
+pub(crate) fn buscadas(nombre: &str) -> Vec<PathBuf> {
+    SESION
+        .lock()
+        .ok()
+        .map(|sesion| buscadas_sondeo(&sesion, nombre))
+        .unwrap_or_default()
 }
 
 /// La capa de sondeo como función pura: cache primero, shell UNA vez
@@ -174,6 +254,52 @@ mod tests {
             1,
             "el fallo no se reintenta: la capa queda omitida"
         );
+    }
+
+    #[test]
+    fn brew_no_se_sondea_en_windows() {
+        assert!(!sondeo_aplica("brew", "windows"));
+        assert!(sondeo_aplica("brew", "macos"));
+        assert!(sondeo_aplica("brew", "linux"));
+        assert!(sondeo_aplica("npm", "windows"));
+    }
+
+    #[test]
+    fn el_no_encontrado_incluye_las_rutas_del_sondeo() {
+        let dir = tempfile::tempdir().unwrap();
+        // El shell reporta un PATH donde el gestor NO está: la capa
+        // miró esas rutas y el mensaje de «no encontrado» las lista.
+        let mirada = dir.path().join("volta");
+        std::fs::create_dir_all(&mirada).unwrap();
+        let falso = FalsoShell::con_path(vec![mirada.clone()]);
+        let mut sesion = SesionSondeo::default();
+        assert!(capa_sondeo("pnpm", &falso, &mut sesion).is_none());
+        let mut buscadas = vec![PathBuf::from("/opt/pnpm")];
+        buscadas.extend(buscadas_sondeo(&sesion, "pnpm"));
+        let msg = crate::kernel::no_encontrado("pnpm", &buscadas).to_string();
+        assert!(
+            msg.contains(&mirada.join(con_extension("pnpm")).display().to_string()),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn buscadas_del_sondeo_vacias_si_el_shell_fallo() {
+        let falso = FalsoShell::que_falla();
+        let mut sesion = SesionSondeo::default();
+        let _ = capa_sondeo("pnpm", &falso, &mut sesion);
+        assert!(buscadas_sondeo(&sesion, "pnpm").is_empty());
+    }
+
+    /// Smoke manual en la máquina REAL (`cargo test -- --ignored`):
+    /// el shell de login reporta un PATH usable. La ejecución normal
+    /// no lo corre: sondea shells de verdad.
+    #[test]
+    #[ignore]
+    #[cfg(not(windows))]
+    fn el_shell_de_login_reporta_su_path() {
+        let dirs = SondadorShell.path_del_shell().expect("sondeo del shell");
+        assert!(!dirs.is_empty(), "el PATH del shell de login llegó vacío");
     }
 
     #[test]
