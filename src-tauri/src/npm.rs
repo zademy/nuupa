@@ -9,8 +9,8 @@
 //! layout.
 
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, no_encontrado, version_de,
-    EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, version_de, EspacioGlobal, Runner,
+    RunnerOutput,
 };
 #[cfg(windows)]
 use crate::kernel::{find_in_path, program_files};
@@ -74,9 +74,7 @@ fn descubrir_bin_dir() -> Option<PathBuf> {
 /// npm's «not found» error (#43/#45): everything looked at — node's
 /// usual dirs and the user-configured PATH's expanded paths.
 fn no_encontrado_npm() -> std::io::Error {
-    let (_, mut buscadas) = ubicaciones_npm();
-    buscadas.extend(sondeo::buscadas("npm"));
-    no_encontrado("npm", &buscadas)
+    sondeo::no_encontrado_con_sondeo("npm", ubicaciones_npm().1)
 }
 
 /// Real runner: executes the npm of node's active version.

@@ -4,9 +4,8 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, descubrir_por_capas, find_in_path,
-    guardar_path_node, home, local_app_data, no_encontrado, parse_outdated, primer_existente,
-    version_de, EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, guardar_path_node, home,
+    local_app_data, parse_outdated, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
 use crate::sondeo;
 use std::path::{Path, PathBuf};
@@ -35,19 +34,8 @@ fn ubicaciones_pnpm() -> Vec<PathBuf> {
 /// (#43/#45 — login shell, registry on Windows). Feeds which tabs
 /// exist.
 pub fn instalado() -> bool {
-    descubrir_bin().is_some()
+    sondeo::descubrir_o_error("pnpm", ubicaciones_pnpm()).is_ok()
 }
-
-/// pnpm's discovery chain (#43/#45): PATH → standard locations →
-/// user-configured PATH probe (shell or registry). First hit wins.
-fn descubrir_bin() -> Option<PathBuf> {
-    descubrir_por_capas(
-        || find_in_path(&con_extension("pnpm")),
-        || primer_existente(ubicaciones_pnpm()),
-        || sondeo::capa("pnpm"),
-    )
-}
-
 /// pnpm's real runner: binary from the PATH or from pnpm's standard
 /// locations. The shim needs node in the PATH: node's own bin
 /// directory (see [`crate::kernel::ubicar_node`]) is prepended if
@@ -60,11 +48,7 @@ pub struct RealPnpmRunner {
 
 impl RealPnpmRunner {
     pub fn discover() -> std::io::Result<Self> {
-        let bin = descubrir_bin().ok_or_else(|| {
-            let mut buscadas = ubicaciones_pnpm();
-            buscadas.extend(sondeo::buscadas("pnpm"));
-            no_encontrado("pnpm", &buscadas)
-        })?;
+        let bin = sondeo::descubrir_o_error("pnpm", ubicaciones_pnpm())?;
         // The probes use the same prepended PATH as run(): without it,
         // from Finder the version would silently read "unknown".
         let pnpm_version = version_de(Self::command(&bin, &["--version"]))

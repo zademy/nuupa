@@ -39,7 +39,7 @@ const {
   detalleExclusiones,
   toggleExcluded,
   excluyendoAhora,
-  isUpdating,
+  enCurso,
   hasError,
   detalleFallo,
   isExcluded,
@@ -300,7 +300,7 @@ onUnmounted(() => {
             </td>
             <td class="acciones">
               <div class="acciones-contenido">
-                <span v-if="isUpdating(p.name)" class="actualizando">
+                <span v-if="enCurso(p.name)" class="actualizando">
                   <span class="spinner"></span>
                   {{
                     isUninstalling(p.name)
@@ -353,9 +353,9 @@ onUnmounted(() => {
                   >
                     <Icono nombre="actualizar" :tamano="14" />
                   </button>
-                  <!-- Third action (#44): Desinstalar, node
-                       managers only — keyed on the snapshot's
-                       command, the single source. -->
+                  <!-- Third action (#44): Desinstalar — in every
+                       gestor since #46 (brew included). Keyed on
+                       the snapshot's command, the single source. -->
                   <button
                     v-if="state.snapshot.comando_desinstalar"
                     class="desinstalar solo-icono"
@@ -485,10 +485,6 @@ onUnmounted(() => {
 /* The destructive accent (#44): the trash reads as danger at rest,
    dimmed like any disabled action otherwise. */
 .acciones button.desinstalar:not(:disabled) {
-  color: var(--danger);
-}
-
-.acciones button.desinstalar:not(:disabled):hover {
   color: var(--danger);
 }
 

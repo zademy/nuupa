@@ -5,8 +5,8 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, descubrir_por_capas, find_in_path,
-    home, no_encontrado, primer_existente, version_de, EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, home, version_de, EspacioGlobal,
+    Runner, RunnerOutput,
 };
 use crate::sondeo;
 use std::collections::BTreeMap;
@@ -30,19 +30,8 @@ fn ubicaciones_bun() -> Vec<PathBuf> {
 /// PATH, the standard locations, the user-configured PATH probe
 /// (#43/#45 — login shell, registry on Windows).
 pub fn instalado() -> bool {
-    descubrir_bin().is_some()
+    sondeo::descubrir_o_error("bun", ubicaciones_bun()).is_ok()
 }
-
-/// bun's discovery chain (#43/#45): PATH → standard locations →
-/// user-configured PATH probe (shell or registry). First hit wins.
-fn descubrir_bin() -> Option<PathBuf> {
-    descubrir_por_capas(
-        || find_in_path(&con_extension("bun")),
-        || primer_existente(ubicaciones_bun()),
-        || sondeo::capa("bun"),
-    )
-}
-
 /// bun's real runner: PATH or standard locations. bun does not depend on
 /// node: no need to prepend nvm's PATH or report a node version.
 pub struct RealBunRunner {
@@ -52,11 +41,7 @@ pub struct RealBunRunner {
 
 impl RealBunRunner {
     pub fn discover() -> std::io::Result<Self> {
-        let bin = descubrir_bin().ok_or_else(|| {
-            let mut buscadas = ubicaciones_bun();
-            buscadas.extend(sondeo::buscadas("bun"));
-            no_encontrado("bun", &buscadas)
-        })?;
+        let bin = sondeo::descubrir_o_error("bun", ubicaciones_bun())?;
         let mut probe = std::process::Command::new(&bin);
         probe.arg("--version");
         let bun_version = version_de(probe).unwrap_or_else(|| "unknown".to_string());

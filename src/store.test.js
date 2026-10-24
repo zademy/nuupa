@@ -202,7 +202,7 @@ describe("store de paquetes globales", () => {
     });
     await store.refresh();
     await store.update("hunkdiff");
-    expect(store.isUpdating("hunkdiff")).toBe(false);
+    expect(store.enCurso("hunkdiff")).toBe(false);
     expect(store.hasError("hunkdiff")).toBe(false);
     expect(calls).toEqual(["list_globals", "update_package", "list_globals"]);
   });
@@ -402,7 +402,7 @@ describe("store de paquetes globales", () => {
     await store.refresh();
     await store.updateAll();
     expect(store.hasError("hunkdiff")).toBe(true); // failed result
-    expect(store.isUpdating("context-mode")).toBe(false); // success clears
+    expect(store.enCurso("context-mode")).toBe(false); // success clears
     expect(store.queue.current).toBeNull();
     expect(
       store.logs.value.some((l) =>
@@ -418,7 +418,7 @@ describe("store de paquetes globales", () => {
       tipo: "empieza",
       paquete: "cowsay",
     });
-    expect(store.isUpdating("cowsay")).toBe(false);
+    expect(store.enCurso("cowsay")).toBe(false);
     expect(store.queue.current).toBeNull();
   });
 
@@ -689,7 +689,7 @@ describe("store de paquetes globales", () => {
     await store.updateAll();
     // a user decision is not an error: the row just goes back to normal
     expect(store.hasError("hunkdiff")).toBe(false);
-    expect(store.isUpdating("hunkdiff")).toBe(false);
+    expect(store.enCurso("hunkdiff")).toBe(false);
     expect(store.queue.summary.detenidos).toBe(1);
     expect(store.logs.value.some((l) => l.includes("was stopped"))).toBe(true);
   });
@@ -889,10 +889,10 @@ describe("store de paquetes globales", () => {
     });
     await store.refresh();
     const tarea = store.uninstall("hunkdiff");
-    expect(store.isUpdating("hunkdiff")).toBe(true);
+    expect(store.enCurso("hunkdiff")).toBe(true);
     resolver({ success: true, output: "removed" });
     await tarea;
-    expect(store.isUpdating("hunkdiff")).toBe(false);
+    expect(store.enCurso("hunkdiff")).toBe(false);
     expect(store.anuncio.value).toContain("hunkdiff");
   });
 });

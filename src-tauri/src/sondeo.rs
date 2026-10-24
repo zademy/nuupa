@@ -11,7 +11,10 @@
 //! el arranque sigue; en Windows, la rama del registro que falle no
 //! suma y las demás siguen. brew jamás se sondea en Windows.
 
-use crate::kernel::{con_extension, correr_consulta, primer_existente};
+use crate::kernel::{
+    con_extension, correr_consulta, descubrir_por_capas, find_in_path, no_encontrado,
+    primer_existente,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -214,6 +217,35 @@ pub(crate) fn buscadas(nombre: &str) -> Vec<PathBuf> {
         .ok()
         .map(|sesion| buscadas_sondeo(&sesion, nombre))
         .unwrap_or_default()
+}
+
+/// El final compartido de toda cadena del Descubrimiento: cuando
+/// ninguna capa acierta, el error `no_encontrado` lista todo lo
+/// mirado — las ubicaciones habituales del gestor y las rutas que
+/// el sondeo expandió (#43/#45).
+pub(crate) fn no_encontrado_con_sondeo(nombre: &str, ubicaciones: Vec<PathBuf>) -> std::io::Error {
+    let mut rutas = ubicaciones;
+    rutas.extend(buscadas(nombre));
+    no_encontrado(nombre, &rutas)
+}
+
+/// La cadena completa del Descubrimiento de un binario autónomo
+/// (brew, pnpm, bun): PATH del entorno → ubicaciones habituales →
+/// sondeo; el primer acierto gana y una capa solo corre si la
+/// anterior falló (el sondeo es el caro: UNO por sesión, cacheado).
+/// Si nada acierta, [`no_encontrado_con_sondeo`] muestra dónde se
+/// buscó. npm queda fuera — su binario es un shim de node y su
+/// cadena la arma el adaptador — pero comparte el final.
+pub(crate) fn descubrir_o_error(
+    nombre: &str,
+    ubicaciones: Vec<PathBuf>,
+) -> std::io::Result<PathBuf> {
+    let bin = descubrir_por_capas(
+        || find_in_path(&con_extension(nombre)),
+        || primer_existente(ubicaciones.clone()),
+        || capa(nombre),
+    );
+    bin.ok_or_else(|| no_encontrado_con_sondeo(nombre, ubicaciones))
 }
 
 /// La capa de sondeo como función pura: cache primero, sondaje UNA
@@ -483,6 +515,27 @@ mod tests {
         let mut sesion = SesionSondeo::default();
         let _ = capa_sondeo("pnpm", &falso, &mut sesion);
         assert!(buscadas_sondeo(&sesion, "pnpm").is_empty());
+    }
+
+    #[test]
+    fn no_encontrado_con_sondeo_lista_las_ubicaciones_del_gestor() {
+        // La SESION global sigue intacta (ningún sondeo real corrió
+        // en la ejecución normal): el mensaje lista al menos las
+        // ubicaciones habituales del gestor.
+        let msg =
+            no_encontrado_con_sondeo("pnpm", vec![PathBuf::from("/opt/pnpm/pnpm")]).to_string();
+        assert!(msg.starts_with("pnpm not found"), "{msg}");
+        assert!(msg.contains("/opt/pnpm/pnpm"), "{msg}");
+    }
+
+    #[test]
+    fn descubrir_o_error_acierta_en_ubicaciones_sin_sondear() {
+        // Este «gestor» no vive en el PATH del entorno: acierta la
+        // capa de ubicaciones habituales y el sondeo ni corre.
+        let ubicacion = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let bin = descubrir_o_error("gestor-fantoma-4142", vec![ubicacion.clone()])
+            .expect("la ubicación existente acierta");
+        assert_eq!(bin, ubicacion);
     }
 
     /// Smoke manual en la máquina REAL (`cargo test -- --ignored`):
