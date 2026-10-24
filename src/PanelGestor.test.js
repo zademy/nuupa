@@ -30,6 +30,39 @@ const SNAPSHOT = {
   ],
 };
 
+// brew: una Pineada, una fórmula normal y una cask (fórmulas
+// primero, orden de despliegue de brew).
+const SNAPSHOT_BREW = {
+  version_gestor: "7.0.4",
+  version_node: null,
+  comando_actualizar: "brew upgrade",
+  comando_desinstalar: "brew uninstall",
+  packages: [
+    {
+      name: "ffmpeg",
+      installed: "7.1",
+      latest: "8.0",
+      outdated: true,
+      tipo: "formula",
+      pinned: true,
+    },
+    {
+      name: "wget",
+      installed: "1.0",
+      latest: "1.0",
+      outdated: false,
+      tipo: "formula",
+    },
+    {
+      name: "firefox",
+      installed: "130.0",
+      latest: "130.0",
+      outdated: false,
+      tipo: "cask",
+    },
+  ],
+};
+
 function montar(gestor = "npm") {
   return mount(PanelGestor, { props: { gestor, log: crearLog() } });
 }
@@ -425,6 +458,8 @@ describe("PanelGestor montado", () => {
     expect(tauri.ultima("uninstall_package")?.args).toEqual({
       gestor: "npm",
       name: "hunkdiff",
+      tipo: null,
+      pineada: false,
     });
     expect(filaDe(c, "hunkdiff")).toBeUndefined();
   });
@@ -458,7 +493,7 @@ describe("PanelGestor montado", () => {
     ).toBeDefined();
   });
 
-  it("sin comando de desinstalación (brew hoy) no hay papelera", async () => {
+  it("sin comando de desinstalación no hay papelera", async () => {
     tauri.responder("get_excluded", { estado: "ok", nombres: [] });
     tauri.responder("list_globals", {
       version_gestor: "7.0.4",
@@ -471,6 +506,65 @@ describe("PanelGestor montado", () => {
     const c = montar();
     await flushPromises();
     expect(c.findAll("button.desinstalar")).toHaveLength(0);
+  });
+
+  it("la papelera de brew está en toda fila: normal, Excluida y Pineada", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: ["wget"] });
+    tauri.responder("list_globals", SNAPSHOT_BREW);
+    const c = montar("brew");
+    await flushPromises();
+    expect(c.findAll("button.desinstalar")).toHaveLength(3);
+    // la Excluida y la Pineada desinstalan igual que una normal
+    expect(
+      filaDe(c, "wget").find("button.desinstalar").attributes("disabled"),
+    ).toBeUndefined();
+    expect(
+      filaDe(c, "ffmpeg").find("button.desinstalar").attributes("disabled"),
+    ).toBeUndefined();
+  });
+
+  it("confirmar en una cask de brew viaja con el tipo y sin pineo", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", SNAPSHOT_BREW);
+    tauri.responder("uninstall_package", {
+      success: true,
+      output: "Uninstalling firefox",
+    });
+    const c = montar("brew");
+    await flushPromises();
+    await filaDe(c, "firefox").find("button.desinstalar").trigger("click");
+    // una cask no puede estar pineada: el aviso no aparece
+    expect(c.get('[role="dialog"]').text()).not.toContain("unpins");
+    await c.get("button.peligro").trigger("click");
+    await flushPromises();
+    expect(tauri.ultima("uninstall_package")?.args).toEqual({
+      gestor: "brew",
+      name: "firefox",
+      tipo: "cask",
+      pineada: false,
+    });
+  });
+
+  it("confirmar en una Pineada avisa el pineo y viaja con pineada", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", SNAPSHOT_BREW);
+    tauri.responder("uninstall_package", {
+      success: true,
+      output: "Unpinned ffmpeg",
+    });
+    const c = montar("brew");
+    await flushPromises();
+    await filaDe(c, "ffmpeg").find("button.desinstalar").trigger("click");
+    // el modal avisa ANTES de la acción irreversible
+    expect(c.get('[role="dialog"]').text()).toContain("unpins and uninstalls");
+    await c.get("button.peligro").trigger("click");
+    await flushPromises();
+    expect(tauri.ultima("uninstall_package")?.args).toEqual({
+      gestor: "brew",
+      name: "ffmpeg",
+      tipo: "formula",
+      pineada: true,
+    });
   });
 
   it("el fallo del gestor deja el error visible en la fila y el panel sigue usable", async () => {

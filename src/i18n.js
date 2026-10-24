@@ -62,6 +62,8 @@ export const MENSAJES = {
     desinstalarTituloModal: "Uninstall package",
     desinstalarCuerpo:
       "This uninstalls {paquete} from the global space of {gestor}. It cannot be undone.",
+    desinstalarCuerpoPineada:
+      "This unpins and uninstalls {paquete} from the global space of {gestor}. It cannot be undone.",
     desinstalando: "uninstalling…",
     desinstalado: "uninstalled",
     excluir: "Exclude from Update all",
@@ -144,6 +146,8 @@ export const MENSAJES = {
     desinstalarTituloModal: "Desinstalar paquete",
     desinstalarCuerpo:
       "Se desinstalará {paquete} del espacio global de {gestor}. No se puede deshacer.",
+    desinstalarCuerpoPineada:
+      "Se quita el pineo y se desinstala {paquete} del espacio global de {gestor}. No se puede deshacer.",
     desinstalando: "desinstalando…",
     desinstalado: "desinstalado",
     excluir: "Excluir de Actualizar todo",

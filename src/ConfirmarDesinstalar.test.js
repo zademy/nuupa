@@ -7,9 +7,9 @@ import ConfirmarDesinstalar from "./ConfirmarDesinstalar.vue";
 // consequence, and the a11y pattern of the About dialog (#20) — focus
 // in, trap, Esc/overlay/Cancel out, focus back to the trigger.
 
-const montar = () =>
+const montar = (props = {}) =>
   mount(ConfirmarDesinstalar, {
-    props: { gestor: "npm", paquete: "hunkdiff" },
+    props: { gestor: "npm", paquete: "hunkdiff", ...props },
     attachTo: document.body,
   });
 
@@ -75,5 +75,15 @@ describe("ConfirmarDesinstalar", () => {
     c.unmount();
     expect(document.activeElement).toBe(disparador);
     disparador.remove();
+  });
+
+  it("una Pineada avisa que se quita el pineo junto con la fórmula", () => {
+    const c = montar({ pineada: true });
+    expect(c.get(".cuerpo").text()).toContain("unpins and uninstalls");
+    c.unmount();
+    // sin pineada el aviso no aparece: el cuerpo base
+    const c2 = montar();
+    expect(c2.get(".cuerpo").text()).not.toContain("unpins");
+    c2.unmount();
   });
 });

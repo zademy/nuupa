@@ -775,7 +775,12 @@ describe("store de paquetes globales", () => {
             };
       }
       if (cmd === "uninstall_package") {
-        expect(args).toEqual({ gestor: "npm", name: "hunkdiff" });
+        expect(args).toEqual({
+          gestor: "npm",
+          name: "hunkdiff",
+          tipo: null,
+          pineada: false,
+        });
         return { success: true, output: "removed 1 package in 1s" };
       }
       throw new Error(`comando inesperado: ${cmd}`);
@@ -793,6 +798,27 @@ describe("store de paquetes globales", () => {
       "uninstall_package",
       "list_globals",
     ]);
+  });
+
+  it("desinstalar en brew viaja con el tipo y el pineo de la fila", async () => {
+    const store = createPackagesStore(async (cmd, args) => {
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "uninstall_package") {
+        expect(args).toEqual({
+          gestor: "npm",
+          name: "ffmpeg",
+          tipo: "formula",
+          pineada: true,
+        });
+        return { success: true, output: "Unpinned ffmpeg" };
+      }
+      throw new Error(`comando inesperado: ${cmd}`);
+    });
+    await store.cargarExclusiones();
+    await store.refresh();
+    const ok = await store.uninstall("ffmpeg", "formula", true);
+    expect(ok).toBe(true);
   });
 
   it("desinstalar con fallo del gestor deja el error en la fila y conserva la Exclusión", async () => {

@@ -8,6 +8,9 @@ import { useI18n } from "./i18n";
 const props = defineProps({
   gestor: { type: String, required: true },
   paquete: { type: String, required: true },
+  // #46: a Pineada's Desinstalar removes brew's pin too — the
+  // modal says so before the irreversible click.
+  pineada: { type: Boolean, default: false },
 });
 
 // `confirmar` runs the Desinstalar (the panel owns the store call);
@@ -78,10 +81,15 @@ onUnmounted(() => {
       <h2 class="titulo">{{ t("desinstalarTituloModal") }}</h2>
       <p class="cuerpo">
         {{
-          t("desinstalarCuerpo", {
-            paquete: props.paquete,
-            gestor: props.gestor,
-          })
+          props.pineada
+            ? t("desinstalarCuerpoPineada", {
+                paquete: props.paquete,
+                gestor: props.gestor,
+              })
+            : t("desinstalarCuerpo", {
+                paquete: props.paquete,
+                gestor: props.gestor,
+              })
         }}
       </p>
 

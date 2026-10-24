@@ -47,15 +47,16 @@ const {
 
 const { t } = useI18n();
 
-// The pending Desinstalar (#44): the name whose trash was clicked.
-// The modal is its brake; confirming closes it and runs the row's
-// command.
+// The pending Desinstalar (#44): the ROW whose trash was clicked
+// (#46: the whole row — brew's confirm travels its type and pin
+// state). The modal is its brake; confirming closes it and runs
+// the row's command.
 const desinstalando = ref(null);
 
 function confirmarDesinstalar() {
-  const nombre = desinstalando.value;
+  const fila = desinstalando.value;
   desinstalando.value = null;
-  uninstall(nombre);
+  uninstall(fila.name, fila.tipo, fila.pinned);
 }
 // The log always shows the last line: auto-scroll to the bottom, also on
 // mount over a long history (immediate).
@@ -366,7 +367,7 @@ onUnmounted(() => {
                       })
                     "
                     :aria-label="t('desinstalarPaquete', { paquete: p.name })"
-                    @click="desinstalando = p.name"
+                    @click="desinstalando = p"
                   >
                     <Icono nombre="papelera" :tamano="13" />
                   </button>
@@ -382,7 +383,8 @@ onUnmounted(() => {
     <ConfirmarDesinstalar
       v-if="desinstalando"
       :gestor="gestor"
-      :paquete="desinstalando"
+      :paquete="desinstalando.name"
+      :pineada="!!desinstalando.pinned"
       @confirmar="confirmarDesinstalar"
       @cerrar="desinstalando = null"
     />
