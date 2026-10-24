@@ -156,6 +156,88 @@ pub(crate) fn path_del_env(salida: &str) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Lee el valor `Path` de la salida de `reg query ... /v Path` tal
+/// como la imprime reg.exe: la fila sangrada `    Path    TIPO
+/// VALOR`, donde el tipo (`REG_SZ`, `REG_EXPAND_SZ`, …) precede al
+/// valor separado por espacios y el valor puede contenerlos. Sin fila
+/// de valor (la rama existe pero el valor no) no hay nada que leer.
+/// La referencia cruda, sin expandir: eso lo hace
+/// [`expandir_referencias`].
+pub(crate) fn path_del_reg(salida: &str) -> Option<&str> {
+    salida.lines().find_map(|linea| {
+        let linea = linea.trim();
+        let resto = linea
+            .strip_prefix("Path")
+            .filter(|resto| resto.starts_with(char::is_whitespace))?
+            .trim_start();
+        let (tipo, valor) = resto.split_once(char::is_whitespace)?;
+        if !tipo.starts_with("REG_") {
+            return None;
+        }
+        let valor = valor.trim();
+        (!valor.is_empty()).then_some(valor)
+    })
+}
+
+/// Expande las `%REFERENCIAS%` de un valor del registro (los PATH de
+/// usuario y de máquina suelen ser `REG_EXPAND_SZ`): cada referencia
+/// con valor se reemplaza, las que no tienen valor quedan literales —
+/// el comportamiento de Windows — y un `%` suelto no se toca.
+pub(crate) fn expandir_referencias(valor: &str, vars: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut resultado = String::with_capacity(valor.len());
+    let mut resto = valor;
+    while let Some(inicio) = resto.find('%') {
+        resultado.push_str(&resto[..inicio]);
+        resto = &resto[inicio + 1..];
+        match resto.find('%') {
+            Some(fin) => {
+                let nombre = &resto[..fin];
+                match vars(nombre) {
+                    Some(valor_de_variable) => resultado.push_str(&valor_de_variable),
+                    // sin valor no hay nada que sustituir: queda literal
+                    None => resultado.push_str(&format!("%{nombre}%")),
+                }
+                resto = &resto[fin + 1..];
+            }
+            None => {
+                resultado.push('%');
+                break;
+            }
+        }
+    }
+    resultado.push_str(resto);
+    resultado
+}
+
+/// El PATH configurado en Windows (#45), como lógica pura: el del
+/// entorno más el de máquina y el de usuario del registro, separados
+/// por `;`, vacíos fuera y sin repetidos. El orden es el del ticket:
+/// primero el entorno (la combinación que el inicio de sesión ya
+/// hizo), luego el registro en el orden en que Windows lo construye —
+/// máquina antes que usuario. Las `%REFERENCIAS%` de los valores del
+/// registro se expanden con `vars`; el entorno ya llega expandido.
+pub(crate) fn paths_de_registro(
+    entorno: &str,
+    usuario: &str,
+    maquina: &str,
+    vars: &dyn Fn(&str) -> Option<String>,
+) -> Vec<PathBuf> {
+    let usuario = expandir_referencias(usuario, vars);
+    let maquina = expandir_referencias(maquina, vars);
+    let mut vistas: std::collections::BTreeSet<std::ffi::OsString> = Default::default();
+    entorno
+        .split(';')
+        .chain(maquina.split(';'))
+        .chain(usuario.split(';'))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        // el registro repite lo que el entorno ya trae: gana la
+        // primera aparición, las repetidas no generan candidatos
+        .filter(|dir| vistas.insert(dir.clone().into_os_string()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +402,90 @@ mod tests {
     #[test]
     fn path_del_env_sin_linea_path_es_vacio() {
         assert!(path_del_env("HOME=/Users/ejemplo\nSHELL=/bin/zsh").is_empty());
+    }
+
+    // ---- Registro de Windows (#45): lógica pura con falsos de registro ----
+
+    /// Falso de variables de entorno para expandir `%REFERENCIAS%` sin
+    /// depender del entorno real de la máquina que corre el test.
+    fn sin_variables(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn paths_de_registro_suma_entorno_y_registro_en_orden() {
+        assert_eq!(
+            paths_de_registro(
+                "C:\\Windows\\system32;C:\\Windows",
+                "%HOMEDRIVE%\\herramientas",
+                "C:\\Archivos de programa\\nodejs;;C:\\Windows",
+                &sin_variables,
+            ),
+            vec![
+                PathBuf::from("C:\\Windows\\system32"),
+                PathBuf::from("C:\\Windows"),
+                PathBuf::from("C:\\Archivos de programa\\nodejs"),
+                // una referencia sin valor queda literal, como en Windows
+                PathBuf::from("%HOMEDRIVE%\\herramientas"),
+            ]
+        );
+    }
+
+    #[test]
+    fn expandir_referencias_resuelve_las_variables_y_deja_las_desconocidas() {
+        let appdata = |nombre: &str| {
+            (nombre == "APPDATA").then(|| "C:\\Usuarios\\ej\\AppData\\Roaming".to_string())
+        };
+        assert_eq!(
+            expandir_referencias("%APPDATA%\\npm;%DESCONOCIDA%\\bin", &appdata),
+            "C:\\Usuarios\\ej\\AppData\\Roaming\\npm;%DESCONOCIDA%\\bin"
+        );
+        // un % suelto (un directorio llamado «100%») no se toca
+        assert_eq!(
+            expandir_referencias("D:\\100%\\listo", &appdata),
+            "D:\\100%\\listo"
+        );
+    }
+
+    #[test]
+    fn paths_de_registro_expande_las_referencias_del_registro() {
+        let appdata = |nombre: &str| {
+            (nombre == "APPDATA").then(|| "C:\\Usuarios\\ej\\AppData\\Roaming".to_string())
+        };
+        assert_eq!(
+            paths_de_registro("C:\\Windows", "%APPDATA%\\npm", "", &appdata),
+            vec![
+                PathBuf::from("C:\\Windows"),
+                PathBuf::from("C:\\Usuarios\\ej\\AppData\\Roaming\\npm"),
+            ]
+        );
+    }
+
+    #[test]
+    fn path_del_reg_toma_el_valor_tras_el_tipo() {
+        // salida de `reg query HKCU\Environment /v Path` (REG_EXPAND_SZ)
+        let usuario = "\r\n\
+             HKEY_CURRENT_USER\\Environment\r\n\
+             \x20   Path    REG_EXPAND_SZ    %USERPROFILE%\\bin;%APPDATA%\\npm\r\n\r\n";
+        assert_eq!(
+            path_del_reg(usuario),
+            Some("%USERPROFILE%\\bin;%APPDATA%\\npm")
+        );
+        // salida de la rama de máquina (REG_SZ, valor con espacios)
+        let maquina = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n\
+             \x20   Path    REG_SZ    C:\\Program Files\\nodejs;C:\\Windows\r\n";
+        assert_eq!(
+            path_del_reg(maquina),
+            Some("C:\\Program Files\\nodejs;C:\\Windows")
+        );
+    }
+
+    #[test]
+    fn path_del_reg_sin_fila_de_valor_es_ninguno() {
+        // la rama existe pero el valor Path no: reg.exe responde con error
+        // (exit != 0) y sin fila de valor — nada que leer
+        assert_eq!(path_del_reg("HKEY_CURRENT_USER\\Environment\r\n"), None);
+        // una fila de valor sin contenido tampoco aporta
+        assert_eq!(path_del_reg("    Path    REG_SZ    \r\n"), None);
     }
 }
