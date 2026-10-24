@@ -2,6 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import Icono from "./Icono.vue";
+import ConfirmarDesinstalar from "./ConfirmarDesinstalar.vue";
 import { createPackagesStore } from "./store";
 import { useI18n } from "./i18n";
 
@@ -24,6 +25,8 @@ const {
   hayDesactualizados,
   refresh,
   update,
+  uninstall,
+  isUninstalling,
   updateAll,
   stopAll,
   abandonarCola,
@@ -36,7 +39,7 @@ const {
   detalleExclusiones,
   toggleExcluded,
   excluyendoAhora,
-  isUpdating,
+  enCurso,
   hasError,
   detalleFallo,
   isExcluded,
@@ -44,6 +47,17 @@ const {
 
 const { t } = useI18n();
 
+// The pending Desinstalar (#44): the ROW whose trash was clicked
+// (#46: the whole row — brew's confirm travels its type and pin
+// state). The modal is its brake; confirming closes it and runs
+// the row's command.
+const desinstalando = ref(null);
+
+function confirmarDesinstalar() {
+  const fila = desinstalando.value;
+  desinstalando.value = null;
+  uninstall(fila.name, fila.tipo, fila.pinned);
+}
 // The log always shows the last line: auto-scroll to the bottom, also on
 // mount over a long history (immediate).
 const logBox = ref(null);
@@ -286,9 +300,15 @@ onUnmounted(() => {
             </td>
             <td class="acciones">
               <div class="acciones-contenido">
-                <span v-if="isUpdating(p.name)" class="actualizando">
+                <span v-if="enCurso(p.name)" class="actualizando">
                   <span class="spinner"></span>
-                  {{ queue.stopped ? t("deteniendo") : t("actualizando") }}
+                  {{
+                    isUninstalling(p.name)
+                      ? t("desinstalando")
+                      : queue.stopped
+                        ? t("deteniendo")
+                        : t("actualizando")
+                  }}
                 </span>
                 <template v-else>
                   <!-- A Pineada is brew's own exclusion: read-only — the
@@ -333,6 +353,24 @@ onUnmounted(() => {
                   >
                     <Icono nombre="actualizar" :tamano="14" />
                   </button>
+                  <!-- Third action (#44): Desinstalar — in every
+                       gestor since #46 (brew included). Keyed on
+                       the snapshot's command, the single source. -->
+                  <button
+                    v-if="state.snapshot.comando_desinstalar"
+                    class="desinstalar solo-icono"
+                    :disabled="queue.active"
+                    :title="
+                      t('desinstalarTitulo', {
+                        comando: state.snapshot.comando_desinstalar,
+                        paquete: p.name,
+                      })
+                    "
+                    :aria-label="t('desinstalarPaquete', { paquete: p.name })"
+                    @click="desinstalando = p"
+                  >
+                    <Icono nombre="papelera" :tamano="13" />
+                  </button>
                 </template>
               </div>
             </td>
@@ -340,6 +378,16 @@ onUnmounted(() => {
         </tbody>
       </table>
     </div>
+    <!-- Desinstalar's brake: gestor + nombre, cancelable without
+         consequence. -->
+    <ConfirmarDesinstalar
+      v-if="desinstalando"
+      :gestor="gestor"
+      :paquete="desinstalando.name"
+      :pineada="!!desinstalando.pinned"
+      @confirmar="confirmarDesinstalar"
+      @cerrar="desinstalando = null"
+    />
   </section>
 </template>
 
@@ -432,6 +480,12 @@ onUnmounted(() => {
 .acciones button:not(:disabled):hover {
   background: var(--surface-2);
   color: var(--fg);
+}
+
+/* The destructive accent (#44): the trash reads as danger at rest,
+   dimmed like any disabled action otherwise. */
+.acciones button.desinstalar:not(:disabled) {
+  color: var(--danger);
 }
 
 .controles button:disabled {

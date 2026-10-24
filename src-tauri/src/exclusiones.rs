@@ -1,7 +1,7 @@
 //! Persistent "Update all" exclusions, per (manager, package).
 //!
 //! An Excluded package is skipped in ITS manager's queue but keeps the
-//! individual update available (glossary in CONTEXT.md). The JSON is a
+//! individual update available (glossary in GLOSSARY.md). The JSON is a
 //! map { manager: [names] }; the legacy format (flat list) is normalized
 //! on read as npm's exclusions and rewritten once.
 //!

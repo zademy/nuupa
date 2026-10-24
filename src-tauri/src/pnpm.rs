@@ -4,10 +4,10 @@
 //! command live in [`crate`]'s manager table.
 
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, find_in_path, guardar_path_node,
-    home, local_app_data, no_encontrado, parse_outdated, primer_existente, version_de,
-    EspacioGlobal, Runner, RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, guardar_path_node, home,
+    local_app_data, parse_outdated, version_de, EspacioGlobal, Runner, RunnerOutput,
 };
+use crate::sondeo;
 use std::path::{Path, PathBuf};
 
 /// pnpm's standard locations (outside the PATH), in order: the `PNPM_HOME`
@@ -29,12 +29,13 @@ fn ubicaciones_pnpm() -> Vec<PathBuf> {
     rutas
 }
 
-/// Is there a pnpm binary on this machine? Presence check (no spawn):
-/// feeds which tabs exist.
+/// Is there a pnpm on this machine? Presence check: the environment
+/// PATH, the standard locations, the user-configured PATH probe
+/// (#43/#45 — login shell, registry on Windows). Feeds which tabs
+/// exist.
 pub fn instalado() -> bool {
-    find_in_path(&con_extension("pnpm")).is_some() || primer_existente(ubicaciones_pnpm()).is_some()
+    sondeo::descubrir_o_error("pnpm", ubicaciones_pnpm()).is_ok()
 }
-
 /// pnpm's real runner: binary from the PATH or from pnpm's standard
 /// locations. The shim needs node in the PATH: node's own bin
 /// directory (see [`crate::kernel::ubicar_node`]) is prepended if
@@ -47,10 +48,7 @@ pub struct RealPnpmRunner {
 
 impl RealPnpmRunner {
     pub fn discover() -> std::io::Result<Self> {
-        let buscadas = ubicaciones_pnpm();
-        let bin = find_in_path(&con_extension("pnpm"))
-            .or_else(|| primer_existente(buscadas.clone()))
-            .ok_or_else(|| no_encontrado("pnpm", &buscadas))?;
+        let bin = sondeo::descubrir_o_error("pnpm", ubicaciones_pnpm())?;
         // The probes use the same prepended PATH as run(): without it,
         // from Finder the version would silently read "unknown".
         let pnpm_version = version_de(Self::command(&bin, &["--version"]))

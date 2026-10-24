@@ -50,7 +50,11 @@ export function createPackagesStore(
     loading: false,
   });
   const search = ref("");
-  const ESTADO = { ACTUALIZANDO: "updating", ERROR: "error" };
+  const ESTADO = {
+    ACTUALIZANDO: "updating",
+    DESINSTALANDO: "uninstalling",
+    ERROR: "error",
+  };
   const status = reactive({});
   // Failure detail per package (the row shows it as its tooltip): same
   // text that markFailed writes to the log.
@@ -89,6 +93,35 @@ export function createPackagesStore(
     }
   }
 
+  // Shared skeleton of the two row actions (update, Desinstalar):
+  // each keeps its own guard — what refuses it is semantics, not
+  // shape — and its own ESTADO; this owns the invariant: mark the
+  // row, invoke the action's command and, on success, clear the row
+  // and run what THAT action means (`alExito`); on failure mark the
+  // row with the action's own prefix plus the manager's real output
+  // — or the raw error text (same shape as the queue path: prefix +
+  // raw text, never the bare error). Returns true/false.
+  async function correrEnFila(
+    name,
+    { estado, comando, args = {}, prefijoFallo, alExito },
+  ) {
+    status[name] = estado;
+    try {
+      const res = await invokeFn(comando, { gestor, name, ...args });
+      if (res?.success) {
+        delete status[name];
+        delete detalle[name];
+        await alExito();
+        return true;
+      }
+      markFailed(name, `${prefijoFallo}\n${res?.output ?? ""}`.trim());
+      return false;
+    } catch (e) {
+      markFailed(name, `${prefijoFallo}\n${String(e)}`.trim());
+      return false;
+    }
+  }
+
   // Update one package: install its latest version. `tipo` is the row's
   // kind when the manager has more than one (brew: formula/cask) — it
   // decides the update line's flag. On success the list
@@ -98,27 +131,16 @@ export function createPackagesStore(
   // lives in the log. Returns true/false on success/failure; undefined
   // if it was already in-flight (the queue only counts explicit results).
   async function update(name, tipo = null, { refrescar = true } = {}) {
-    if (status[name] === ESTADO.ACTUALIZANDO) return;
-    status[name] = ESTADO.ACTUALIZANDO;
-    try {
-      const res = await invokeFn("update_package", { gestor, name, tipo });
-      if (res?.success) {
-        delete status[name];
-        delete detalle[name];
+    if (enCurso(name)) return;
+    return correrEnFila(name, {
+      estado: ESTADO.ACTUALIZANDO,
+      comando: "update_package",
+      args: { tipo },
+      prefijoFallo: t("actualizacionFallo"),
+      alExito: async () => {
         if (refrescar) await refresh();
-        return true;
-      }
-      markFailed(
-        name,
-        `${t("actualizacionFallo")}\n${res?.output ?? ""}`.trim(),
-      );
-      return false;
-    } catch (e) {
-      // Same shape as the queue path (e.g. an individual timeout): prefix
-      // + raw text, never the bare error.
-      markFailed(name, `${t("actualizacionFallo")}\n${String(e)}`.trim());
-      return false;
-    }
+      },
+    });
   }
 
   function markFailed(name, detail) {
@@ -127,10 +149,41 @@ export function createPackagesStore(
     appendLog(`${gestor}/${name}: ${detail}`);
   }
 
-  const isUpdating = (name) => status[name] === ESTADO.ACTUALIZANDO;
+  // A row is "in progress" for an update OR a Desinstalar: both
+  // block every other row action and show the spinner.
+  const enCurso = (name) =>
+    status[name] === ESTADO.ACTUALIZANDO ||
+    status[name] === ESTADO.DESINSTALANDO;
+  const isUninstalling = (name) => status[name] === ESTADO.DESINSTALANDO;
   const hasError = (name) => status[name] === ESTADO.ERROR;
   // The row's tooltip: why THIS package failed (motivo + gestor output).
   const detalleFallo = (name) => detalle[name];
+
+  // Desinstalar (glossary): removes the package from ITS gestor's
+  // global space. Row state, live log via pm-output, failure detail
+  // in the row — the shared skeleton of `update` with its own
+  // ESTADO and its own success. brew's row travels its type
+  // (formula/cask flag) and pin state (#46: a Pineada runs unpin +
+  // uninstall in the backend). On success the row leaves the list
+  // (a refresh), the Excluded record is gone — the backend's single
+  // writer already deleted it, the store applies exactly that
+  // (#44) — and a screen reader hears it. Returns true/false;
+  // undefined if it was refused (queue active or row in progress).
+  async function uninstall(name, tipo = null, pineada = false) {
+    if (queue.active || enCurso(name)) return;
+    return correrEnFila(name, {
+      estado: ESTADO.DESINSTALANDO,
+      comando: "uninstall_package",
+      args: { tipo, pineada },
+      prefijoFallo: t("desinstalacionFallo"),
+      alExito: async () => {
+        excluded.value = excluded.value.filter((n) => n !== name);
+        await refresh();
+        // the row vanished: say it, or a screen reader hears nothing
+        anunciar(anuncio, `${name}: ${t("desinstalado")}`);
+      },
+    });
+  }
 
   // Copy diagnostics (#21): version, OS, gestores, this gestor's counts
   // and the last log lines — home-redacted — straight to the clipboard.
@@ -377,6 +430,7 @@ export function createPackagesStore(
     conteo,
     refresh,
     update,
+    uninstall,
     updateAll,
     stopAll,
     abandonarCola,
@@ -389,7 +443,8 @@ export function createPackagesStore(
     detalleExclusiones,
     toggleExcluded,
     excluyendoAhora,
-    isUpdating,
+    enCurso,
+    isUninstalling,
     hasError,
     detalleFallo,
     isExcluded,

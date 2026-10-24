@@ -14,6 +14,8 @@ export default [
       ".github/", // YAML de CI, sensible a reformatos
       ".claude/",
       ".serena/",
+      ".agents/", // skills de agentes: markdown y configs de terceros
+      ".opencode/",
     ],
   },
   js.configs.recommended,

@@ -202,7 +202,7 @@ describe("store de paquetes globales", () => {
     });
     await store.refresh();
     await store.update("hunkdiff");
-    expect(store.isUpdating("hunkdiff")).toBe(false);
+    expect(store.enCurso("hunkdiff")).toBe(false);
     expect(store.hasError("hunkdiff")).toBe(false);
     expect(calls).toEqual(["list_globals", "update_package", "list_globals"]);
   });
@@ -402,7 +402,7 @@ describe("store de paquetes globales", () => {
     await store.refresh();
     await store.updateAll();
     expect(store.hasError("hunkdiff")).toBe(true); // failed result
-    expect(store.isUpdating("context-mode")).toBe(false); // success clears
+    expect(store.enCurso("context-mode")).toBe(false); // success clears
     expect(store.queue.current).toBeNull();
     expect(
       store.logs.value.some((l) =>
@@ -418,7 +418,7 @@ describe("store de paquetes globales", () => {
       tipo: "empieza",
       paquete: "cowsay",
     });
-    expect(store.isUpdating("cowsay")).toBe(false);
+    expect(store.enCurso("cowsay")).toBe(false);
     expect(store.queue.current).toBeNull();
   });
 
@@ -689,7 +689,7 @@ describe("store de paquetes globales", () => {
     await store.updateAll();
     // a user decision is not an error: the row just goes back to normal
     expect(store.hasError("hunkdiff")).toBe(false);
-    expect(store.isUpdating("hunkdiff")).toBe(false);
+    expect(store.enCurso("hunkdiff")).toBe(false);
     expect(store.queue.summary.detenidos).toBe(1);
     expect(store.logs.value.some((l) => l.includes("was stopped"))).toBe(true);
   });
@@ -753,5 +753,146 @@ describe("store de paquetes globales", () => {
     await store.cargarExclusiones();
     expect(store.estadoExclusiones.value).toBe("ilegible");
     expect(store.detalleExclusiones.value).toContain("Permission denied");
+  });
+
+  // ---- Desinstalar (#44): espejo del update, la fila sale del listado ----
+
+  it("desinstalar con éxito saca la fila del listado y borra el nombre de los Excluidos", async () => {
+    const llamadas = [];
+    let refrescos = 0;
+    const store = createPackagesStore(async (cmd, args) => {
+      llamadas.push(cmd);
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
+      if (cmd === "list_globals") {
+        refrescos++;
+        // tras el comando el gestor ya no lista el paquete
+        return refrescos === 1
+          ? SNAPSHOT
+          : {
+              ...SNAPSHOT,
+              packages: SNAPSHOT.packages.filter((p) => p.name !== "hunkdiff"),
+            };
+      }
+      if (cmd === "uninstall_package") {
+        expect(args).toEqual({
+          gestor: "npm",
+          name: "hunkdiff",
+          tipo: null,
+          pineada: false,
+        });
+        return { success: true, output: "removed 1 package in 1s" };
+      }
+      throw new Error(`comando inesperado: ${cmd}`);
+    });
+    await store.cargarExclusiones();
+    await store.refresh();
+    const ok = await store.uninstall("hunkdiff");
+    expect(ok).toBe(true);
+    expect(store.packages.value.map((p) => p.name)).not.toContain("hunkdiff");
+    // la Exclusión murió con su paquete: el backend la borró
+    expect(store.isExcluded("hunkdiff")).toBe(false);
+    expect(llamadas).toEqual([
+      "get_excluded",
+      "list_globals",
+      "uninstall_package",
+      "list_globals",
+    ]);
+  });
+
+  it("desinstalar en brew viaja con el tipo y el pineo de la fila", async () => {
+    const store = createPackagesStore(async (cmd, args) => {
+      if (cmd === "get_excluded") return { estado: "ok", nombres: [] };
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "uninstall_package") {
+        expect(args).toEqual({
+          gestor: "npm",
+          name: "ffmpeg",
+          tipo: "formula",
+          pineada: true,
+        });
+        return { success: true, output: "Unpinned ffmpeg" };
+      }
+      throw new Error(`comando inesperado: ${cmd}`);
+    });
+    await store.cargarExclusiones();
+    await store.refresh();
+    const ok = await store.uninstall("ffmpeg", "formula", true);
+    expect(ok).toBe(true);
+  });
+
+  it("desinstalar con fallo del gestor deja el error en la fila y conserva la Exclusión", async () => {
+    const llamadas = [];
+    const store = createPackagesStore(async (cmd) => {
+      llamadas.push(cmd);
+      if (cmd === "get_excluded")
+        return { estado: "ok", nombres: ["hunkdiff"] };
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "uninstall_package")
+        return { success: false, output: "EACCES: permission denied" };
+      throw new Error(`comando inesperado: ${cmd}`);
+    });
+    await store.cargarExclusiones();
+    await store.refresh();
+    const ok = await store.uninstall("hunkdiff");
+    expect(ok).toBe(false);
+    expect(store.hasError("hunkdiff")).toBe(true);
+    expect(store.detalleFallo("hunkdiff")).toContain("EACCES");
+    // el panel sigue usable: la fila sigue y la Exclusión se conserva
+    expect(store.packages.value.map((p) => p.name)).toContain("hunkdiff");
+    expect(store.isExcluded("hunkdiff")).toBe(true);
+    expect(llamadas).not.toContain("quitar_exclusion");
+  });
+
+  it("desinstalar con excepción marca la fila en error", async () => {
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "uninstall_package") throw "spawn failed";
+    });
+    await store.refresh();
+    await store.uninstall("context-mode");
+    expect(store.hasError("context-mode")).toBe(true);
+  });
+
+  it("no se desinstala durante Actualizar todo ni con la fila en curso", async () => {
+    const desinstalados = [];
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "actualizar_todo") return new Promise(() => {}); // cuelga
+      if (cmd === "update_package") return new Promise(() => {}); // cuelga
+      if (cmd === "uninstall_package") {
+        desinstalados.push(cmd);
+        return { success: true };
+      }
+    });
+    await store.refresh();
+    const cola = store.updateAll(); // en vuelo, sin await
+    await store.uninstall("hunkdiff"); // cola activa: ignorada
+    expect(desinstalados).toEqual([]);
+    store.queue.active = false; // simula el fin de la cola
+    store.procesarEventoCola({
+      gestor: "npm",
+      tipo: "empieza",
+      paquete: "hunkdiff",
+    });
+    await store.uninstall("hunkdiff"); // fila en curso: ignorada
+    expect(desinstalados).toEqual([]);
+    cola.catch(() => {});
+  });
+
+  it("mientras desinstala la fila queda en curso y el éxito se anuncia", async () => {
+    let resolver;
+    const store = createPackagesStore(async (cmd) => {
+      if (cmd === "list_globals") return SNAPSHOT;
+      if (cmd === "uninstall_package")
+        return new Promise((r) => (resolver = r));
+    });
+    await store.refresh();
+    const tarea = store.uninstall("hunkdiff");
+    expect(store.enCurso("hunkdiff")).toBe(true);
+    resolver({ success: true, output: "removed" });
+    await tarea;
+    expect(store.enCurso("hunkdiff")).toBe(false);
+    expect(store.anuncio.value).toContain("hunkdiff");
   });
 });

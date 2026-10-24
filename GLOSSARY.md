@@ -30,7 +30,7 @@ Fórmula que el usuario instaló a propósito (no llegó como dependencia de otr
 _Avoid_: top-level, principal
 
 **Pineada**:
-Fórmula marcada en brew para no actualizarse; Nuupa la muestra como Excluida de solo lectura.
+Fórmula marcada en brew para no actualizarse; Nuupa la muestra como Excluida y nunca la actualiza. Desinstalarla quita también el pineo.
 _Avoid_: bloqueada, congelada, fija
 
 **Paquete del gestor**:
@@ -53,6 +53,10 @@ _Avoid_: upgradear, refrescar
 Cola secuencial que actualiza, de a uno, los paquetes desactualizados no excluidos.
 _Avoid_: actualizar en lote, bulk
 
+**Desinstalar**:
+Quitar un paquete global de su espacio global (`npm rm -g pkg`, `brew uninstall pkg`): destructivo, pide confirmación y borra el registro de Excluido si lo había. Aplica en toda fila, incluso Excluida o Pineada.
+_Avoid_: remover, eliminar, borrar
+
 **Detenido**:
 Paquete cuya actualización fue cortada a pedido del usuario (Detener): no es un fallo; la fila vuelve a la normalidad y el resumen lo cuenta aparte de los fallidos.
 _Avoid_: cancelado, abortado, fallido
@@ -70,7 +74,7 @@ Tiempo máximo de espera de un comando de gestor. Al vencer, Nuupa finaliza su p
 _Avoid_: timeout, límite, expiración
 
 **Descubrimiento**:
-Hallar el binario de un gestor en esta máquina: el PATH y las ubicaciones habituales por sistema. Si no aparece, el gestor no está: su pestaña no existe y el error muestra dónde se buscó. Nunca exige al usuario configurar nada.
+Hallar el binario de un gestor en esta máquina: el PATH, las ubicaciones habituales por sistema y la configuración donde el usuario define su PATH (shell en macOS/Linux, registro en Windows). Si no aparece, el gestor no está: su pestaña no existe y el error muestra dónde se buscó. Nunca exige al usuario configurar nada.
 _Avoid_: validación de instalación, chequeo de entorno
 
 **Tema**:
