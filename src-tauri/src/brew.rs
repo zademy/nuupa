@@ -41,7 +41,17 @@ fn ubicaciones_brew() -> Vec<PathBuf> {
 /// never feeds it, #45). Feeds which tabs exist: never true on
 /// Windows.
 pub fn instalado() -> bool {
+    if !brew_aplica(std::env::consts::OS) {
+        return false;
+    }
     descubrir_bin().is_some()
+}
+
+/// ¿brew puede existir en el sistema `so`? En Windows no (#45): ni
+/// sondeo ni pestaña — la cadena de Descubrimiento ni se arma, venga
+/// del PATH del entorno o del registro.
+fn brew_aplica(so: &str) -> bool {
+    so != "windows"
 }
 
 /// brew's discovery chain (#43): PATH → official prefixes → login
@@ -290,6 +300,15 @@ pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
 mod tests {
     use super::*;
     use crate::kernel::testutil::FakeRunner;
+
+    #[test]
+    fn brew_no_puede_existir_en_windows_ni_pestania_ni_sondeo() {
+        // la pestaña nace de instalado(): en Windows ni se arma la
+        // cadena de Descubrimiento — el registro (#45) nunca lo alimenta
+        assert!(!brew_aplica("windows"));
+        assert!(brew_aplica("macos"));
+        assert!(brew_aplica("linux"));
+    }
 
     // Fixtures captured from real Homebrew 7.0.4 shapes
     const OUTDATED_V2: &str = r#"{
