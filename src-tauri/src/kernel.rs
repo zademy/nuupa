@@ -62,15 +62,20 @@ pub struct EspacioGlobal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub comando_actualizar: String,
+    /// The uninstall command, when the gestor has the flow (#44;
+    /// brew joins in #46) — the UI keys the trash row action on it.
+    #[serde(default)]
+    pub comando_desinstalar: Option<String>,
     #[serde(flatten)]
     pub espacio: EspacioGlobal,
 }
 
 impl EspacioGlobal {
-    /// Completes the global space with its visible command for the IPC.
-    pub fn con_comando(self, comando: &str) -> Snapshot {
+    /// Completes the global space with its visible commands for the IPC.
+    pub fn con_comando(self, comando: &str, desinstalar: Option<&str>) -> Snapshot {
         Snapshot {
             comando_actualizar: comando.to_string(),
+            comando_desinstalar: desinstalar.map(str::to_string),
             espacio: self,
         }
     }
@@ -897,9 +902,12 @@ mod tests {
             version_node: Some("26.2.0".into()),
             packages: Vec::new(),
         };
-        let snap = espacio.con_comando("npm i -g");
+        let snap = espacio.con_comando("npm i -g", Some("npm uninstall -g"));
         assert_eq!(snap.comando_actualizar, "npm i -g");
-        assert_eq!(snap.espacio.version_gestor, "11.4.2");
+        assert_eq!(
+            snap.comando_desinstalar.as_deref(),
+            Some("npm uninstall -g")
+        );
         assert_eq!(snap.espacio.version_node.as_deref(), Some("26.2.0"));
     }
 

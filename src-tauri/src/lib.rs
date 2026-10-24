@@ -32,10 +32,17 @@ pub(crate) struct DefinicionGestor {
     pub(crate) nombre: &'static str,
     /// Visible command for the UI (tooltip): "npm i -g".
     pub(crate) comando: &'static str,
+    /// Visible uninstall command for the UI (tooltip): "npm uninstall -g".
+    /// None while the manager has no uninstall flow (brew, #46).
+    pub(crate) comando_desinstalar: Option<&'static str>,
     /// The WHOLE update command line for ONE package, built from its
     /// name and (brew-only) type: single source of the verb — node
     /// managers differ in the verb, brew in a per-row flag.
     pub(crate) args_update: fn(&str, Option<&str>) -> Vec<String>,
+    /// The WHOLE uninstall command line for ONE package, when the
+    /// manager supports it (node managers, #44); the shape mirrors
+    /// `args_update` so brew's flags (#46) drop in unchanged.
+    pub(crate) args_uninstall: Option<fn(&str, Option<&str>) -> Vec<String>>,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
     pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::EspacioGlobal>,
@@ -49,6 +56,16 @@ fn args_npm(name: &str, _tipo: Option<&str>) -> Vec<String> {
 /// pnpm/bun's update line: `<gestor> add -g pkg@latest`.
 fn args_add(name: &str, _tipo: Option<&str>) -> Vec<String> {
     vec!["add".into(), "-g".into(), format!("{name}@latest")]
+}
+
+/// npm's uninstall line: `npm uninstall -g pkg` (#44).
+fn args_uninstall(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["uninstall".into(), "-g".into(), name.into()]
+}
+
+/// pnpm/bun's uninstall line: `<gestor> rm -g pkg` (#44).
+fn args_rm(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["rm".into(), "-g".into(), name.into()]
 }
 
 fn runner_npm() -> std::io::Result<Box<dyn Runner>> {
@@ -81,7 +98,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "npm",
         comando: "npm i -g",
+        comando_desinstalar: Some("npm uninstall -g"),
         args_update: args_npm,
+        args_uninstall: Some(args_uninstall),
         instalado: npm::instalado,
         runner: runner_npm,
         snapshot: npm::snapshot,
@@ -89,7 +108,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "pnpm",
         comando: "pnpm add -g",
+        comando_desinstalar: Some("pnpm rm -g"),
         args_update: args_add,
+        args_uninstall: Some(args_rm),
         instalado: pnpm::instalado,
         runner: runner_pnpm,
         snapshot: pnpm::snapshot,
@@ -97,7 +118,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "bun",
         comando: "bun add -g",
+        comando_desinstalar: Some("bun rm -g"),
         args_update: args_add,
+        args_uninstall: Some(args_rm),
         instalado: bun::instalado,
         runner: runner_bun,
         snapshot: bun::snapshot,
@@ -105,7 +128,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "brew",
         comando: "brew upgrade",
+        comando_desinstalar: None, // la papelera de brew llega en #46
         args_update: args_brew,
+        args_uninstall: None,
         instalado: brew::instalado,
         runner: runner_brew,
         snapshot: brew::snapshot,
@@ -133,7 +158,7 @@ fn validar_gestor(gestor: &str) -> Result<(), String> {
 fn correr_snapshot(def: &DefinicionGestor) -> Result<Snapshot, String> {
     let runner = (def.runner)().map_err(|e| e.to_string())?;
     let espacio = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
-    Ok(espacio.con_comando(def.comando))
+    Ok(espacio.con_comando(def.comando, def.comando_desinstalar))
 }
 
 /// Updates a package with the manager's update line (built per package:
@@ -152,6 +177,37 @@ fn correr_update(
     // An individual update has no Stop: a flag that never fires.
     let sin_parar = kernel::sin_parar();
     kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar).map_err(|e| e.to_string())
+}
+
+/// Uninstalls a package with the manager's uninstall line (#44): a
+/// mirror of `correr_update` — name validation, blocking run under
+/// the update Plazo, line streaming. Node managers only: a gestor
+/// without `args_uninstall` (brew, #46) is refused here.
+fn correr_uninstall(
+    def: &DefinicionGestor,
+    candado: &Mutex<()>,
+    dir: &Path,
+    gestor: &str,
+    name: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<UpdateOutcome, String> {
+    kernel::validar_nombre(name).map_err(|e| e.to_string())?;
+    let args_uninstall = def
+        .args_uninstall
+        .ok_or_else(|| format!("{} no admite Desinstalar todavía", def.nombre))?;
+    let runner = (def.runner)().map_err(|e| e.to_string())?;
+    let args = args_uninstall(name, None);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // An individual uninstall has no Stop: a flag that never fires.
+    let sin_parar = kernel::sin_parar();
+    let salida =
+        kernel::instalar(runner.as_ref(), &refs, on_line, &sin_parar).map_err(|e| e.to_string())?;
+    if salida.success {
+        // The Excluded record dies with its package (#44); the single
+        // writer keeps a neighbor's and another gestor's records.
+        nucleo_quitar(candado, dir, gestor, name)?;
+    }
+    Ok(salida)
 }
 
 /// The exclusions file's state for the UI (#17): "corrupto" BLOCKS all
@@ -361,6 +417,36 @@ async fn update_package(
     .map_err(|e| e.to_string())?
 }
 
+/// Uninstalls a global package from its manager (#44): the mirror of
+/// `update_package` — blocking run in the pool, each output line as a
+/// `pm-output` event, update Plazo. On success the core already
+/// deleted the package's Excluded record (single writer).
+#[tauri::command]
+async fn uninstall_package(
+    gestor: String,
+    name: String,
+    app: tauri::AppHandle,
+    estado: tauri::State<'_, Contexto>,
+) -> Result<UpdateOutcome, String> {
+    let def = def_gestor_en(GESTORES, &gestor)?;
+    let dir = estado.dir_config.clone();
+    let candado = Arc::clone(&estado.candado_exclusiones);
+    tauri::async_runtime::spawn_blocking(move || {
+        correr_uninstall(def, &candado, &dir, &gestor, &name, &mut |line| {
+            let _ = app.emit(
+                "pm-output",
+                OutputLine {
+                    gestor: gestor.clone(),
+                    package: name.clone(),
+                    line: line.to_string(),
+                },
+            );
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn get_excluded(
     gestor: String,
@@ -520,6 +606,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_globals,
             update_package,
+            uninstall_package,
             get_excluded,
             excluir_paquete,
             quitar_exclusion,
@@ -572,14 +659,17 @@ mod tests {
         DefinicionGestor {
             nombre: "falso",
             comando: "falso i -g",
+            comando_desinstalar: Some("falso uninstall -g"),
             args_update: args_npm,
+            args_uninstall: Some(args_uninstall),
             instalado: || true,
             runner: || {
                 Ok(Box::new(
                     FakeRunner::new("1.0.0")
                         .respuesta("ls", LS_JSON, 0)
                         .respuesta("outdated", OUTDATED_JSON, 0)
-                        .respuesta("install", "added 1 package in 2s", 0),
+                        .respuesta("install", "added 1 package in 2s", 0)
+                        .respuesta_exacta("uninstall -g hunkdiff", "removed 1 package in 1s", 0),
                 ) as Box<dyn Runner>)
             },
             snapshot: npm::snapshot,
@@ -628,7 +718,9 @@ mod tests {
         let def = DefinicionGestor {
             nombre: "brew",
             comando: "brew upgrade",
+            comando_desinstalar: None,
             args_update: args_brew,
+            args_uninstall: None,
             instalado: || true,
             runner: runner_brew,
             snapshot: npm::snapshot,
@@ -660,6 +752,208 @@ mod tests {
         };
         let err = correr_update(&def, "hunkdiff", None, &mut |_| {}).unwrap_err();
         assert!(err.contains("no binary"));
+    }
+
+    // ---- Desinstalar (#44): the table owns the verb per manager ----
+
+    #[test]
+    fn args_de_desinstalacion_por_gestor_en_la_tabla() {
+        // Node managers only — brew's row arrives with its pineada
+        // flow (#46). npm: `uninstall -g`; pnpm/bun: `rm -g`.
+        let lineas: Vec<(&str, Option<String>)> = GESTORES
+            .iter()
+            .map(|g| {
+                (
+                    g.nombre,
+                    g.args_uninstall.map(|f| f("cowsay", None).join(" ")),
+                )
+            })
+            .collect();
+        assert_eq!(
+            lineas,
+            vec![
+                ("npm", Some("uninstall -g cowsay".into())),
+                ("pnpm", Some("rm -g cowsay".into())),
+                ("bun", Some("rm -g cowsay".into())),
+                ("brew", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn comando_visible_de_desinstalacion_por_gestor_en_la_tabla() {
+        let visibles: Vec<(&str, Option<&str>)> = GESTORES
+            .iter()
+            .map(|g| (g.nombre, g.comando_desinstalar))
+            .collect();
+        assert_eq!(
+            visibles,
+            vec![
+                ("npm", Some("npm uninstall -g")),
+                ("pnpm", Some("pnpm rm -g")),
+                ("bun", Some("bun rm -g")),
+                ("brew", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn correr_uninstall_usa_el_verbo_del_def_y_streamea_lineas() {
+        let mut lineas = Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let out = correr_uninstall(
+            &def_falsa(),
+            &Mutex::new(()),
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            &mut |l| lineas.push(l.to_string()),
+        )
+        .expect("valid uninstall");
+        assert!(out.success);
+        assert_eq!(lineas, vec!["removed 1 package in 1s"]);
+    }
+
+    #[test]
+    fn correr_uninstall_arma_los_args_por_gestor() {
+        // The exact-line answers make a wrong verb FAIL: only the
+        // line each manager's table entry builds succeeds.
+        fn runner_tres_verbos() -> std::io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                FakeRunner::new("1.0.0")
+                    .respuesta_exacta("uninstall -g hunkdiff", "removed", 0)
+                    .respuesta_exacta("rm -g hunkdiff", "removed", 0),
+            ) as Box<dyn Runner>)
+        }
+        for gestor in ["npm", "pnpm", "bun"] {
+            let def = DefinicionGestor {
+                runner: runner_tres_verbos,
+                ..def_gestor_en(GESTORES, gestor).unwrap().clone()
+            };
+            let dir = tempfile::tempdir().unwrap();
+            correr_uninstall(
+                &def,
+                &Mutex::new(()),
+                dir.path(),
+                gestor,
+                "hunkdiff",
+                &mut |_| {},
+            )
+            .unwrap_or_else(|e| panic!("{gestor}: {e}"));
+        }
+    }
+
+    #[test]
+    fn correr_uninstall_rechaza_nombres_invalidos() {
+        let dir = tempfile::tempdir().unwrap();
+        for nombre in ["", "--force"] {
+            assert!(
+                correr_uninstall(
+                    &def_falsa(),
+                    &Mutex::new(()),
+                    dir.path(),
+                    "falso",
+                    nombre,
+                    &mut |_| {},
+                )
+                .is_err(),
+                "{nombre} must not pass"
+            );
+        }
+    }
+
+    #[test]
+    fn correr_uninstall_rechaza_un_gestor_sin_desinstalacion() {
+        // brew's row has no trash yet: its flow (with pineadas) is #46.
+        let def = DefinicionGestor {
+            args_uninstall: None,
+            ..def_falsa()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let err = correr_uninstall(
+            &def,
+            &Mutex::new(()),
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("no admite Desinstalar"), "{err}");
+    }
+
+    #[test]
+    fn desinstalar_con_exito_borra_la_exclusion_del_paquete() {
+        let dir = tempfile::tempdir().unwrap();
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "falso", "hunkdiff").unwrap();
+        nucleo_excluir(&candado, dir.path(), "falso", "vecino").unwrap();
+        nucleo_excluir(&candado, dir.path(), "otro", "hunkdiff").unwrap();
+        let out = correr_uninstall(
+            &def_falsa(),
+            &candado,
+            dir.path(),
+            "falso",
+            "hunkdiff",
+            &mut |_| {},
+        )
+        .expect("valid uninstall");
+        assert!(out.success);
+        // only the uninstalled package's Excluded record is gone:
+        // a neighbor's and another gestor's same-name record survive
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
+            ["vecino"]
+        );
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "otro").unwrap().nombres,
+            ["hunkdiff"]
+        );
+    }
+
+    #[test]
+    fn desinstalar_con_fallo_conserva_la_exclusion() {
+        let dir = tempfile::tempdir().unwrap();
+        let candado = Mutex::new(());
+        nucleo_excluir(&candado, dir.path(), "falso", "hunkdiff").unwrap();
+        let def = DefinicionGestor {
+            runner: || {
+                Ok(Box::new(FakeRunner::new("1.0.0").respuesta_exacta(
+                    "uninstall -g hunkdiff",
+                    "EACCES: permission denied",
+                    1,
+                )) as Box<dyn Runner>)
+            },
+            ..def_falsa()
+        };
+        let out = correr_uninstall(&def, &candado, dir.path(), "falso", "hunkdiff", &mut |_| {})
+            .expect("a gestor failure is a result, not an error");
+        assert!(!out.success);
+        assert_eq!(
+            nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
+            ["hunkdiff"]
+        );
+    }
+
+    #[test]
+    fn correr_snapshot_incluye_el_comando_de_desinstalar() {
+        let snap = correr_snapshot(&def_falsa()).expect("valid snapshot");
+        assert_eq!(snap.comando_actualizar, "falso i -g");
+        assert_eq!(
+            snap.comando_desinstalar.as_deref(),
+            Some("falso uninstall -g")
+        );
+        // A gestor without the flow yet (brew, #46) crosses as None.
+        let sin_desinstalar = DefinicionGestor {
+            comando_desinstalar: None,
+            ..def_falsa()
+        };
+        assert_eq!(
+            correr_snapshot(&sin_desinstalar)
+                .unwrap()
+                .comando_desinstalar,
+            None
+        );
     }
 
     // ---- exclusions through their core ----
