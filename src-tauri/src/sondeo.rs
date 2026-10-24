@@ -15,11 +15,12 @@ use crate::kernel::{con_extension, correr_consulta, primer_existente};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// La costura nueva del Descubrimiento (#43): reporta el PATH que el
-/// usuario configura donde su sistema lo define y que una app GUI no
-/// hereda — el shell de login ($SHELL, no interactivo) en macOS/Linux;
-/// el registro de Windows llega en #45 con [`SondadorWindows`]. Los
-/// tests inyectan falsos de shell; el real es [`SondadorShell`].
+/// La costura nueva del Descubrimiento (#43, extendida en #45):
+/// reporta el PATH que el usuario configura donde su sistema lo
+/// define y que una app GUI no hereda — el shell de login ($SHELL,
+/// no interactivo) en macOS/Linux; en Windows, [`SondadorWindows`]
+/// lee el registro. Los tests inyectan falsos de shell; el real es
+/// [`SondadorShell`].
 pub(crate) trait Sondador {
     fn path_configurado(&self) -> std::io::Result<Vec<PathBuf>>;
 }
