@@ -890,7 +890,10 @@ mod tests {
         };
         let snap = espacio.con_comando("npm i -g", Some("npm uninstall -g"));
         assert_eq!(snap.comando_actualizar, "npm i -g");
-        assert_eq!(snap.comando_desinstalar.as_deref(), Some("npm uninstall -g"));
+        assert_eq!(
+            snap.comando_desinstalar.as_deref(),
+            Some("npm uninstall -g")
+        );
         assert_eq!(snap.espacio.version_node.as_deref(), Some("26.2.0"));
     }
 

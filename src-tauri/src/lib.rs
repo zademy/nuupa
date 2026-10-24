@@ -917,25 +917,16 @@ mod tests {
         nucleo_excluir(&candado, dir.path(), "falso", "hunkdiff").unwrap();
         let def = DefinicionGestor {
             runner: || {
-                Ok(Box::new(
-                    FakeRunner::new("1.0.0").respuesta_exacta(
-                        "uninstall -g hunkdiff",
-                        "EACCES: permission denied",
-                        1,
-                    ),
-                ) as Box<dyn Runner>)
+                Ok(Box::new(FakeRunner::new("1.0.0").respuesta_exacta(
+                    "uninstall -g hunkdiff",
+                    "EACCES: permission denied",
+                    1,
+                )) as Box<dyn Runner>)
             },
             ..def_falsa()
         };
-        let out = correr_uninstall(
-            &def,
-            &candado,
-            dir.path(),
-            "falso",
-            "hunkdiff",
-            &mut |_| {},
-        )
-        .expect("a gestor failure is a result, not an error");
+        let out = correr_uninstall(&def, &candado, dir.path(), "falso", "hunkdiff", &mut |_| {})
+            .expect("a gestor failure is a result, not an error");
         assert!(!out.success);
         assert_eq!(
             nucleo_get_excluded(dir.path(), "falso").unwrap().nombres,
@@ -957,7 +948,9 @@ mod tests {
             ..def_falsa()
         };
         assert_eq!(
-            correr_snapshot(&sin_desinstalar).unwrap().comando_desinstalar,
+            correr_snapshot(&sin_desinstalar)
+                .unwrap()
+                .comando_desinstalar,
             None
         );
     }

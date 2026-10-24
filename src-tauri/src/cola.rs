@@ -274,7 +274,10 @@ fn correr_activa(
         detenidos,
         detenida: ok + failed + detenidos + saltados < total,
     };
-    Ok((resumen, snapshot_final.con_comando(def.comando, def.comando_desinstalar)))
+    Ok((
+        resumen,
+        snapshot_final.con_comando(def.comando, def.comando_desinstalar),
+    ))
 }
 
 #[cfg(test)]
