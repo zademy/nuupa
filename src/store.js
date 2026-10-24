@@ -50,7 +50,11 @@ export function createPackagesStore(
     loading: false,
   });
   const search = ref("");
-  const ESTADO = { ACTUALIZANDO: "updating", ERROR: "error" };
+  const ESTADO = {
+    ACTUALIZANDO: "updating",
+    DESINSTALANDO: "uninstalling",
+    ERROR: "error",
+  };
   const status = reactive({});
   // Failure detail per package (the row shows it as its tooltip): same
   // text that markFailed writes to the log.
@@ -98,7 +102,7 @@ export function createPackagesStore(
   // lives in the log. Returns true/false on success/failure; undefined
   // if it was already in-flight (the queue only counts explicit results).
   async function update(name, tipo = null, { refrescar = true } = {}) {
-    if (status[name] === ESTADO.ACTUALIZANDO) return;
+    if (enCurso(name)) return;
     status[name] = ESTADO.ACTUALIZANDO;
     try {
       const res = await invokeFn("update_package", { gestor, name, tipo });
@@ -127,10 +131,48 @@ export function createPackagesStore(
     appendLog(`${gestor}/${name}: ${detail}`);
   }
 
-  const isUpdating = (name) => status[name] === ESTADO.ACTUALIZANDO;
+  // A row is "in progress" for an update OR a Desinstalar: both
+  // block every other row action and show the spinner.
+  const enCurso = (name) =>
+    status[name] === ESTADO.ACTUALIZANDO ||
+    status[name] === ESTADO.DESINSTALANDO;
+  const isUpdating = (name) => enCurso(name);
+  const isUninstalling = (name) => status[name] === ESTADO.DESINSTALANDO;
   const hasError = (name) => status[name] === ESTADO.ERROR;
   // The row's tooltip: why THIS package failed (motivo + gestor output).
   const detalleFallo = (name) => detalle[name];
+
+  // Desinstalar (glossary): removes the package from ITS gestor's
+  // global space. Mirror of `update` — row state, live log via
+  // pm-output, failure detail in the row. On success the row leaves
+  // the list (a refresh) and the Excluded record is gone: the
+  // backend's single writer already deleted it, the store applies
+  // exactly that (#44). Returns true/false; undefined if it was
+  // refused (queue active or row in progress).
+  async function uninstall(name) {
+    if (queue.active || enCurso(name)) return;
+    status[name] = ESTADO.DESINSTALANDO;
+    try {
+      const res = await invokeFn("uninstall_package", { gestor, name });
+      if (res?.success) {
+        delete status[name];
+        delete detalle[name];
+        excluded.value = excluded.value.filter((n) => n !== name);
+        await refresh();
+        // the row vanished: say it, or a screen reader hears nothing
+        anunciar(anuncio, `${name}: ${t("desinstalado")}`);
+        return true;
+      }
+      markFailed(
+        name,
+        `${t("desinstalacionFallo")}\n${res?.output ?? ""}`.trim(),
+      );
+      return false;
+    } catch (e) {
+      markFailed(name, `${t("desinstalacionFallo")}\n${String(e)}`.trim());
+      return false;
+    }
+  }
 
   // Copy diagnostics (#21): version, OS, gestores, this gestor's counts
   // and the last log lines — home-redacted — straight to the clipboard.
@@ -377,6 +419,7 @@ export function createPackagesStore(
     conteo,
     refresh,
     update,
+    uninstall,
     updateAll,
     stopAll,
     abandonarCola,
@@ -390,6 +433,7 @@ export function createPackagesStore(
     toggleExcluded,
     excluyendoAhora,
     isUpdating,
+    isUninstalling,
     hasError,
     detalleFallo,
     isExcluded,

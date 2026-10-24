@@ -5,6 +5,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { tauri } from "./tauri-fake"; // the mocks register in tests-setup
 import PanelGestor from "./PanelGestor.vue";
 import AcercaDe from "./AcercaDe.vue";
+import ConfirmarDesinstalar from "./ConfirmarDesinstalar.vue";
 import { crearLog } from "./store";
 
 // #20: axe on the mounted components, as a reproducible LOCAL check.
@@ -53,6 +54,15 @@ describe("axe (accesibilidad)", () => {
 
   it("chequea el modal Acerca de (avisos por consola, sin gate)", async () => {
     mount(AcercaDe, { attachTo: document.body });
+    await flushPromises();
+    await avisarViolaciones();
+  });
+
+  it("chequea el modal de confirmación de Desinstalar (avisos por consola, sin gate)", async () => {
+    mount(ConfirmarDesinstalar, {
+      props: { gestor: "npm", paquete: "hunkdiff" },
+      attachTo: document.body,
+    });
     await flushPromises();
     await avisarViolaciones();
   });

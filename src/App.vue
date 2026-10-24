@@ -89,6 +89,13 @@ onUnmounted(() => desubscribir?.());
         <path d="M12 16v-4" />
         <path d="M12 8h.01" />
       </symbol>
+      <symbol id="ic-papelera" viewBox="0 0 24 24">
+        <path d="M3 6h18" />
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        <path d="M10 11v6" />
+        <path d="M14 11v6" />
+      </symbol>
       <symbol id="ic-cerrar" viewBox="0 0 24 24">
         <path d="M18 6 6 18" />
         <path d="m6 6 12 12" />
@@ -193,6 +200,10 @@ onUnmounted(() => desubscribir?.());
   --fg: #111827;
   --fg-muted: #4b5563;
   --fg-faint: #6b7280;
+  /* Destructive accent (#44): the trash row action and the confirm
+     button. Text on danger keeps AA in both themes (6.4:1+). */
+  --danger: #b91c1c;
+  --on-danger: #ffffff;
   /* Behind the About dialog; darkened canvas, per theme. */
   --overlay: rgba(17, 24, 39, 0.45);
 }
@@ -207,6 +218,8 @@ onUnmounted(() => desubscribir?.());
   --fg: #e6e8eb;
   --fg-muted: #9aa1ab;
   --fg-faint: #6b7280;
+  --danger: #f87171;
+  --on-danger: #0d0f12;
   --overlay: rgba(0, 0, 0, 0.55);
 }
 

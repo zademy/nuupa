@@ -15,6 +15,7 @@ export const MENSAJES = {
     temaClaro: "Switch to the light theme",
     acercaDe: "About Nuupa",
     cerrar: "Close",
+    cancelar: "Cancel",
     descripcion:
       "See and update the global packages of your installed package managers — no commands required.",
     autor: "Author",
@@ -55,6 +56,14 @@ export const MENSAJES = {
     deteniendo: "stopping…",
     actualizando: "updating…",
     quitarExclusion: "Remove exclusion (Update all will include it again)",
+    desinstalar: "Uninstall",
+    desinstalarPaquete: "Uninstall {paquete}",
+    desinstalarTitulo: "Uninstall from the global space ({comando} {paquete})",
+    desinstalarTituloModal: "Uninstall package",
+    desinstalarCuerpo:
+      "This uninstalls {paquete} from the global space of {gestor}. It cannot be undone.",
+    desinstalando: "uninstalling…",
+    desinstalado: "uninstalled",
     excluir: "Exclude from Update all",
     excluirPaquete: "Exclude {paquete} from Update all",
     actualizarUltima:
@@ -62,6 +71,7 @@ export const MENSAJES = {
     actualizarPaquete: "Update {paquete}",
     actualizacionFallo: "the update failed",
     actualizacionPlazo: "the update did not respond in time",
+    desinstalacionFallo: "the uninstall failed",
     actualizacionDetenida: "the update was stopped",
     paquetesDetenidos: "stopped mid-update",
     cargarExclusionesFallo: "could not load exclusions: {e}",
@@ -87,6 +97,7 @@ export const MENSAJES = {
     temaClaro: "Cambiar al tema claro",
     acercaDe: "Acerca de Nuupa",
     cerrar: "Cerrar",
+    cancelar: "Cancelar",
     descripcion:
       "Ve y actualiza los paquetes globales de tus gestores instalados — sin escribir comandos.",
     autor: "Autor",
@@ -127,6 +138,14 @@ export const MENSAJES = {
     deteniendo: "deteniendo…",
     actualizando: "actualizando…",
     quitarExclusion: "Quitar exclusión (Actualizar todo volverá a incluirlo)",
+    desinstalar: "Desinstalar",
+    desinstalarPaquete: "Desinstalar {paquete}",
+    desinstalarTitulo: "Desinstalar del espacio global ({comando} {paquete})",
+    desinstalarTituloModal: "Desinstalar paquete",
+    desinstalarCuerpo:
+      "Se desinstalará {paquete} del espacio global de {gestor}. No se puede deshacer.",
+    desinstalando: "desinstalando…",
+    desinstalado: "desinstalado",
     excluir: "Excluir de Actualizar todo",
     excluirPaquete: "Excluir {paquete} de Actualizar todo",
     actualizarUltima:
@@ -134,6 +153,7 @@ export const MENSAJES = {
     actualizarPaquete: "Actualizar {paquete}",
     actualizacionFallo: "la actualización falló",
     actualizacionPlazo: "la actualización no respondió a tiempo",
+    desinstalacionFallo: "la desinstalación falló",
     actualizacionDetenida: "la actualización fue detenida",
     paquetesDetenidos: "detenidos a mitad de actualización",
     cargarExclusionesFallo: "no se pudieron cargar las exclusiones: {e}",
