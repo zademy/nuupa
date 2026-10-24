@@ -300,7 +300,9 @@ mod tests {
         DefinicionGestor {
             nombre: "npm",
             comando: "npm i -g",
+            comando_desinstalar: Some("npm uninstall -g"),
             args_update: crate::args_npm,
+            args_uninstall: Some(crate::args_uninstall),
             instalado: || true,
             runner: || {
                 Ok(Box::new(
@@ -393,6 +395,8 @@ mod tests {
         DefinicionGestor {
             nombre: "brew",
             comando: "brew upgrade",
+            comando_desinstalar: None,
+            args_uninstall: None, // #46: brew todavía no
             args_update: args_brew,
             instalado: || true,
             runner,

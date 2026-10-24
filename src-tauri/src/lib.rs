@@ -31,10 +31,17 @@ pub(crate) struct DefinicionGestor {
     pub(crate) nombre: &'static str,
     /// Visible command for the UI (tooltip): "npm i -g".
     pub(crate) comando: &'static str,
+    /// Visible uninstall command for the UI (tooltip): "npm uninstall -g".
+    /// None while the manager has no uninstall flow (brew, #46).
+    pub(crate) comando_desinstalar: Option<&'static str>,
     /// The WHOLE update command line for ONE package, built from its
     /// name and (brew-only) type: single source of the verb — node
     /// managers differ in the verb, brew in a per-row flag.
     pub(crate) args_update: fn(&str, Option<&str>) -> Vec<String>,
+    /// The WHOLE uninstall command line for ONE package, when the
+    /// manager supports it (node managers, #44); the shape mirrors
+    /// `args_update` so brew's flags (#46) drop in unchanged.
+    pub(crate) args_uninstall: Option<fn(&str, Option<&str>) -> Vec<String>>,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
     pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::EspacioGlobal>,
@@ -48,6 +55,16 @@ fn args_npm(name: &str, _tipo: Option<&str>) -> Vec<String> {
 /// pnpm/bun's update line: `<gestor> add -g pkg@latest`.
 fn args_add(name: &str, _tipo: Option<&str>) -> Vec<String> {
     vec!["add".into(), "-g".into(), format!("{name}@latest")]
+}
+
+/// npm's uninstall line: `npm uninstall -g pkg` (#44).
+fn args_uninstall(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["uninstall".into(), "-g".into(), name.into()]
+}
+
+/// pnpm/bun's uninstall line: `<gestor> rm -g pkg` (#44).
+fn args_rm(name: &str, _tipo: Option<&str>) -> Vec<String> {
+    vec!["rm".into(), "-g".into(), name.into()]
 }
 
 fn runner_npm() -> std::io::Result<Box<dyn Runner>> {
@@ -80,7 +97,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "npm",
         comando: "npm i -g",
+        comando_desinstalar: Some("npm uninstall -g"),
         args_update: args_npm,
+        args_uninstall: Some(args_uninstall),
         instalado: npm::instalado,
         runner: runner_npm,
         snapshot: npm::snapshot,
@@ -88,7 +107,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "pnpm",
         comando: "pnpm add -g",
+        comando_desinstalar: Some("pnpm rm -g"),
         args_update: args_add,
+        args_uninstall: Some(args_rm),
         instalado: pnpm::instalado,
         runner: runner_pnpm,
         snapshot: pnpm::snapshot,
@@ -96,7 +117,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "bun",
         comando: "bun add -g",
+        comando_desinstalar: Some("bun rm -g"),
         args_update: args_add,
+        args_uninstall: Some(args_rm),
         instalado: bun::instalado,
         runner: runner_bun,
         snapshot: bun::snapshot,
@@ -104,7 +127,9 @@ const GESTORES: &[DefinicionGestor] = &[
     DefinicionGestor {
         nombre: "brew",
         comando: "brew upgrade",
+        comando_desinstalar: None, // la papelera de brew llega en #46
         args_update: args_brew,
+        args_uninstall: None,
         instalado: brew::instalado,
         runner: runner_brew,
         snapshot: brew::snapshot,
@@ -571,14 +596,17 @@ mod tests {
         DefinicionGestor {
             nombre: "falso",
             comando: "falso i -g",
+            comando_desinstalar: Some("falso uninstall -g"),
             args_update: args_npm,
+            args_uninstall: Some(args_uninstall),
             instalado: || true,
             runner: || {
                 Ok(Box::new(
                     FakeRunner::new("1.0.0")
                         .respuesta("ls", LS_JSON, 0)
                         .respuesta("outdated", OUTDATED_JSON, 0)
-                        .respuesta("install", "added 1 package in 2s", 0),
+                        .respuesta("install", "added 1 package in 2s", 0)
+                        .respuesta_exacta("uninstall -g hunkdiff", "removed 1 package in 1s", 0),
                 ) as Box<dyn Runner>)
             },
             snapshot: npm::snapshot,
@@ -627,7 +655,9 @@ mod tests {
         let def = DefinicionGestor {
             nombre: "brew",
             comando: "brew upgrade",
+            comando_desinstalar: None,
             args_update: args_brew,
+            args_uninstall: None,
             instalado: || true,
             runner: runner_brew,
             snapshot: npm::snapshot,
@@ -659,6 +689,49 @@ mod tests {
         };
         let err = correr_update(&def, "hunkdiff", None, &mut |_| {}).unwrap_err();
         assert!(err.contains("no binary"));
+    }
+
+    // ---- Desinstalar (#44): the table owns the verb per manager ----
+
+    #[test]
+    fn args_de_desinstalacion_por_gestor_en_la_tabla() {
+        // Node managers only — brew's row arrives with its pineada
+        // flow (#46). npm: `uninstall -g`; pnpm/bun: `rm -g`.
+        let lineas: Vec<(&str, Option<String>)> = GESTORES
+            .iter()
+            .map(|g| {
+                (
+                    g.nombre,
+                    g.args_uninstall.map(|f| f("cowsay", None).join(" ")),
+                )
+            })
+            .collect();
+        assert_eq!(
+            lineas,
+            vec![
+                ("npm", Some("uninstall -g cowsay".into())),
+                ("pnpm", Some("rm -g cowsay".into())),
+                ("bun", Some("rm -g cowsay".into())),
+                ("brew", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn comando_visible_de_desinstalacion_por_gestor_en_la_tabla() {
+        let visibles: Vec<(&str, Option<&str>)> = GESTORES
+            .iter()
+            .map(|g| (g.nombre, g.comando_desinstalar))
+            .collect();
+        assert_eq!(
+            visibles,
+            vec![
+                ("npm", Some("npm uninstall -g")),
+                ("pnpm", Some("pnpm rm -g")),
+                ("bun", Some("bun rm -g")),
+                ("brew", None),
+            ]
+        );
     }
 
     // ---- exclusions through their core ----
