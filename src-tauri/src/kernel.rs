@@ -538,9 +538,10 @@ pub fn primer_existente(candidatos: Vec<PathBuf>) -> Option<PathBuf> {
 
 /// The Descubrimiento layer order (#43), written once for the four
 /// gestores: the environment PATH first, the usual locations next,
-/// the login-shell probe last. First hit wins and a layer only runs
+/// the user-configured PATH probe last (login shell on macOS/Linux,
+/// registry on Windows). First hit wins and a layer only runs
 /// when the previous ones missed — the probe is the costly one (ONE
-/// shell per session, cached).
+/// probe per session, cached).
 pub fn descubrir_por_capas<T>(
     en_path: impl FnOnce() -> Option<T>,
     habitual: impl FnOnce() -> Option<T>,

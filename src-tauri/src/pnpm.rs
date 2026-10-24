@@ -31,14 +31,15 @@ fn ubicaciones_pnpm() -> Vec<PathBuf> {
 }
 
 /// Is there a pnpm on this machine? Presence check: the environment
-/// PATH, the standard locations, the login-shell probe (#43). Feeds
-/// which tabs exist.
+/// PATH, the standard locations, the user-configured PATH probe
+/// (#43/#45 — login shell, registry on Windows). Feeds which tabs
+/// exist.
 pub fn instalado() -> bool {
     descubrir_bin().is_some()
 }
 
-/// pnpm's discovery chain (#43): PATH → standard locations → login
-/// shell probe. First hit wins.
+/// pnpm's discovery chain (#43/#45): PATH → standard locations →
+/// user-configured PATH probe (shell or registry). First hit wins.
 fn descubrir_bin() -> Option<PathBuf> {
     descubrir_por_capas(
         || find_in_path(&con_extension("pnpm")),

@@ -22,6 +22,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+/// Command-line arguments for ONE package, built from its name and
+/// (brew-only) type: the shape `args_update` and `args_uninstall`
+/// share, so brew's flags (#46) drop in unchanged.
+pub(crate) type ArgsPorPaquete = fn(&str, Option<&str>) -> Vec<String>;
+
 /// A supported manager: visible command and how to build ONE package's
 /// update arguments. Both live HERE, once per manager: the UI receives
 /// the visible one through the seam (Snapshot), it never duplicates it.
@@ -38,11 +43,11 @@ pub(crate) struct DefinicionGestor {
     /// The WHOLE update command line for ONE package, built from its
     /// name and (brew-only) type: single source of the verb — node
     /// managers differ in the verb, brew in a per-row flag.
-    pub(crate) args_update: fn(&str, Option<&str>) -> Vec<String>,
+    pub(crate) args_update: ArgsPorPaquete,
     /// The WHOLE uninstall command line for ONE package, when the
     /// manager supports it (node managers, #44); the shape mirrors
     /// `args_update` so brew's flags (#46) drop in unchanged.
-    pub(crate) args_uninstall: Option<fn(&str, Option<&str>) -> Vec<String>>,
+    pub(crate) args_uninstall: Option<ArgsPorPaquete>,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
     pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::EspacioGlobal>,

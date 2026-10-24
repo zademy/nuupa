@@ -27,13 +27,14 @@ fn ubicaciones_bun() -> Vec<PathBuf> {
 }
 
 /// Is there a bun on this machine? Presence check: the environment
-/// PATH, the standard locations, the login-shell probe (#43).
+/// PATH, the standard locations, the user-configured PATH probe
+/// (#43/#45 — login shell, registry on Windows).
 pub fn instalado() -> bool {
     descubrir_bin().is_some()
 }
 
-/// bun's discovery chain (#43): PATH → standard locations → login
-/// shell probe. First hit wins.
+/// bun's discovery chain (#43/#45): PATH → standard locations →
+/// user-configured PATH probe (shell or registry). First hit wins.
 fn descubrir_bin() -> Option<PathBuf> {
     descubrir_por_capas(
         || find_in_path(&con_extension("bun")),
