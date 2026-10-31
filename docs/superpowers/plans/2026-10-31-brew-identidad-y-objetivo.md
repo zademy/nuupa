@@ -353,7 +353,9 @@ con las hojas `node\n` (simdjson **no** es hoja: es dependencia de node).
 
 - `el_objetivo_de_brew_incluye_una_dependencia_que_no_son_fila` — el objetivo trae `node` **y** `simdjson`; la tabla (`espacio.packages`) trae solo `node`.
 - `el_objetivo_de_brew_trae_la_version_instalada_de_cada_paquete` — la entrada de `simdjson` trae `installed == "5.0.6, 5.0.7"` (las dos versiones instaladas, como las de brew) y `latest == "5.1.0"`.
-- `una_dependencia_pineada_no_entra_en_la_cola` — una entrada con `pinned: true` va en el objetivo (brew la declara) pero la cola la salta (eso lo verifica `cola.rs`, no brew).
+- `una_dependencia_pineada_no_entra_en_el_objetivo` — una entrada con `pinned: true` **no** entra en el objetivo.
+
+  > **Ruling (revisión final de rama, contra la spec #48):** esta task decía que la pineada entraba en el objetivo y la cola la saltaba. La spec dice que el objetivo es lo que `brew outdated` devuelve «**menos Pineadas y menos Excluidas**», y el GLOSSARY define la Pineada como «nunca la actualiza»: un objetivo que contiene un paquete que la app nunca actualiza se contradice a sí mismo. Además `brew outdated` **sí** reporta las pineadas (`cmd/outdated.rb`: `select_outdated` no filtra por pin, y el JSON trae `pinned`/`pinned_version`), así que la entrada pineada llega al objetivo de verdad. Con la pineada dentro, el contador y el botón cuentan un paquete que la cola va a saltarse —justo la desacuerdo que este cambio viene a eliminar—. El objetivo queda como «lo que brew puede actualizar de verdad»: desactualizadas, dependencias incluidas, **menos las pineadas**. El filtro de pines de la cola se queda (defensivo).
 
 **Qué cambia** (`src-tauri/src/brew.rs`): `armar_brew` devuelve `PlanGestor` y arma el objetivo con el mapa de desactualizados:
 
@@ -373,8 +375,12 @@ fn armar_brew(
     // (`brew upgrade --formula simdjson` works) even though it is not
     // a leaf — and `brew upgrade --formula node` would NOT take it
     // along. Without this, its update is stranded.
+    // The pinned ones do NOT enter the objective: brew refuses to
+    // update them (the spec: the objective is what brew declares
+    // outdated, minus the pinned ones).
     let objetivo = outdated
         .iter()
+        .filter(|((_, _), d)| !d.pinned)
         .map(|((tipo, nombre), d)| {
             let installed = match tipo.as_str() {
                 TIPO_CASK => casks.get(nombre).cloned().unwrap_or_default(),

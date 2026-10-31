@@ -2,8 +2,8 @@
 //! space is the user's LEAVES (top-level formulae) plus every cask —
 //! a dependency is not a row (vocabulary in GLOSSARY.md). Its update
 //! OBJECTIVE is wider: everything `brew outdated` declares, a
-//! dependency included. The update line (`upgrade --formula|--cask`)
-//! lives in [`crate`]'s manager table.
+//! dependency included, minus the pinned ones. The update line
+//! (`upgrade --formula|--cask`) lives in [`crate`]'s manager table.
 
 use crate::kernel::{
     con_extension, correr_consulta, correr_instalacion, home, version_de, EspacioGlobal,
@@ -189,7 +189,7 @@ fn nombre_corto(nombre: &str) -> &str {
 /// a formula/cask name collision shows as two distinguishable rows.
 ///
 /// The update objective is NOT the outdated rows: it is EVERYTHING brew
-/// declares outdated, dependencies included.
+/// declares outdated, dependencies included, minus the pinned ones.
 fn armar_brew(
     version_gestor: String,
     hojas: BTreeSet<String>,
@@ -200,9 +200,11 @@ fn armar_brew(
     // The update objective: EVERYTHING brew declares outdated, not just
     // the rows. A dependency brew reports outdated is updatable on its
     // own (`brew upgrade --formula simdjson`); `brew upgrade --formula
-    // node` would NOT take it along.
+    // node` would NOT take it along. The PINNED ones stay out: brew
+    // refuses to upgrade them, so they are not updatable.
     let objetivo: Vec<GlobalPackage> = outdated
         .iter()
+        .filter(|((_, _), d)| !d.pinned)
         .map(|((tipo, nombre), d)| {
             // brew names a formula by its FULL name (`tap/name`) and a
             // cask by its token; the installed version is keyed by the
@@ -435,14 +437,15 @@ mod tests {
     }
 
     #[test]
-    fn una_dependencia_pineada_no_entra_en_la_cola() {
-        // brew DECLARES the pinned dependency outdated, so it enters the
-        // objective with its pin — the queue skips it (cola.rs filters).
+    fn una_dependencia_pineada_no_entra_en_el_objetivo() {
+        // brew reports the pinned dependency outdated, but it refuses to
+        // upgrade it: it is not updatable, so it never reaches the
+        // objective (nor the count nor the button).
         let snap = snapshot(&runner_con_dependencia(OUTDATED_DEPENDENCIA_PINEADA))
             .expect("valid snapshot");
-        let simdjson = objetivo_de(&snap, TIPO_FORMULA, "simdjson");
-        assert!(simdjson.outdated);
-        assert!(simdjson.pinned);
+        let nombres: Vec<&str> = snap.objetivo.iter().map(|p| p.name.as_str()).collect();
+        assert!(nombres.contains(&"node"));
+        assert!(!nombres.contains(&"simdjson"));
     }
 
     // Fixtures captured from real Homebrew 7.0.4 shapes
@@ -503,9 +506,13 @@ mod tests {
 
     #[test]
     fn snapshot_solo_hojas_y_casks() {
-        let snap = snapshot(&runner_brew()).expect("valid snapshot");
+        let runner = runner_brew();
+        let snap = snapshot(&runner).expect("valid snapshot");
         assert_eq!(snap.espacio.version_gestor, "7.0.4");
         assert_eq!(snap.espacio.version_node, None);
+        // the whole line matters: the fake matches by FIRST argument, so
+        // only this assertion catches a dropped `--json=v2`
+        assert!(runner.se_llamo_a("outdated --json=v2"));
         // abseil is a dependency: never reaches the table
         assert_eq!(snap.espacio.packages.len(), 4);
         assert!(!snap.espacio.packages.iter().any(|p| p.name == "abseil"));
@@ -525,6 +532,12 @@ mod tests {
         let firefox = fila(&snap, TIPO_CASK, "firefox");
         assert!(firefox.outdated);
         assert_eq!(firefox.latest.as_deref(), Some("142.1"));
+        // a pinned formula stays OUT of the objective (brew refuses to
+        // upgrade it): the row keeps the pin, the objective does not
+        let objetivo: Vec<&str> = snap.objetivo.iter().map(|p| p.name.as_str()).collect();
+        assert!(objetivo.contains(&"wget"));
+        assert!(objetivo.contains(&"firefox"));
+        assert!(!objetivo.contains(&"ffmpeg"));
     }
 
     #[test]

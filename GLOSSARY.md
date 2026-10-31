@@ -50,11 +50,11 @@ Instalar la última versión publicada de un paquete global (`npm i -g pkg@lates
 _Avoid_: upgradear, refrescar
 
 **Actualizar todo**:
-Cola secuencial que actualiza, de a uno, el objetivo menos las Pineadas y las Excluidas.
+Cola secuencial que actualiza, de a uno, el objetivo menos las Excluidas. Las Pineadas no llegan al objetivo (brew se niega a actualizarlas), así que la cola nunca las ve.
 _Avoid_: actualizar en lote, bulk
 
 **Objetivo de actualización**:
-Los paquetes que un gestor declara actualizables ahora mismo. Para los gestores de node es el subconjunto desactualizado del Espacio global; para brew es todo lo que `brew outdated` declara, dependencias incluidas (las dependencias no son filas, pero sí se pueden actualizar). El botón de Actualizar todo, el contador y la cola leen el objetivo: nunca pueden discrepar entre sí.
+Los paquetes que un gestor declara actualizables ahora mismo. Para los gestores de node es el subconjunto desactualizado del Espacio global; para brew es todo lo que `brew outdated` declara, dependencias incluidas (las dependencias no son filas, pero sí se pueden actualizar), menos las Pineadas: brew se niega a actualizarlas, así que su fila las muestra como Excluida y quitarles el pino en brew las devuelve al objetivo. El botón de Actualizar todo, el contador y la cola leen el objetivo: nunca pueden discrepar entre sí.
 _Avoid_: lista de actualización, pendientes, desactualizables
 
 **Desinstalar**:
