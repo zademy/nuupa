@@ -313,7 +313,9 @@ const conteo = computed(() => {
 });
 ```
 
-6. `src/store.test.js` y `src/PanelGestor.test.js` — los snapshots falsos llevan `objetivo`:
+6. `GLOSSARY.md` — la entrada **Cola** dice hoy que actualiza «los paquetes desactualizados no excluidos»; con el objetivo, la cola actualiza **el objetivo menos Pineadas y menos Excluidas**. Esa frase se corrige en esta task para que el glosario no contradiga el código nuevo. (El objetivo **sí** incluye las Pineadas — brew las declara desactualizadas — pero la cola nunca las actualiza.)
+
+7. `src/store.test.js` y `src/PanelGestor.test.js` — los snapshots falsos llevan `objetivo`:
    - `src/store.test.js`: la constante `SNAPSHOT` gana `objetivo` con los dos paquetes desactualizados (`context-mode` y `hunkdiff`). **Regla general**: cualquier test que arme un snapshot a mano tiene que mantener `objetivo` coherente con `packages` — si el test marca filas como desactualizadas, el `objetivo` tiene que traerlas también. Los que lo hacen hoy: `"updateAll sin desactualizados no hace nada"` y `"un excluido desactualizado desactiva 'Actualizar todo' si es el único"`. Si al ejecutar los tests aparece algún otro que dependa del conjunto desactualizado, se actualiza igual: el store ya no lee `packages` para eso.
    - `src/PanelGestor.test.js`: `SNAPSHOT` y `SNAPSHOT_BREW` ganan `objetivo` con sus filas desactualizadas. Los snapshots que se inventan dentro de un test (los de las filas) no lo necesitan: no miran el botón ni el contador.
 
