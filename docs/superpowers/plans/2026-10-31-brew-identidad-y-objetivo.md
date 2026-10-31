@@ -58,17 +58,17 @@ CI exige, en este orden: `npm run format:check` → `npm run lint` → `npm test
 
 La spec es #48. Cada tarea es un ticket hijo (rama `ticket/<n>-<slug>`):
 
-| Tarea                                                            | Ticket                                           | Depende de |
-| ---------------------------------------------------------------- | ------------------------------------------------ | ---------- |
-| 1 — El vocabulario (GLOSSARY.md)                                 | [#49](https://github.com/zademy/nuupa/issues/49) | —          |
-| 2 — brew: la identidad de una fila es el nombre completo         | [#50](https://github.com/zademy/nuupa/issues/50) | —          |
-| 3 — El objetivo de actualización cruza el IPC                    | [#51](https://github.com/zademy/nuupa/issues/51) | #50        |
-| 4 — brew: el objetivo es todo lo que brew declara desactualizado | [#52](https://github.com/zademy/nuupa/issues/52) | #51        |
-| 5 — Verificación contra el brew real                             | (sin ticket: es la comprobación final)           | #49–#52    |
+| Task                                                                  | Ticket                                           | Depende de |
+| --------------------------------------------------------------------- | ------------------------------------------------ | ---------- |
+| Task 1 — El vocabulario (GLOSSARY.md)                                 | [#49](https://github.com/zademy/nuupa/issues/49) | —          |
+| Task 2 — brew: la identidad de una fila es el nombre completo         | [#50](https://github.com/zademy/nuupa/issues/50) | —          |
+| Task 3 — El objetivo de actualización cruza el IPC                    | [#51](https://github.com/zademy/nuupa/issues/51) | #50        |
+| Task 4 — brew: el objetivo es todo lo que brew declara desactualizado | [#52](https://github.com/zademy/nuupa/issues/52) | #51        |
+| Task 5 — Verificación contra el brew real                             | (sin ticket: es la comprobación final)           | #49–#52    |
 
 ---
 
-## Tarea 1 — El vocabulario (GLOSSARY.md)
+## Task 1 — El vocabulario (GLOSSARY.md)
 
 **Por qué primero:** las tareas siguientes nombran cosas que el GLOSSARY tiene que definir ya.
 
@@ -91,7 +91,7 @@ La spec es #48. Cada tarea es un ticket hijo (rama `ticket/<n>-<slug>`):
 
 ---
 
-## Tarea 2 — brew: la identidad de una fila es el nombre completo
+## Task 2 — brew: la identidad de una fila es el nombre completo
 
 **Por qué aquí:** es el bug visible, se arregla entero en `src-tauri/src/brew.rs` y no toca el IPC (así que se puede revisar y mergear solo).
 
@@ -195,7 +195,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
 ---
 
-## Tarea 3 — El objetivo de actualización cruza el IPC
+## Task 3 — El objetivo de actualización cruza el IPC
 
 **Por qué aquí:** es la costura que hace posible el objetivo de brew. Es un **refactor sin cambio de comportamiento**: npm/pnpm/bun llenan el objetivo con sus filas desactualizadas, o sea exactamente lo que la cola y el botón usan hoy.
 
@@ -321,9 +321,9 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
 ---
 
-## Tarea 4 — brew: el objetivo es todo lo que brew declara desactualizado
+## Task 4 — brew: el objetivo es todo lo que brew declara desactualizado
 
-**Por qué aquí:** el comportamiento que pedía el usuario. Depende de la Tarea 3 (el objetivo ya existe; aquí se llena con lo que brew declara).
+**Por qué aquí:** el comportamiento que pedía el usuario. Depende de la Task 3 (el objetivo ya existe; aquí se llena con lo que brew declara).
 
 **Test primero**, en `src-tauri/src/brew.rs`:
 
@@ -354,7 +354,7 @@ fn armar_brew(
     outdated: &BTreeMap<(String, String), Desactualizado>,
 ) -> PlanGestor {
     let mut packages = Vec::new();
-    // …las filas, igual que en la Tarea 2…
+    // …las filas, igual que en la Task 2…
 
     // The update objective: EVERYTHING brew declares outdated, not just
     // the rows. A dependency that brew reports outdated is updatable
@@ -399,7 +399,7 @@ npm test
 
 ---
 
-## Tarea 5 — Verificación contra el brew real
+## Task 5 — Verificación contra el brew real
 
 **Qué hacer:** con el brew de esta máquina (Homebrew 7.0.11, 141 fórmulas, 30 hojas, 5 casks):
 
