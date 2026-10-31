@@ -131,7 +131,7 @@ pub fn snapshot(runner: &dyn Runner) -> std::io::Result<PlanGestor> {
     }
     // Same as npm: exit != 0 without usable JSON is a real failure, not
     // "nothing outdated" (which is exit 0 with empty stdout).
-    let out = runner.run(&["outdated", "-g"])?;
+    let out = runner.run(&["outdated", "-g", "--json"])?;
     crate::kernel::guard_json(&out, "pnpm", "outdated", '{')?;
     Ok(PlanGestor::de_filas(EspacioGlobal {
         version_gestor: runner.version_gestor(),
@@ -168,7 +168,8 @@ mod tests {
 
     #[test]
     fn snapshot_detecta_desactualizados_con_scoped() {
-        let snap = snapshot(&runner_pnpm()).expect("valid snapshot");
+        let runner = runner_pnpm();
+        let snap = snapshot(&runner).expect("valid snapshot");
         assert_eq!(snap.espacio.version_gestor, "10.33.0");
         assert_eq!(snap.espacio.version_node.as_deref(), Some("26.2.0"));
         assert_eq!(snap.espacio.packages.len(), 2);
@@ -180,6 +181,7 @@ mod tests {
             .unwrap();
         assert!(cowsay.outdated);
         assert_eq!(cowsay.latest.as_deref(), Some("1.6.0"));
+        assert!(runner.se_llamo_a("outdated -g --json"));
         let scoped = snap
             .espacio
             .packages
@@ -195,7 +197,7 @@ mod tests {
         let snap = snapshot(&runner).expect("empty is valid");
         assert!(snap.espacio.packages.is_empty());
         assert!(runner.se_llamo_a("ls -g --depth=0 --json"));
-        assert!(!runner.se_llamo_a("outdated -g --json"));
+        assert!(!runner.se_llamo_a("outdated -g"));
     }
 
     #[test]
