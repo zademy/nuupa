@@ -784,6 +784,20 @@ mod tests {
     }
 
     #[test]
+    fn las_lineas_de_brew_llevan_el_nombre_completo() {
+        let nombre = "gentleman-programming/tap/engram";
+        assert_eq!(
+            args_brew(nombre, Some(brew::TIPO_FORMULA)),
+            vec!["upgrade", "--formula", nombre]
+        );
+        assert_eq!(
+            args_uninstall_brew(nombre, Some(brew::TIPO_FORMULA)),
+            vec!["uninstall", "--formula", nombre]
+        );
+        assert_eq!(args_unpin_brew(nombre), vec!["unpin", nombre]);
+    }
+
+    #[test]
     fn correr_update_rechaza_nombres_invalidos() {
         for nombre in ["", "--force"] {
             assert!(

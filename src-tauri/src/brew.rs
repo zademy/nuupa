@@ -159,8 +159,10 @@ fn parse_leaves(stdout: &str) -> BTreeSet<String> {
 }
 
 /// Parses `brew list --versions` (and `--cask --versions`): `name v1
-/// [v2 …]` per line. Multiple installed versions join with ", ".
-fn parse_versions(stdout: &str) -> Vec<(String, String)> {
+/// [v2 …]` per line. Multiple installed versions join with ", ". The key
+/// is the SHORT name (`engram`); the rows are identified by the full one
+/// (`gentleman-programming/tap/engram`) — `nombre_corto` bridges both.
+fn parse_versions(stdout: &str) -> BTreeMap<String, String> {
     stdout
         .lines()
         .map(str::trim)
@@ -168,10 +170,16 @@ fn parse_versions(stdout: &str) -> Vec<(String, String)> {
         .filter_map(|l| {
             let mut partes = l.split_whitespace();
             let nombre = partes.next()?;
-            let versiones = partes.collect::<Vec<_>>().join(", ");
-            Some((nombre.to_string(), versiones))
+            Some((nombre.to_string(), partes.collect::<Vec<_>>().join(", ")))
         })
         .collect()
+}
+
+/// The short name of a brew formula: what comes after the tap prefix.
+/// `gentleman-programming/tap/engram` → `engram`. Core formulae have no
+/// prefix, so the short name is the full name.
+fn nombre_corto(nombre: &str) -> &str {
+    nombre.rsplit('/').next().unwrap_or(nombre)
 }
 
 /// Assembles brew's global space: leaves (formulae the user installed)
@@ -181,21 +189,25 @@ fn parse_versions(stdout: &str) -> Vec<(String, String)> {
 fn armar_brew(
     version_gestor: String,
     hojas: BTreeSet<String>,
-    formulae: Vec<(String, String)>,
-    casks: Vec<(String, String)>,
+    versiones: BTreeMap<String, String>,
+    casks: BTreeMap<String, String>,
     outdated: &BTreeMap<(String, String), Desactualizado>,
 ) -> EspacioGlobal {
     let mut packages = Vec::new();
     // Only leaves: dependencies update with their parent, they are not
     // the user's packages (they never reach a table).
-    for (nombre, installed) in formulae {
-        if !hojas.contains(&nombre) {
-            continue;
-        }
-        packages.push(paquete(TIPO_FORMULA, nombre, installed, outdated));
+    for hoja in hojas {
+        // brew's leaves print the FULL name (`tap/name`); `brew list
+        // --versions` prints the SHORT one. The row keeps the full
+        // name — it is the identity brew uses in `outdated` too.
+        let installed = versiones
+            .get(nombre_corto(&hoja))
+            .cloned()
+            .unwrap_or_default();
+        packages.push(paquete(TIPO_FORMULA, hoja, installed, outdated));
     }
-    for (nombre, installed) in casks {
-        packages.push(paquete(TIPO_CASK, nombre, installed, outdated));
+    for (token, installed) in casks {
+        packages.push(paquete(TIPO_CASK, token, installed, outdated));
     }
     packages.sort_by(|a, b| {
         (&a.name, tipo_orden(a.tipo.as_deref())).cmp(&(&b.name, tipo_orden(b.tipo.as_deref())))
@@ -292,6 +304,46 @@ mod tests {
         assert!(brew_aplica("linux"));
     }
 
+    const LEAVES_TAP: &str = "gentleman-programming/tap/engram\nwget\n";
+    const FORMULAE_TAP: &str = "engram 3.6.0\nwget 1.25.0\n";
+    const OUTDATED_TAP: &str = r#"{
+        "formulae": [
+            {"name":"gentleman-programming/tap/engram","installed_versions":["3.6.0"],"current_version":"3.7.0","pinned":false,"pinned_version":null}
+        ],
+        "casks": []
+    }"#;
+
+    fn runner_tap(hojas: &str, formulae: &str) -> FakeRunner {
+        FakeRunner::new("7.0.11")
+            .respuesta("outdated", OUTDATED_TAP, 0)
+            .respuesta("leaves", hojas, 0)
+            .respuesta_exacta("list --versions", formulae, 0)
+            .respuesta_exacta("list --cask --versions", "", 0)
+    }
+
+    #[test]
+    fn una_hoja_de_tap_aparece_con_su_nombre_completo() {
+        let snap = snapshot(&runner_tap(LEAVES_TAP, FORMULAE_TAP)).expect("valid snapshot");
+        let engram = fila(&snap, TIPO_FORMULA, "gentleman-programming/tap/engram");
+        assert_eq!(engram.installed, "3.6.0");
+        assert_eq!(engram.latest.as_deref(), Some("3.7.0"));
+        assert!(engram.outdated);
+    }
+
+    #[test]
+    fn la_hoja_de_tap_encuentra_su_version_por_el_nombre_corto() {
+        let snap = snapshot(&runner_tap(LEAVES_TAP, FORMULAE_TAP)).expect("valid snapshot");
+        let engram = fila(&snap, TIPO_FORMULA, "gentleman-programming/tap/engram");
+        assert_eq!(engram.installed, "3.6.0");
+    }
+
+    #[test]
+    fn una_hoja_sin_version_resoluble_aparece_con_la_celda_vacia() {
+        let snap = snapshot(&runner_tap("otro-tap/huérfano\n", "")).expect("valid snapshot");
+        let huerfano = fila(&snap, TIPO_FORMULA, "otro-tap/huérfano");
+        assert_eq!(huerfano.installed, "");
+    }
+
     // Fixtures captured from real Homebrew 7.0.4 shapes
     const OUTDATED_V2: &str = r#"{
         "formulae": [
@@ -337,14 +389,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_versions_unirne_versiones_multiples() {
-        let pares = parse_versions("openssl 3.0.1 3.0.2\nripgrep 14.1.0\n");
+    fn parse_versions_une_las_versiones_multiples() {
+        let versiones = parse_versions("openssl 3.0.1 3.0.2\nripgrep 14.1.0\n");
         assert_eq!(
-            pares,
-            vec![
+            versiones,
+            BTreeMap::from([
                 ("openssl".to_string(), "3.0.1, 3.0.2".to_string()),
                 ("ripgrep".to_string(), "14.1.0".to_string()),
-            ]
+            ])
         );
     }
 
