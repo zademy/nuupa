@@ -28,6 +28,15 @@ const SNAPSHOT = {
     },
     { name: "hunkdiff", installed: "0.17.2", latest: "0.18.0", outdated: true },
   ],
+  objetivo: [
+    {
+      name: "context-mode",
+      installed: "1.0.169",
+      latest: "1.0.170",
+      outdated: true,
+    },
+    { name: "hunkdiff", installed: "0.17.2", latest: "0.18.0", outdated: true },
+  ],
 };
 
 // brew: una Pineada, una fórmula normal y una cask (fórmulas
@@ -61,6 +70,16 @@ const SNAPSHOT_BREW = {
       tipo: "cask",
     },
   ],
+  objetivo: [
+    {
+      name: "ffmpeg",
+      installed: "7.1",
+      latest: "8.0",
+      outdated: true,
+      tipo: "formula",
+      pinned: true,
+    },
+  ],
 };
 
 function montar(gestor = "npm") {
@@ -85,6 +104,27 @@ describe("PanelGestor montado", () => {
     const c = await montarCargado();
     expect(c.findAll("tbody tr")).toHaveLength(3);
     expect(c.get(".statusbar").text()).toContain("npm v11.4.2");
+  });
+
+  it("el botón se habilita con el objetivo aunque el paquete no tenga fila", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", {
+      ...SNAPSHOT,
+      packages: SNAPSHOT.packages.map((p) => ({ ...p, outdated: false })),
+      objetivo: [
+        {
+          name: "dependencia",
+          installed: "1.0",
+          latest: "2.0",
+          outdated: true,
+        },
+      ],
+    });
+    const c = montar();
+    await flushPromises();
+    expect(filaDe(c, "dependencia")).toBeUndefined();
+    expect(c.get("button.primario").attributes("disabled")).toBeUndefined();
+    expect(c.get(".statusbar").text()).toContain("1");
   });
 
   it("las filas con tipo (brew) llevan la marca f/c y el update viaja con el tipo", async () => {
@@ -506,6 +546,34 @@ describe("PanelGestor montado", () => {
     const c = montar();
     await flushPromises();
     expect(c.findAll("button.desinstalar")).toHaveLength(0);
+  });
+
+  it("una versión desconocida no se pinta como «al día»", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", {
+      ...SNAPSHOT_BREW,
+      packages: [
+        {
+          name: "gentleman-programming/tap/engram",
+          installed: "",
+          latest: "",
+          outdated: false,
+          tipo: "formula",
+        },
+        ...SNAPSHOT_BREW.packages,
+      ],
+    });
+    const c = montar("brew");
+    await flushPromises();
+    const sinVersion = filaDe(c, "gentleman-programming/tap/engram");
+    // sin versión no se afirma que esté al día: la celda lo dice
+    expect(sinVersion.find(".al-dia").exists()).toBe(false);
+    expect(sinVersion.find(".desconocida").exists()).toBe(true);
+    // y lo dice también para quien no ve el "?"
+    expect(sinVersion.find(".desconocida").attributes("title")).toBeTruthy();
+    expect(sinVersion.find(".solo-lector").text()).not.toBe("");
+    // una fila con versión conocida sigue igual
+    expect(filaDe(c, "wget").find(".al-dia").exists()).toBe(true);
   });
 
   it("la papelera de brew está en toda fila: normal, Excluida y Pineada", async () => {

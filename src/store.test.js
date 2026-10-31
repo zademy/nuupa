@@ -20,6 +20,15 @@ const SNAPSHOT = {
     },
     { name: "hunkdiff", installed: "0.17.2", latest: "0.18.0", outdated: true },
   ],
+  objetivo: [
+    {
+      name: "context-mode",
+      installed: "1.0.169",
+      latest: "1.0.170",
+      outdated: true,
+    },
+    { name: "hunkdiff", installed: "0.17.2", latest: "0.18.0", outdated: true },
+  ],
 };
 
 function fakeInvoke() {
@@ -36,6 +45,31 @@ describe("store de paquetes globales", () => {
     expect(store.state.snapshot).toEqual(SNAPSHOT);
     expect(store.state.loading).toBe(false);
     expect(store.state.error).toBe("");
+  });
+
+  it("el_objetivo_es_lo_que_actualiza_todo_toma", async () => {
+    const sinFilas = {
+      ...SNAPSHOT,
+      packages: SNAPSHOT.packages.map((p) => ({ ...p, outdated: false })),
+      objetivo: [
+        { name: "sin-fila", installed: "1.0", latest: "2.0", outdated: true },
+      ],
+    };
+    const store = createPackagesStore(async (cmd, args) => {
+      if (cmd === "list_globals") return sinFilas;
+      if (cmd === "actualizar_todo") {
+        expect(args).toEqual({ gestor: "npm" });
+        return {
+          resumen: { total: 1, ok: 1, failed: 0, detenida: false },
+          snapshot: sinFilas,
+        };
+      }
+    });
+    await store.refresh();
+    expect(store.conteo.value.desactualizados).toBe(1);
+    expect(store.hayDesactualizados.value).toBe(true);
+    await store.updateAll();
+    expect(store.queue.summary.total).toBe(1);
   });
 
   it("refrescar deja el error visible si invoke falla", async () => {
@@ -505,6 +539,7 @@ describe("store de paquetes globales", () => {
         latest: p.installed,
         outdated: false,
       })),
+      objetivo: [],
     };
     const store = createPackagesStore(async () => sinDesactualizados);
     await store.refresh();
@@ -635,6 +670,7 @@ describe("store de paquetes globales", () => {
         ...p,
         outdated: p.name === "hunkdiff",
       })),
+      objetivo: [{ ...SNAPSHOT.packages[2] }],
     };
     const store = createPackagesStore(async (cmd) => {
       if (cmd === "list_globals") return unSoloDesactualizadoExcluido;

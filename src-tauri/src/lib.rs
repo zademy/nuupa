@@ -52,7 +52,7 @@ pub(crate) struct DefinicionGestor {
     pub(crate) args_unpin: Option<fn(&str) -> Vec<String>>,
     pub(crate) instalado: fn() -> bool,
     pub(crate) runner: fn() -> std::io::Result<Box<dyn Runner>>,
-    pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::EspacioGlobal>,
+    pub(crate) snapshot: fn(&dyn Runner) -> std::io::Result<kernel::PlanGestor>,
 }
 
 /// npm's update line: `npm i -g pkg@latest`.
@@ -184,8 +184,8 @@ fn validar_gestor(gestor: &str) -> Result<(), String> {
 /// the manager's visible command already assembled.
 fn correr_snapshot(def: &DefinicionGestor) -> Result<Snapshot, String> {
     let runner = (def.runner)().map_err(|e| e.to_string())?;
-    let espacio = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
-    Ok(espacio.con_comando(def.comando, def.comando_desinstalar))
+    let plan = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
+    Ok(plan.con_comando(def.comando, def.comando_desinstalar))
 }
 
 /// Updates a package with the manager's update line (built per package:
@@ -733,8 +733,8 @@ mod tests {
     fn correr_snapshot_ensambla_el_comando_visible_del_def() {
         let snap = correr_snapshot(&def_falsa()).expect("valid snapshot");
         assert_eq!(snap.comando_actualizar, "falso i -g"); // verb: single source
-        assert_eq!(snap.espacio.version_gestor, "1.0.0");
-        assert!(snap.espacio.packages.iter().any(|p| p.outdated));
+        assert_eq!(snap.plan.espacio.version_gestor, "1.0.0");
+        assert!(snap.plan.espacio.packages.iter().any(|p| p.outdated));
     }
 
     #[test]
@@ -781,6 +781,20 @@ mod tests {
         };
         correr_update(&def, "wget", None, &mut |_| {}).expect("formula line");
         correr_update(&def, "wine", Some("cask"), &mut |_| {}).expect("cask line");
+    }
+
+    #[test]
+    fn las_lineas_de_brew_llevan_el_nombre_completo() {
+        let nombre = "gentleman-programming/tap/engram";
+        assert_eq!(
+            args_brew(nombre, Some(brew::TIPO_FORMULA)),
+            vec!["upgrade", "--formula", nombre]
+        );
+        assert_eq!(
+            args_uninstall_brew(nombre, Some(brew::TIPO_FORMULA)),
+            vec!["uninstall", "--formula", nombre]
+        );
+        assert_eq!(args_unpin_brew(nombre), vec!["unpin", nombre]);
     }
 
     #[test]

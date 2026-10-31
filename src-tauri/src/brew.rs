@@ -1,12 +1,13 @@
 //! brew adapter (Homebrew on macOS, Linuxbrew on Linux): its global
 //! space is the user's LEAVES (top-level formulae) plus every cask —
-//! dependencies never appear, they update with their parent (same
-//! semantics as `npm -g`, vocabulary in GLOSSARY.md). The update line
+//! a dependency is not a row (vocabulary in GLOSSARY.md). Its update
+//! OBJECTIVE is wider: everything `brew outdated` declares, a
+//! dependency included, minus the pinned ones. The update line
 //! (`upgrade --formula|--cask`) lives in [`crate`]'s manager table.
 
 use crate::kernel::{
     con_extension, correr_consulta, correr_instalacion, home, version_de, EspacioGlobal,
-    GlobalPackage, Runner, RunnerOutput,
+    GlobalPackage, PlanGestor, Runner, RunnerOutput,
 };
 use crate::sondeo;
 use std::collections::{BTreeMap, BTreeSet};
@@ -159,8 +160,10 @@ fn parse_leaves(stdout: &str) -> BTreeSet<String> {
 }
 
 /// Parses `brew list --versions` (and `--cask --versions`): `name v1
-/// [v2 …]` per line. Multiple installed versions join with ", ".
-fn parse_versions(stdout: &str) -> Vec<(String, String)> {
+/// [v2 …]` per line. Multiple installed versions join with ", ". The key
+/// is the SHORT name (`engram`); the rows are identified by the full one
+/// (`gentleman-programming/tap/engram`) — `nombre_corto` bridges both.
+fn parse_versions(stdout: &str) -> BTreeMap<String, String> {
     stdout
         .lines()
         .map(str::trim)
@@ -168,42 +171,89 @@ fn parse_versions(stdout: &str) -> Vec<(String, String)> {
         .filter_map(|l| {
             let mut partes = l.split_whitespace();
             let nombre = partes.next()?;
-            let versiones = partes.collect::<Vec<_>>().join(", ");
-            Some((nombre.to_string(), versiones))
+            Some((nombre.to_string(), partes.collect::<Vec<_>>().join(", ")))
         })
         .collect()
+}
+
+/// The short name of a brew formula: what comes after the tap prefix.
+/// `gentleman-programming/tap/engram` → `engram`. Core formulae have no
+/// prefix, so the short name is the full name.
+fn nombre_corto(nombre: &str) -> &str {
+    nombre.rsplit('/').next().unwrap_or(nombre)
 }
 
 /// Assembles brew's global space: leaves (formulae the user installed)
 /// plus every cask. An outdated entry adds latest + the flag; absent
 /// means up to date (latest = installed). Sorted by name, then type —
 /// a formula/cask name collision shows as two distinguishable rows.
+///
+/// The update objective is NOT the outdated rows: it is EVERYTHING brew
+/// declares outdated, dependencies included, minus the pinned ones.
 fn armar_brew(
     version_gestor: String,
     hojas: BTreeSet<String>,
-    formulae: Vec<(String, String)>,
-    casks: Vec<(String, String)>,
+    versiones: BTreeMap<String, String>,
+    casks: BTreeMap<String, String>,
     outdated: &BTreeMap<(String, String), Desactualizado>,
-) -> EspacioGlobal {
+) -> PlanGestor {
+    // The update objective: EVERYTHING brew declares outdated, not just
+    // the rows. A dependency brew reports outdated is updatable on its
+    // own (`brew upgrade --formula simdjson`); `brew upgrade --formula
+    // node` would NOT take it along. The PINNED ones stay out: brew
+    // refuses to upgrade them, so they are not updatable.
+    let objetivo: Vec<GlobalPackage> = outdated
+        .iter()
+        .filter(|((_, _), d)| !d.pinned)
+        .map(|((tipo, nombre), d)| {
+            // brew names a formula by its FULL name (`tap/name`) and a
+            // cask by its token; the installed version is keyed by the
+            // short name (`brew list --versions`) or by the token.
+            let installed = match tipo.as_str() {
+                TIPO_CASK => casks.get(nombre).cloned().unwrap_or_default(),
+                _ => versiones
+                    .get(nombre_corto(nombre))
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            GlobalPackage {
+                tipo: Some(tipo.clone()),
+                name: nombre.clone(),
+                installed,
+                latest: Some(d.latest.clone()),
+                outdated: true,
+                pinned: d.pinned,
+            }
+        })
+        .collect();
+
     let mut packages = Vec::new();
     // Only leaves: dependencies update with their parent, they are not
     // the user's packages (they never reach a table).
-    for (nombre, installed) in formulae {
-        if !hojas.contains(&nombre) {
-            continue;
-        }
-        packages.push(paquete(TIPO_FORMULA, nombre, installed, outdated));
+    for hoja in hojas {
+        // brew's leaves print the FULL name (`tap/name`); `brew list
+        // --versions` prints the SHORT one. The row keeps the full
+        // name — it is the identity brew uses in `outdated` too.
+        let installed = versiones
+            .get(nombre_corto(&hoja))
+            .cloned()
+            .unwrap_or_default();
+        packages.push(paquete(TIPO_FORMULA, hoja, installed, outdated));
     }
-    for (nombre, installed) in casks {
-        packages.push(paquete(TIPO_CASK, nombre, installed, outdated));
+    for (token, installed) in casks {
+        packages.push(paquete(TIPO_CASK, token, installed, outdated));
     }
     packages.sort_by(|a, b| {
         (&a.name, tipo_orden(a.tipo.as_deref())).cmp(&(&b.name, tipo_orden(b.tipo.as_deref())))
     });
-    EspacioGlobal {
-        version_gestor,
-        version_node: None,
-        packages,
+
+    PlanGestor {
+        espacio: EspacioGlobal {
+            version_gestor,
+            version_node: None,
+            packages,
+        },
+        objetivo,
     }
 }
 
@@ -260,7 +310,7 @@ fn guard_salida(out: &RunnerOutput, gestor: &str, comando: &str) -> std::io::Res
 }
 
 /// Photo of brew's global space: leaves + casks.
-pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
+pub fn snapshot(runner: &dyn Runner) -> std::io::Result<PlanGestor> {
     let outdated = runner.run(&["outdated", "--json=v2"])?;
     crate::kernel::guard_json(&outdated, "brew", "outdated", '{')?;
     let leaves = runner.run(&["leaves"])?;
@@ -290,6 +340,112 @@ mod tests {
         assert!(!brew_aplica("windows"));
         assert!(brew_aplica("macos"));
         assert!(brew_aplica("linux"));
+    }
+
+    const LEAVES_TAP: &str = "gentleman-programming/tap/engram\nwget\n";
+    const FORMULAE_TAP: &str = "engram 3.6.0\nwget 1.25.0\n";
+    const OUTDATED_TAP: &str = r#"{
+        "formulae": [
+            {"name":"gentleman-programming/tap/engram","installed_versions":["3.6.0"],"current_version":"3.7.0","pinned":false,"pinned_version":null}
+        ],
+        "casks": []
+    }"#;
+
+    fn runner_tap(hojas: &str, formulae: &str) -> FakeRunner {
+        FakeRunner::new("7.0.11")
+            .respuesta("outdated", OUTDATED_TAP, 0)
+            .respuesta("leaves", hojas, 0)
+            .respuesta_exacta("list --versions", formulae, 0)
+            .respuesta_exacta("list --cask --versions", "", 0)
+    }
+
+    #[test]
+    fn una_hoja_de_tap_aparece_con_su_nombre_completo() {
+        let snap = snapshot(&runner_tap(LEAVES_TAP, FORMULAE_TAP)).expect("valid snapshot");
+        let engram = fila(&snap, TIPO_FORMULA, "gentleman-programming/tap/engram");
+        assert_eq!(engram.installed, "3.6.0");
+        assert_eq!(engram.latest.as_deref(), Some("3.7.0"));
+        assert!(engram.outdated);
+    }
+
+    #[test]
+    fn la_hoja_de_tap_encuentra_su_version_por_el_nombre_corto() {
+        let snap = snapshot(&runner_tap(LEAVES_TAP, FORMULAE_TAP)).expect("valid snapshot");
+        let engram = fila(&snap, TIPO_FORMULA, "gentleman-programming/tap/engram");
+        assert_eq!(engram.installed, "3.6.0");
+    }
+
+    #[test]
+    fn una_hoja_sin_version_resoluble_aparece_con_la_celda_vacia() {
+        let snap = snapshot(&runner_tap("otro-tap/huérfano\n", "")).expect("valid snapshot");
+        let huerfano = fila(&snap, TIPO_FORMULA, "otro-tap/huérfano");
+        assert_eq!(huerfano.installed, "");
+    }
+
+    // The objective with a dependency brew declares outdated: simdjson
+    // is a dependency of node (not a leaf). Real Homebrew 7.0.11 shape.
+    const OUTDATED_CON_DEPENDENCIA: &str = r#"{
+        "formulae": [
+            {"name":"node","installed_versions":["26.13.0_1"],"current_version":"26.13.0_2","pinned":false,"pinned_version":null},
+            {"name":"simdjson","installed_versions":["5.0.6","5.0.7"],"current_version":"5.1.0","pinned":false,"pinned_version":null}
+        ],
+        "casks": []
+    }"#;
+    const OUTDATED_DEPENDENCIA_PINEADA: &str = r#"{
+        "formulae": [
+            {"name":"node","installed_versions":["26.13.0_1"],"current_version":"26.13.0_2","pinned":false,"pinned_version":null},
+            {"name":"simdjson","installed_versions":["5.0.7"],"current_version":"5.1.0","pinned":true,"pinned_version":"5.0.7"}
+        ],
+        "casks": []
+    }"#;
+    const LEAVES_CON_DEPENDENCIA: &str = "node\n";
+    const FORMULAE_CON_DEPENDENCIA: &str = "node 26.13.0_1\nsimdjson 5.0.6 5.0.7\n";
+
+    fn runner_con_dependencia(outdated: &str) -> FakeRunner {
+        FakeRunner::new("7.0.11")
+            .respuesta("outdated", outdated, 0)
+            .respuesta("leaves", LEAVES_CON_DEPENDENCIA, 0)
+            .respuesta_exacta("list --versions", FORMULAE_CON_DEPENDENCIA, 0)
+            .respuesta_exacta("list --cask --versions", "", 0)
+    }
+
+    #[test]
+    fn el_objetivo_de_brew_incluye_una_dependencia_que_no_son_fila() {
+        let snap =
+            snapshot(&runner_con_dependencia(OUTDATED_CON_DEPENDENCIA)).expect("valid snapshot");
+        // the table keeps only the leaves: simdjson is a dependency of node
+        assert_eq!(snap.espacio.packages.len(), 1);
+        assert_eq!(snap.espacio.packages[0].name, "node");
+        // the objective is everything brew declares outdated
+        let nombres: Vec<&str> = snap.objetivo.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(nombres.len(), 2);
+        assert!(nombres.contains(&"node"));
+        assert!(nombres.contains(&"simdjson"));
+    }
+
+    #[test]
+    fn el_objetivo_de_brew_trae_la_version_instalada_de_cada_paquete() {
+        let snap =
+            snapshot(&runner_con_dependencia(OUTDATED_CON_DEPENDENCIA)).expect("valid snapshot");
+        let simdjson = objetivo_de(&snap, TIPO_FORMULA, "simdjson");
+        assert_eq!(simdjson.installed, "5.0.6, 5.0.7");
+        assert_eq!(simdjson.latest.as_deref(), Some("5.1.0"));
+        assert!(simdjson.outdated);
+        let node = objetivo_de(&snap, TIPO_FORMULA, "node");
+        assert_eq!(node.installed, "26.13.0_1");
+        assert_eq!(node.latest.as_deref(), Some("26.13.0_2"));
+    }
+
+    #[test]
+    fn una_dependencia_pineada_no_entra_en_el_objetivo() {
+        // brew reports the pinned dependency outdated, but it refuses to
+        // upgrade it: it is not updatable, so it never reaches the
+        // objective (nor the count nor the button).
+        let snap = snapshot(&runner_con_dependencia(OUTDATED_DEPENDENCIA_PINEADA))
+            .expect("valid snapshot");
+        let nombres: Vec<&str> = snap.objetivo.iter().map(|p| p.name.as_str()).collect();
+        assert!(nombres.contains(&"node"));
+        assert!(!nombres.contains(&"simdjson"));
     }
 
     // Fixtures captured from real Homebrew 7.0.4 shapes
@@ -337,25 +493,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_versions_unirne_versiones_multiples() {
-        let pares = parse_versions("openssl 3.0.1 3.0.2\nripgrep 14.1.0\n");
+    fn parse_versions_une_las_versiones_multiples() {
+        let versiones = parse_versions("openssl 3.0.1 3.0.2\nripgrep 14.1.0\n");
         assert_eq!(
-            pares,
-            vec![
+            versiones,
+            BTreeMap::from([
                 ("openssl".to_string(), "3.0.1, 3.0.2".to_string()),
                 ("ripgrep".to_string(), "14.1.0".to_string()),
-            ]
+            ])
         );
     }
 
     #[test]
     fn snapshot_solo_hojas_y_casks() {
-        let snap = snapshot(&runner_brew()).expect("valid snapshot");
-        assert_eq!(snap.version_gestor, "7.0.4");
-        assert_eq!(snap.version_node, None);
+        let runner = runner_brew();
+        let snap = snapshot(&runner).expect("valid snapshot");
+        assert_eq!(snap.espacio.version_gestor, "7.0.4");
+        assert_eq!(snap.espacio.version_node, None);
+        // the whole line matters: the fake matches by FIRST argument, so
+        // only this assertion catches a dropped `--json=v2`
+        assert!(runner.se_llamo_a("outdated --json=v2"));
         // abseil is a dependency: never reaches the table
-        assert_eq!(snap.packages.len(), 4);
-        assert!(!snap.packages.iter().any(|p| p.name == "abseil"));
+        assert_eq!(snap.espacio.packages.len(), 4);
+        assert!(!snap.espacio.packages.iter().any(|p| p.name == "abseil"));
         let wget = fila(&snap, TIPO_FORMULA, "wget");
         assert!(wget.outdated);
         assert_eq!(wget.latest.as_deref(), Some("1.26.0"));
@@ -372,6 +532,12 @@ mod tests {
         let firefox = fila(&snap, TIPO_CASK, "firefox");
         assert!(firefox.outdated);
         assert_eq!(firefox.latest.as_deref(), Some("142.1"));
+        // a pinned formula stays OUT of the objective (brew refuses to
+        // upgrade it): the row keeps the pin, the objective does not
+        let objetivo: Vec<&str> = snap.objetivo.iter().map(|p| p.name.as_str()).collect();
+        assert!(objetivo.contains(&"wget"));
+        assert!(objetivo.contains(&"firefox"));
+        assert!(!objetivo.contains(&"ffmpeg"));
     }
 
     #[test]
@@ -382,7 +548,7 @@ mod tests {
             .respuesta_exacta("list --versions", "", 0)
             .respuesta_exacta("list --cask --versions", "", 0);
         let snap = snapshot(&runner).expect("empty is valid");
-        assert!(snap.packages.is_empty());
+        assert!(snap.espacio.packages.is_empty());
     }
 
     #[test]
@@ -421,7 +587,12 @@ mod tests {
             .respuesta_exacta("list --versions", "wine 9.0\n", 0)
             .respuesta_exacta("list --cask --versions", "wine 9.0\n", 0);
         let snap = snapshot(&runner).expect("valid snapshot");
-        let vinos: Vec<_> = snap.packages.iter().filter(|p| p.name == "wine").collect();
+        let vinos: Vec<_> = snap
+            .espacio
+            .packages
+            .iter()
+            .filter(|p| p.name == "wine")
+            .collect();
         assert_eq!(vinos.len(), 2);
         // formulae first, casks second (display order, not alphabetical)
         assert_eq!(vinos[0].tipo.as_deref(), Some(TIPO_FORMULA));
@@ -430,10 +601,18 @@ mod tests {
         assert_eq!(vinos[1].latest.as_deref(), Some("10.1"));
     }
 
-    fn fila<'a>(snap: &'a EspacioGlobal, tipo: &str, nombre: &str) -> &'a GlobalPackage {
-        snap.packages
+    fn fila<'a>(snap: &'a PlanGestor, tipo: &str, nombre: &str) -> &'a GlobalPackage {
+        snap.espacio
+            .packages
             .iter()
             .find(|p| p.name == nombre && p.tipo.as_deref() == Some(tipo))
             .unwrap_or_else(|| panic!("fila {tipo}/{nombre} ausente"))
+    }
+
+    fn objetivo_de<'a>(snap: &'a PlanGestor, tipo: &str, nombre: &str) -> &'a GlobalPackage {
+        snap.objetivo
+            .iter()
+            .find(|p| p.name == nombre && p.tipo.as_deref() == Some(tipo))
+            .unwrap_or_else(|| panic!("objetivo {tipo}/{nombre} ausente"))
     }
 }
