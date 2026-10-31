@@ -5,7 +5,7 @@
 
 use crate::kernel::{
     armar, con_extension, correr_consulta, correr_instalacion, guardar_path_node, home,
-    local_app_data, parse_outdated, version_de, EspacioGlobal, Runner, RunnerOutput,
+    local_app_data, parse_outdated, version_de, EspacioGlobal, PlanGestor, Runner, RunnerOutput,
 };
 use crate::sondeo;
 use std::path::{Path, PathBuf};
@@ -116,28 +116,28 @@ fn parse_ls(json: &str) -> Vec<(String, String)> {
 }
 
 /// Photo of pnpm's global space.
-pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
+pub fn snapshot(runner: &dyn Runner) -> std::io::Result<PlanGestor> {
     let ls = runner.run(&["ls", "-g", "--depth=0", "--json"])?;
     crate::kernel::guard_json(&ls, "pnpm", "ls", '[')?;
     let pares = parse_ls(&ls.stdout);
     if pares.is_empty() {
         // Without globals the global project's manifest does not exist
         // and `outdated` would fail: an empty space is a valid state.
-        return Ok(EspacioGlobal {
+        return Ok(PlanGestor::de_filas(EspacioGlobal {
             version_gestor: runner.version_gestor(),
             version_node: runner.version_node(),
             packages: Vec::new(),
-        });
+        }));
     }
-    let out = runner.run(&["outdated", "-g", "--json"])?;
     // Same as npm: exit != 0 without usable JSON is a real failure, not
     // "nothing outdated" (which is exit 0 with empty stdout).
+    let out = runner.run(&["outdated", "-g"])?;
     crate::kernel::guard_json(&out, "pnpm", "outdated", '{')?;
-    Ok(EspacioGlobal {
+    Ok(PlanGestor::de_filas(EspacioGlobal {
         version_gestor: runner.version_gestor(),
         version_node: runner.version_node(),
         packages: armar(pares, &parse_outdated(&out.stdout)),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -169,13 +169,19 @@ mod tests {
     #[test]
     fn snapshot_detecta_desactualizados_con_scoped() {
         let snap = snapshot(&runner_pnpm()).expect("valid snapshot");
-        assert_eq!(snap.version_gestor, "10.33.0");
-        assert_eq!(snap.version_node.as_deref(), Some("26.2.0"));
-        assert_eq!(snap.packages.len(), 2);
-        let cowsay = snap.packages.iter().find(|p| p.name == "cowsay").unwrap();
+        assert_eq!(snap.espacio.version_gestor, "10.33.0");
+        assert_eq!(snap.espacio.version_node.as_deref(), Some("26.2.0"));
+        assert_eq!(snap.espacio.packages.len(), 2);
+        let cowsay = snap
+            .espacio
+            .packages
+            .iter()
+            .find(|p| p.name == "cowsay")
+            .unwrap();
         assert!(cowsay.outdated);
         assert_eq!(cowsay.latest.as_deref(), Some("1.6.0"));
         let scoped = snap
+            .espacio
             .packages
             .iter()
             .find(|p| p.name == "@org/paquete")
@@ -187,7 +193,7 @@ mod tests {
     fn snapshot_vacio_no_llama_a_outdated() {
         let runner = FakeRunner::new("10.33.0").respuesta("ls", "[]", 0);
         let snap = snapshot(&runner).expect("empty is valid");
-        assert!(snap.packages.is_empty());
+        assert!(snap.espacio.packages.is_empty());
         assert!(runner.se_llamo_a("ls -g --depth=0 --json"));
         assert!(!runner.se_llamo_a("outdated -g --json"));
     }
@@ -198,6 +204,6 @@ mod tests {
             .respuesta("ls", LS_JSON, 0)
             .respuesta("outdated", OUTDATED_JSON, 1); // there are outdated
         let snap = snapshot(&runner).expect("exit 1 is not an error");
-        assert!(snap.packages.iter().any(|p| p.outdated));
+        assert!(snap.espacio.packages.iter().any(|p| p.outdated));
     }
 }

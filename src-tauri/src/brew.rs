@@ -6,7 +6,7 @@
 
 use crate::kernel::{
     con_extension, correr_consulta, correr_instalacion, home, version_de, EspacioGlobal,
-    GlobalPackage, Runner, RunnerOutput,
+    GlobalPackage, PlanGestor, Runner, RunnerOutput,
 };
 use crate::sondeo;
 use std::collections::{BTreeMap, BTreeSet};
@@ -192,7 +192,7 @@ fn armar_brew(
     versiones: BTreeMap<String, String>,
     casks: BTreeMap<String, String>,
     outdated: &BTreeMap<(String, String), Desactualizado>,
-) -> EspacioGlobal {
+) -> PlanGestor {
     let mut packages = Vec::new();
     // Only leaves: dependencies update with their parent, they are not
     // the user's packages (they never reach a table).
@@ -212,11 +212,11 @@ fn armar_brew(
     packages.sort_by(|a, b| {
         (&a.name, tipo_orden(a.tipo.as_deref())).cmp(&(&b.name, tipo_orden(b.tipo.as_deref())))
     });
-    EspacioGlobal {
+    PlanGestor::de_filas(EspacioGlobal {
         version_gestor,
         version_node: None,
         packages,
-    }
+    })
 }
 
 /// Display order between kinds: formulae first, casks second (brew's
@@ -272,7 +272,7 @@ fn guard_salida(out: &RunnerOutput, gestor: &str, comando: &str) -> std::io::Res
 }
 
 /// Photo of brew's global space: leaves + casks.
-pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
+pub fn snapshot(runner: &dyn Runner) -> std::io::Result<PlanGestor> {
     let outdated = runner.run(&["outdated", "--json=v2"])?;
     crate::kernel::guard_json(&outdated, "brew", "outdated", '{')?;
     let leaves = runner.run(&["leaves"])?;
@@ -403,11 +403,11 @@ mod tests {
     #[test]
     fn snapshot_solo_hojas_y_casks() {
         let snap = snapshot(&runner_brew()).expect("valid snapshot");
-        assert_eq!(snap.version_gestor, "7.0.4");
-        assert_eq!(snap.version_node, None);
+        assert_eq!(snap.espacio.version_gestor, "7.0.4");
+        assert_eq!(snap.espacio.version_node, None);
         // abseil is a dependency: never reaches the table
-        assert_eq!(snap.packages.len(), 4);
-        assert!(!snap.packages.iter().any(|p| p.name == "abseil"));
+        assert_eq!(snap.espacio.packages.len(), 4);
+        assert!(!snap.espacio.packages.iter().any(|p| p.name == "abseil"));
         let wget = fila(&snap, TIPO_FORMULA, "wget");
         assert!(wget.outdated);
         assert_eq!(wget.latest.as_deref(), Some("1.26.0"));
@@ -434,7 +434,7 @@ mod tests {
             .respuesta_exacta("list --versions", "", 0)
             .respuesta_exacta("list --cask --versions", "", 0);
         let snap = snapshot(&runner).expect("empty is valid");
-        assert!(snap.packages.is_empty());
+        assert!(snap.espacio.packages.is_empty());
     }
 
     #[test]
@@ -473,7 +473,12 @@ mod tests {
             .respuesta_exacta("list --versions", "wine 9.0\n", 0)
             .respuesta_exacta("list --cask --versions", "wine 9.0\n", 0);
         let snap = snapshot(&runner).expect("valid snapshot");
-        let vinos: Vec<_> = snap.packages.iter().filter(|p| p.name == "wine").collect();
+        let vinos: Vec<_> = snap
+            .espacio
+            .packages
+            .iter()
+            .filter(|p| p.name == "wine")
+            .collect();
         assert_eq!(vinos.len(), 2);
         // formulae first, casks second (display order, not alphabetical)
         assert_eq!(vinos[0].tipo.as_deref(), Some(TIPO_FORMULA));
@@ -482,8 +487,9 @@ mod tests {
         assert_eq!(vinos[1].latest.as_deref(), Some("10.1"));
     }
 
-    fn fila<'a>(snap: &'a EspacioGlobal, tipo: &str, nombre: &str) -> &'a GlobalPackage {
-        snap.packages
+    fn fila<'a>(snap: &'a PlanGestor, tipo: &str, nombre: &str) -> &'a GlobalPackage {
+        snap.espacio
+            .packages
             .iter()
             .find(|p| p.name == nombre && p.tipo.as_deref() == Some(tipo))
             .unwrap_or_else(|| panic!("fila {tipo}/{nombre} ausente"))

@@ -50,7 +50,7 @@ Instalar la última versión publicada de un paquete global (`npm i -g pkg@lates
 _Avoid_: upgradear, refrescar
 
 **Actualizar todo**:
-Cola secuencial que actualiza, de a uno, los paquetes desactualizados no excluidos.
+Cola secuencial que actualiza, de a uno, el objetivo menos las Pineadas y las Excluidas.
 _Avoid_: actualizar en lote, bulk
 
 **Objetivo de actualización**:

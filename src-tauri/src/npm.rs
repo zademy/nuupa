@@ -9,8 +9,8 @@
 //! layout.
 
 use crate::kernel::{
-    armar, con_extension, correr_consulta, correr_instalacion, version_de, EspacioGlobal, Runner,
-    RunnerOutput,
+    armar, con_extension, correr_consulta, correr_instalacion, version_de, EspacioGlobal,
+    PlanGestor, Runner, RunnerOutput,
 };
 #[cfg(windows)]
 use crate::kernel::{find_in_path, program_files};
@@ -179,21 +179,21 @@ fn parse_ls(json: &str) -> Vec<(String, String)> {
 }
 
 /// Photo of npm's global space (active node version included).
-pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
+pub fn snapshot(runner: &dyn Runner) -> std::io::Result<PlanGestor> {
     let ls = runner.run(&["ls", "-g", "--depth=0", "--json"])?;
     crate::kernel::guard_json(&ls, "npm", "ls", '{')?;
     let outdated = runner.run(&["outdated", "-g", "--json"])?;
     // exit != 0 without usable JSON is a real failure (network/registry)
     // — NOT "nothing outdated", which is exit 0 with empty stdout.
     crate::kernel::guard_json(&outdated, "npm", "outdated", '{')?;
-    Ok(EspacioGlobal {
+    Ok(PlanGestor::de_filas(EspacioGlobal {
         version_gestor: runner.version_gestor(),
         version_node: runner.version_node(),
         packages: armar(
             parse_ls(&ls.stdout),
             &crate::kernel::parse_outdated(&outdated.stdout),
         ),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -239,10 +239,15 @@ mod tests {
     #[test]
     fn snapshot_detecta_desactualizados_y_reporta_amblas_versiones() {
         let snap = snapshot(&runner_npm()).expect("valid snapshot");
-        assert_eq!(snap.version_gestor, "11.4.2");
-        assert_eq!(snap.version_node.as_deref(), Some("26.2.0"));
-        assert_eq!(snap.packages.len(), 3);
-        let hunkdiff = snap.packages.iter().find(|p| p.name == "hunkdiff").unwrap();
+        assert_eq!(snap.espacio.version_gestor, "11.4.2");
+        assert_eq!(snap.espacio.version_node.as_deref(), Some("26.2.0"));
+        assert_eq!(snap.espacio.packages.len(), 3);
+        let hunkdiff = snap
+            .espacio
+            .packages
+            .iter()
+            .find(|p| p.name == "hunkdiff")
+            .unwrap();
         assert!(hunkdiff.outdated);
         assert_eq!(hunkdiff.latest.as_deref(), Some("0.18.0"));
     }
@@ -256,8 +261,8 @@ mod tests {
             .respuesta("ls", ls, 0)
             .respuesta("outdated", "", 0);
         let snap = snapshot(&runner).expect("valid snapshot");
-        assert_eq!(snap.packages.len(), 1);
-        assert_eq!(snap.packages[0].name, "hunkdiff");
+        assert_eq!(snap.espacio.packages.len(), 1);
+        assert_eq!(snap.espacio.packages[0].name, "hunkdiff");
     }
 
     #[test]
@@ -266,8 +271,8 @@ mod tests {
             .respuesta("ls", LS_JSON, 0)
             .respuesta("outdated", "", 0);
         let snap = snapshot(&runner).expect("empty is valid");
-        assert_eq!(snap.packages.len(), 3);
-        assert!(snap.packages.iter().all(|p| !p.outdated));
+        assert_eq!(snap.espacio.packages.len(), 3);
+        assert!(snap.espacio.packages.iter().all(|p| !p.outdated));
     }
 
     #[test]
@@ -276,7 +281,7 @@ mod tests {
             .respuesta("ls", LS_JSON, 0)
             .respuesta("outdated", OUTDATED_JSON, 1); // npm outdated: 1 = there are outdated
         let snap = snapshot(&runner).expect("exit 1 is not an error");
-        assert!(snap.packages.iter().any(|p| p.outdated));
+        assert!(snap.espacio.packages.iter().any(|p| p.outdated));
     }
 
     #[test]

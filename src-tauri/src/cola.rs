@@ -181,11 +181,9 @@ fn correr_activa(
     // travel WHOLE: the type (brew) decides each row's update flag.
     let snap0 = (def.snapshot)(runner.as_ref()).map_err(|e| e.to_string())?;
     let pendientes: Vec<GlobalPackage> = snap0
-        .packages
+        .objetivo
         .iter()
-        .filter(|p| {
-            p.outdated && !p.pinned && !excluidos_de(dir_config, def.nombre).contains(&p.name)
-        })
+        .filter(|p| !p.pinned && !excluidos_de(dir_config, def.nombre).contains(&p.name))
         .cloned()
         .collect();
     let total = pendientes.len();
@@ -340,7 +338,7 @@ mod tests {
             }
         );
         assert_eq!(snap.comando_actualizar, "npm i -g");
-        assert_eq!(snap.espacio.packages.len(), 3);
+        assert_eq!(snap.plan.espacio.packages.len(), 3);
     }
 
     #[test]
@@ -394,7 +392,7 @@ mod tests {
 
     fn def_brew_con(
         runner: fn() -> io::Result<Box<dyn Runner>>,
-        snapshot: fn(&dyn Runner) -> io::Result<EspacioGlobal>,
+        snapshot: fn(&dyn Runner) -> io::Result<crate::kernel::PlanGestor>,
     ) -> DefinicionGestor {
         DefinicionGestor {
             nombre: "brew",
@@ -413,11 +411,11 @@ mod tests {
     fn salta_a_los_pineados_de_brew() {
         // A Pineada is brew's own skip (#38): the queue is built without
         // it — attempting it would find no exact-line answer and fail.
-        fn snapshot_pineada(_: &dyn Runner) -> io::Result<EspacioGlobal> {
-            Ok(espacio_brew(vec![
+        fn snapshot_pineada(_: &dyn Runner) -> io::Result<crate::kernel::PlanGestor> {
+            Ok(crate::kernel::PlanGestor::de_filas(espacio_brew(vec![
                 paquete_brew("formula", "ffmpeg", "7.1", "8.0", true, true),
                 paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
-            ]))
+            ])))
         }
         fn runner_brew() -> io::Result<Box<dyn Runner>> {
             Ok(Box::new(
@@ -435,16 +433,68 @@ mod tests {
         assert_eq!(resumen.ok, 1);
         assert_eq!(resumen.failed, 0);
     }
+    #[test]
+    fn la_cola_se_arma_con_el_objetivo_y_no_con_las_filas() {
+        fn snapshot(_: &dyn Runner) -> io::Result<crate::kernel::PlanGestor> {
+            let en_filas = paquete_brew("formula", "simdjson", "1.0", "2.0", false, false);
+            let objetivo = paquete_brew("formula", "simdjson", "1.0", "2.0", true, false);
+            Ok(crate::kernel::PlanGestor {
+                espacio: espacio_brew(vec![en_filas]),
+                objetivo: vec![objetivo],
+            })
+        }
+        fn runner() -> io::Result<Box<dyn Runner>> {
+            Ok(Box::new(
+                crate::kernel::testutil::FakeRunner::new("7.0.4").respuesta_exacta(
+                    "upgrade --formula simdjson",
+                    "Upgrading simdjson",
+                    0,
+                ),
+            ) as Box<dyn Runner>)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let def = def_brew_con(runner, snapshot);
+        let (resumen, _) = cola_con(&def, dir.path());
+        assert_eq!(resumen.total, 1);
+        assert_eq!(resumen.ok, 1);
+    }
+
+    #[test]
+    fn una_excluida_con_nombre_de_tap_no_entra_en_la_cola() {
+        fn snapshot(_: &dyn Runner) -> io::Result<crate::kernel::PlanGestor> {
+            let package = paquete_brew(
+                "formula",
+                "gentleman-programming/tap/engram",
+                "1.0",
+                "2.0",
+                true,
+                false,
+            );
+            Ok(crate::kernel::PlanGestor::de_filas(espacio_brew(vec![
+                package,
+            ])))
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let exclusiones = serde_json::json!({"brew": ["gentleman-programming/tap/engram"]});
+        std::fs::write(dir.path().join("exclusiones.json"), exclusiones.to_string()).unwrap();
+        let def = def_brew_con(
+            || Ok(Box::new(crate::kernel::testutil::FakeRunner::new("7.0.4")) as Box<dyn Runner>),
+            snapshot,
+        );
+        let (resumen, _) = cola_con(&def, dir.path());
+        assert_eq!(resumen.total, 0);
+        assert_eq!(resumen.ok, 0);
+    }
 
     #[test]
     fn la_cola_de_brew_actualiza_formula_y_cask_con_sus_flags() {
         // Both kinds outdated: each row runs with ITS flag, in list
         // order (formulae first).
-        fn snapshot_brew(_: &dyn Runner) -> io::Result<EspacioGlobal> {
-            Ok(espacio_brew(vec![
+        fn snapshot_brew(_: &dyn Runner) -> io::Result<crate::kernel::PlanGestor> {
+            Ok(crate::kernel::PlanGestor::de_filas(espacio_brew(vec![
                 paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
                 paquete_brew("cask", "firefox", "142.0", "142.1", true, false),
-            ]))
+            ])))
         }
         fn runner_brew() -> io::Result<Box<dyn Runner>> {
             Ok(Box::new(
@@ -473,11 +523,11 @@ mod tests {
     fn las_exclusiones_de_nuupa_aplican_tambien_a_los_casks() {
         // Excluding the cask by (gestor=brew, paquete=firefox) — the
         // same granular mechanism as npm, over brew's cask row.
-        fn snapshot_brew(_: &dyn Runner) -> io::Result<EspacioGlobal> {
-            Ok(espacio_brew(vec![
+        fn snapshot_brew(_: &dyn Runner) -> io::Result<crate::kernel::PlanGestor> {
+            Ok(crate::kernel::PlanGestor::de_filas(espacio_brew(vec![
                 paquete_brew("formula", "wget", "1.25.0", "1.26.0", true, false),
                 paquete_brew("cask", "firefox", "142.0", "142.1", true, false),
-            ]))
+            ])))
         }
         fn runner_brew() -> io::Result<Box<dyn Runner>> {
             Ok(Box::new(
@@ -675,7 +725,7 @@ mod tests {
                 detenida: false
             }
         );
-        assert!(snap.espacio.packages.iter().all(|p| !p.outdated));
+        assert!(snap.plan.espacio.packages.iter().all(|p| !p.outdated));
     }
 
     #[test]
