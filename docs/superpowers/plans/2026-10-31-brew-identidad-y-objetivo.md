@@ -224,6 +224,16 @@ pub struct PlanGestor {
     pub espacio: EspacioGlobal,
     pub objetivo: Vec<GlobalPackage>,
 }
+
+impl PlanGestor {
+    /// The plan of a manager whose updatable set IS its outdated rows
+    /// (npm, pnpm, bun). Brew has its own: everything `brew outdated`
+    /// declares, dependencies included.
+    pub fn de_filas(espacio: EspacioGlobal) -> Self {
+        let objetivo = espacio.packages.iter().filter(|p| p.outdated).cloned().collect();
+        PlanGestor { espacio, objetivo }
+    }
+}
 ```
 
 ```rust
@@ -269,14 +279,14 @@ let pendientes: Vec<GlobalPackage> = snap0
 
 Los helpers de test que fabrican un gestor — `def_brew_con` en `lib.rs` y `cola.rs`, y el `def_con` equivalente — pasan a devolver `PlanGestor` (con `objetivo` incluido), porque `DefinicionGestor.snapshot` cambia de tipo.
 
-4. `src-tauri/src/npm.rs`, `pnpm.rs`, `bun.rs` — el objetivo son las filas desactualizadas:
+4. `src-tauri/src/npm.rs`, `pnpm.rs`, `bun.rs` — el objetivo son las filas desactualizadas. El bloque vive **una vez** en `PlanGestor::de_filas` (kernel), no repetido en los tres adaptadores:
 
 ```rust
-let objetivo = packages.iter().filter(|p| p.outdated).cloned().collect();
-Ok(PlanGestor {
-    espacio: EspacioGlobal { version_gestor, version_node, packages },
-    objetivo,
-})
+Ok(PlanGestor::de_filas(EspacioGlobal {
+    version_gestor,
+    version_node,
+    packages,
+}))
 ```
 
 5. `src/store.js` — el botón y el contador leen el objetivo:
@@ -304,7 +314,7 @@ const conteo = computed(() => {
 ```
 
 6. `src/store.test.js` y `src/PanelGestor.test.js` — los snapshots falsos llevan `objetivo`:
-   - `src/store.test.js`: la constante `SNAPSHOT` gana `objetivo` con los dos paquetes desactualizados (`context-mode` y `hunkdiff`); los tests que reescriben `packages` para cambiar el conjunto desactualizado reescriben **también** `objetivo`: `"updateAll sin desactualizados no hace nada"` y `"un excluido desactualizado desactiva 'Actualizar todo' si es el único"`.
+   - `src/store.test.js`: la constante `SNAPSHOT` gana `objetivo` con los dos paquetes desactualizados (`context-mode` y `hunkdiff`). **Regla general**: cualquier test que arme un snapshot a mano tiene que mantener `objetivo` coherente con `packages` — si el test marca filas como desactualizadas, el `objetivo` tiene que traerlas también. Los que lo hacen hoy: `"updateAll sin desactualizados no hace nada"` y `"un excluido desactualizado desactiva 'Actualizar todo' si es el único"`. Si al ejecutar los tests aparece algún otro que dependa del conjunto desactualizado, se actualiza igual: el store ya no lee `packages` para eso.
    - `src/PanelGestor.test.js`: `SNAPSHOT` y `SNAPSHOT_BREW` ganan `objetivo` con sus filas desactualizadas. Los snapshots que se inventan dentro de un test (los de las filas) no lo necesitan: no miran el botón ni el contador.
 
 **Comandos:**
