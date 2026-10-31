@@ -113,6 +113,7 @@ Tests nuevos (nombre exacto):
 - `una_hoja_de_tap_aparece_con_su_nombre_completo` — con `LEAVES_TAP` + `FORMULAE_TAP` + `OUTDATED_TAP`, la fila de `engram` se llama `gentleman-programming/tap/engram`, trae `installed == "3.6.0"`, `latest == "3.7.0"` y `outdated == true`.
 - `la_hoja_de_tap_encuentra_su_version_por_el_nombre_corto` — la fila existe aunque `brew list --versions` traiga `engram` (corto) y la hoja traiga `gentleman-programming/tap/engram` (largo): la versión instalada no se pierde.
 - `una_hoja_sin_version_resoluble_aparece_con_la_celda_vacia` — una hoja cuyo nombre corto no está en `brew list --versions` produce fila con `installed == ""` (no se descarta).
+- `las_lineas_de_brew_llevan_el_nombre_completo` — en `src-tauri/src/lib.rs`: `args_brew("gentleman-programming/tap/engram", Some("formula"))` devuelve `["upgrade", "--formula", "gentleman-programming/tap/engram"]`, y lo mismo `args_uninstall_brew` (`uninstall --formula`) y `args_unpin_brew` (`unpin`).
 - Renombrar `parse_versions_unirne_versiones_multiples` → `parse_versions_une_las_versiones_multiples` (el tipo de retorno cambia).
 
 **Qué cambia** (`src-tauri/src/brew.rs`):
@@ -202,6 +203,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
 - `src-tauri/src/kernel.rs`: test nuevo `el_objetivo_de_actualizacion_cruza_el_ipc` — serializar un `Snapshot` con `serde_json::to_value` y comprobar que el JSON trae `objetivo` con los paquetes que lleva (y que `packages` sigue ahí).
 - `src-tauri/src/cola.rs`: test nuevo `la_cola_se_arma_con_el_objetivo_y_no_con_las_filas` — un `PlanGestor` cuyo `espacio.packages` está al día y cuyo `objetivo` trae un paquete desactualizado → la cola actualiza ese paquete (el `FakeRunner` registra la línea ejecutada).
+- `src-tauri/src/cola.rs`: test nuevo `una_excluida_con_nombre_de_tap_no_entra_en_la_cola` — el archivo de Excluidas guarda el nombre **completo** (`gentleman-programming/tap/engram`), que es el mismo string que muestra la fila; el paquete no se actualiza.
 - `src/store.test.js`: test nuevo `el_objetivo_es_lo_que_actualiza_todo_toma` — el store cuenta y habilita el botón a partir de `snapshot.objetivo`, no de `packages`.
 - `src/PanelGestor.test.js`: el botón de "Actualizar todo" se habilita con el objetivo aunque la fila no exista.
 
@@ -235,6 +237,8 @@ pub struct Snapshot {
 
 `con_comando` se muda de `impl EspacioGlobal` a `impl PlanGestor` (mismo cuerpo, `plan: self`). El JSON que cruza el IPC queda: `comando_actualizar`, `comando_desinstalar`, `version_gestor`, `version_node`, `packages`, `objetivo`.
 
+Con `Snapshot` envolviendo el plan, el campo `espacio` se renombra a `plan`: hay que tocar los cinco usos de `snap.espacio` — dos asserts en `src-tauri/src/cola.rs`, dos en `src-tauri/src/lib.rs` y el test de `kernel.rs` — que pasan a ser `snap.plan.espacio`.
+
 2. `src-tauri/src/lib.rs`:
 
 ```rust
@@ -262,6 +266,8 @@ let pendientes: Vec<GlobalPackage> = snap0
 ```
 
 (El filtro `p.outdated` desaparece: el objetivo solo trae lo desactualizado. Los pines y las exclusiones se filtran igual que hoy.)
+
+Los helpers de test que fabrican un gestor — `def_brew_con` en `lib.rs` y `cola.rs`, y el `def_con` equivalente — pasan a devolver `PlanGestor` (con `objetivo` incluido), porque `DefinicionGestor.snapshot` cambia de tipo.
 
 4. `src-tauri/src/npm.rs`, `pnpm.rs`, `bun.rs` — el objetivo son las filas desactualizadas:
 
