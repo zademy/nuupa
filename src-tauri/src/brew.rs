@@ -1,8 +1,9 @@
 //! brew adapter (Homebrew on macOS, Linuxbrew on Linux): its global
 //! space is the user's LEAVES (top-level formulae) plus every cask —
-//! dependencies never appear, they update with their parent (same
-//! semantics as `npm -g`, vocabulary in GLOSSARY.md). The update line
-//! (`upgrade --formula|--cask`) lives in [`crate`]'s manager table.
+//! a dependency is not a row (vocabulary in GLOSSARY.md). Its update
+//! OBJECTIVE is wider: everything `brew outdated` declares, a
+//! dependency included. The update line (`upgrade --formula|--cask`)
+//! lives in [`crate`]'s manager table.
 
 use crate::kernel::{
     con_extension, correr_consulta, correr_instalacion, home, version_de, EspacioGlobal,
@@ -186,6 +187,9 @@ fn nombre_corto(nombre: &str) -> &str {
 /// plus every cask. An outdated entry adds latest + the flag; absent
 /// means up to date (latest = installed). Sorted by name, then type —
 /// a formula/cask name collision shows as two distinguishable rows.
+///
+/// The update objective is NOT the outdated rows: it is EVERYTHING brew
+/// declares outdated, dependencies included.
 fn armar_brew(
     version_gestor: String,
     hojas: BTreeSet<String>,
@@ -193,6 +197,34 @@ fn armar_brew(
     casks: BTreeMap<String, String>,
     outdated: &BTreeMap<(String, String), Desactualizado>,
 ) -> PlanGestor {
+    // The update objective: EVERYTHING brew declares outdated, not just
+    // the rows. A dependency brew reports outdated is updatable on its
+    // own (`brew upgrade --formula simdjson`); `brew upgrade --formula
+    // node` would NOT take it along.
+    let objetivo: Vec<GlobalPackage> = outdated
+        .iter()
+        .map(|((tipo, nombre), d)| {
+            // brew names a formula by its FULL name (`tap/name`) and a
+            // cask by its token; the installed version is keyed by the
+            // short name (`brew list --versions`) or by the token.
+            let installed = match tipo.as_str() {
+                TIPO_CASK => casks.get(nombre).cloned().unwrap_or_default(),
+                _ => versiones
+                    .get(nombre_corto(nombre))
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            GlobalPackage {
+                tipo: Some(tipo.clone()),
+                name: nombre.clone(),
+                installed,
+                latest: Some(d.latest.clone()),
+                outdated: true,
+                pinned: d.pinned,
+            }
+        })
+        .collect();
+
     let mut packages = Vec::new();
     // Only leaves: dependencies update with their parent, they are not
     // the user's packages (they never reach a table).
@@ -212,11 +244,15 @@ fn armar_brew(
     packages.sort_by(|a, b| {
         (&a.name, tipo_orden(a.tipo.as_deref())).cmp(&(&b.name, tipo_orden(b.tipo.as_deref())))
     });
-    PlanGestor::de_filas(EspacioGlobal {
-        version_gestor,
-        version_node: None,
-        packages,
-    })
+
+    PlanGestor {
+        espacio: EspacioGlobal {
+            version_gestor,
+            version_node: None,
+            packages,
+        },
+        objetivo,
+    }
 }
 
 /// Display order between kinds: formulae first, casks second (brew's
@@ -342,6 +378,71 @@ mod tests {
         let snap = snapshot(&runner_tap("otro-tap/huérfano\n", "")).expect("valid snapshot");
         let huerfano = fila(&snap, TIPO_FORMULA, "otro-tap/huérfano");
         assert_eq!(huerfano.installed, "");
+    }
+
+    // The objective with a dependency brew declares outdated: simdjson
+    // is a dependency of node (not a leaf). Real Homebrew 7.0.11 shape.
+    const OUTDATED_CON_DEPENDENCIA: &str = r#"{
+        "formulae": [
+            {"name":"node","installed_versions":["26.13.0_1"],"current_version":"26.13.0_2","pinned":false,"pinned_version":null},
+            {"name":"simdjson","installed_versions":["5.0.6","5.0.7"],"current_version":"5.1.0","pinned":false,"pinned_version":null}
+        ],
+        "casks": []
+    }"#;
+    const OUTDATED_DEPENDENCIA_PINEADA: &str = r#"{
+        "formulae": [
+            {"name":"node","installed_versions":["26.13.0_1"],"current_version":"26.13.0_2","pinned":false,"pinned_version":null},
+            {"name":"simdjson","installed_versions":["5.0.7"],"current_version":"5.1.0","pinned":true,"pinned_version":"5.0.7"}
+        ],
+        "casks": []
+    }"#;
+    const LEAVES_CON_DEPENDENCIA: &str = "node\n";
+    const FORMULAE_CON_DEPENDENCIA: &str = "node 26.13.0_1\nsimdjson 5.0.6 5.0.7\n";
+
+    fn runner_con_dependencia(outdated: &str) -> FakeRunner {
+        FakeRunner::new("7.0.11")
+            .respuesta("outdated", outdated, 0)
+            .respuesta("leaves", LEAVES_CON_DEPENDENCIA, 0)
+            .respuesta_exacta("list --versions", FORMULAE_CON_DEPENDENCIA, 0)
+            .respuesta_exacta("list --cask --versions", "", 0)
+    }
+
+    #[test]
+    fn el_objetivo_de_brew_incluye_una_dependencia_que_no_son_fila() {
+        let snap =
+            snapshot(&runner_con_dependencia(OUTDATED_CON_DEPENDENCIA)).expect("valid snapshot");
+        // the table keeps only the leaves: simdjson is a dependency of node
+        assert_eq!(snap.espacio.packages.len(), 1);
+        assert_eq!(snap.espacio.packages[0].name, "node");
+        // the objective is everything brew declares outdated
+        let nombres: Vec<&str> = snap.objetivo.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(nombres.len(), 2);
+        assert!(nombres.contains(&"node"));
+        assert!(nombres.contains(&"simdjson"));
+    }
+
+    #[test]
+    fn el_objetivo_de_brew_trae_la_version_instalada_de_cada_paquete() {
+        let snap =
+            snapshot(&runner_con_dependencia(OUTDATED_CON_DEPENDENCIA)).expect("valid snapshot");
+        let simdjson = objetivo_de(&snap, TIPO_FORMULA, "simdjson");
+        assert_eq!(simdjson.installed, "5.0.6, 5.0.7");
+        assert_eq!(simdjson.latest.as_deref(), Some("5.1.0"));
+        assert!(simdjson.outdated);
+        let node = objetivo_de(&snap, TIPO_FORMULA, "node");
+        assert_eq!(node.installed, "26.13.0_1");
+        assert_eq!(node.latest.as_deref(), Some("26.13.0_2"));
+    }
+
+    #[test]
+    fn una_dependencia_pineada_no_entra_en_la_cola() {
+        // brew DECLARES the pinned dependency outdated, so it enters the
+        // objective with its pin — the queue skips it (cola.rs filters).
+        let snap = snapshot(&runner_con_dependencia(OUTDATED_DEPENDENCIA_PINEADA))
+            .expect("valid snapshot");
+        let simdjson = objetivo_de(&snap, TIPO_FORMULA, "simdjson");
+        assert!(simdjson.outdated);
+        assert!(simdjson.pinned);
     }
 
     // Fixtures captured from real Homebrew 7.0.4 shapes
@@ -493,5 +594,12 @@ mod tests {
             .iter()
             .find(|p| p.name == nombre && p.tipo.as_deref() == Some(tipo))
             .unwrap_or_else(|| panic!("fila {tipo}/{nombre} ausente"))
+    }
+
+    fn objetivo_de<'a>(snap: &'a PlanGestor, tipo: &str, nombre: &str) -> &'a GlobalPackage {
+        snap.objetivo
+            .iter()
+            .find(|p| p.name == nombre && p.tipo.as_deref() == Some(tipo))
+            .unwrap_or_else(|| panic!("objetivo {tipo}/{nombre} ausente"))
     }
 }
