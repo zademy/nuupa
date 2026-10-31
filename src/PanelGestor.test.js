@@ -548,6 +548,34 @@ describe("PanelGestor montado", () => {
     expect(c.findAll("button.desinstalar")).toHaveLength(0);
   });
 
+  it("una versión desconocida no se pinta como «al día»", async () => {
+    tauri.responder("get_excluded", { estado: "ok", nombres: [] });
+    tauri.responder("list_globals", {
+      ...SNAPSHOT_BREW,
+      packages: [
+        {
+          name: "gentleman-programming/tap/engram",
+          installed: "",
+          latest: "",
+          outdated: false,
+          tipo: "formula",
+        },
+        ...SNAPSHOT_BREW.packages,
+      ],
+    });
+    const c = montar("brew");
+    await flushPromises();
+    const sinVersion = filaDe(c, "gentleman-programming/tap/engram");
+    // sin versión no se afirma que esté al día: la celda lo dice
+    expect(sinVersion.find(".al-dia").exists()).toBe(false);
+    expect(sinVersion.find(".desconocida").exists()).toBe(true);
+    // y lo dice también para quien no ve el "?"
+    expect(sinVersion.find(".desconocida").attributes("title")).toBeTruthy();
+    expect(sinVersion.find(".solo-lector").text()).not.toBe("");
+    // una fila con versión conocida sigue igual
+    expect(filaDe(c, "wget").find(".al-dia").exists()).toBe(true);
+  });
+
   it("la papelera de brew está en toda fila: normal, Excluida y Pineada", async () => {
     tauri.responder("get_excluded", { estado: "ok", nombres: ["wget"] });
     tauri.responder("list_globals", SNAPSHOT_BREW);
