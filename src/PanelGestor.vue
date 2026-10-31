@@ -47,6 +47,13 @@ const {
 
 const { t } = useI18n();
 
+// brew does not report the installed version of a formula renamed in
+// its tap: the row then says the version is unknown, instead of
+// claiming it is up to date.
+function versionDe(p) {
+  return p.latest ?? p.installed;
+}
+
 // The pending Desinstalar (#44): the ROW whose trash was clicked
 // (#46: the whole row — brew's confirm travels its type and pin
 // state). The modal is its brake; confirming closes it and runs
@@ -286,17 +293,31 @@ onUnmounted(() => {
                 >{{ p.tipo === "cask" ? "c" : "f" }}</span
               >
             </td>
-            <td class="version mono">{{ p.installed }}</td>
+            <td class="version mono">
+              <template v-if="p.installed">{{ p.installed }}</template>
+              <template v-else>
+                <span class="desconocida" :title="t('versionDesconocidaTitulo')"
+                  >?</span
+                >
+                <span class="solo-lector">{{ t("versionDesconocida") }}</span>
+              </template>
+            </td>
             <td class="mono">
               <template v-if="p.outdated">
-                <span class="version">{{ p.installed }}</span>
+                <span class="version">{{ p.installed || "?" }}</span>
                 <span class="flecha"> → </span>
                 <span class="nueva">{{ p.latest }}</span>
               </template>
-              <template v-else>
-                <span class="version">{{ p.latest ?? p.installed }}</span>
+              <template v-else-if="versionDe(p)">
+                <span class="version">{{ versionDe(p) }}</span>
                 <span class="al-dia">✓</span>
               </template>
+              <span
+                v-else
+                class="desconocida"
+                :title="t('versionDesconocidaTitulo')"
+                >?</span
+              >
             </td>
             <td class="acciones">
               <div class="acciones-contenido">
@@ -678,6 +699,11 @@ tbody tr:hover td {
 .al-dia {
   color: var(--fg-faint);
   margin-left: 4px;
+}
+
+/* A version brew does not report: said once, never as "up to date". */
+.desconocida {
+  color: var(--fg-faint);
 }
 
 /* Row states: contrast markers, not color tints. */

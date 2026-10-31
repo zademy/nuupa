@@ -49,6 +49,9 @@ export const MENSAJES = {
     columnaPaquete: "package",
     columnaInstalada: "installed",
     columnaUltima: "latest",
+    versionDesconocida: "unknown version",
+    versionDesconocidaTitulo:
+      "brew does not report the installed version of this package",
     tipoFormula: "formula",
     tipoCask: "cask",
     pineadaTitulo: "Pinned in brew — unpin it there to update it",
@@ -133,6 +136,9 @@ export const MENSAJES = {
     columnaPaquete: "paquete",
     columnaInstalada: "instalada",
     columnaUltima: "última",
+    versionDesconocida: "versión desconocida",
+    versionDesconocidaTitulo:
+      "brew no reporta la versión instalada de este paquete",
     tipoFormula: "fórmula",
     tipoCask: "cask",
     pineadaTitulo: "Pineada en brew — despineala ahí para actualizarla",
