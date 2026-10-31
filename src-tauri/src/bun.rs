@@ -6,7 +6,7 @@
 
 use crate::kernel::{
     armar, con_extension, correr_consulta, correr_instalacion, home, version_de, EspacioGlobal,
-    Runner, RunnerOutput,
+    PlanGestor, Runner, RunnerOutput,
 };
 use crate::sondeo;
 use std::collections::BTreeMap;
@@ -133,7 +133,7 @@ fn parse_tabla(salida: &str) -> Option<BTreeMap<String, String>> {
 }
 
 /// Photo of bun's global space.
-pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
+pub fn snapshot(runner: &dyn Runner) -> std::io::Result<PlanGestor> {
     let ls = runner.run(&["pm", "ls", "-g"])?;
     if ls.exit_code != 0 && !ls.stdout.contains("──") {
         return Err(std::io::Error::other(format!(
@@ -148,11 +148,11 @@ pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
         // without branches. Anything else with zero parsed globals = the
         // tree's format changed: visible error, not a fake "no packages".
         if ls.stdout.trim().is_empty() || ls.stdout.contains("node_modules") {
-            return Ok(EspacioGlobal {
+            return Ok(PlanGestor::de_filas(EspacioGlobal {
                 version_gestor: runner.version_gestor(),
                 version_node: runner.version_node(),
                 packages: Vec::new(),
-            });
+            }));
         }
         return Err(std::io::Error::other(format!(
             "bun pm ls did not produce the expected tree (exit {}): {}",
@@ -176,11 +176,11 @@ pub fn snapshot(runner: &dyn Runner) -> std::io::Result<EspacioGlobal> {
         parse_tabla(&out.stdout)
     };
     match tabla {
-        Some(mapa) => Ok(EspacioGlobal {
+        Some(mapa) => Ok(PlanGestor::de_filas(EspacioGlobal {
             version_gestor: runner.version_gestor(),
             version_node: runner.version_node(),
             packages: armar(pares, &mapa),
-        }),
+        })),
         // No recognizable table: real failure (exit != 0) or bun's format
         // changed — a visible error either way, never "all up to date".
         None => Err(std::io::Error::other(format!(
@@ -270,7 +270,7 @@ mod tests {
             .respuesta("pm", LS_SALIDA, 0)
             .respuesta("outdated", "", 0);
         let snap = snapshot(&runner).expect("empty = up to date");
-        assert!(snap.packages.iter().all(|p| !p.outdated));
+        assert!(snap.espacio.packages.iter().all(|p| !p.outdated));
     }
 
     #[test]
@@ -281,7 +281,7 @@ mod tests {
             .respuesta("pm", LS_SALIDA, 0)
             .respuesta("outdated", "bun outdated v1.3.14 (0d9b296a)\n", 0);
         let snap = snapshot(&runner).expect("banner only = up to date");
-        assert!(snap.packages.iter().all(|p| !p.outdated));
+        assert!(snap.espacio.packages.iter().all(|p| !p.outdated));
     }
 
     #[test]
@@ -301,9 +301,14 @@ mod tests {
     #[test]
     fn snapshot_detecta_desactualizados_y_no_reporta_node() {
         let snap = snapshot(&runner_bun()).expect("valid snapshot");
-        assert_eq!(snap.version_gestor, "1.3.14");
-        assert_eq!(snap.version_node, None); // bun is self-contained
-        let cowsay = snap.packages.iter().find(|p| p.name == "cowsay").unwrap();
+        assert_eq!(snap.espacio.version_gestor, "1.3.14");
+        assert_eq!(snap.espacio.version_node, None); // bun is self-contained
+        let cowsay = snap
+            .espacio
+            .packages
+            .iter()
+            .find(|p| p.name == "cowsay")
+            .unwrap();
         assert!(cowsay.outdated);
         assert_eq!(cowsay.latest.as_deref(), Some("1.6.0"));
     }
@@ -312,7 +317,7 @@ mod tests {
     fn snapshot_vacio_no_llama_a_outdated() {
         let runner = FakeRunner::new("1.3.14").respuesta("pm", "", 0); // no tree, no globals
         let snap = snapshot(&runner).expect("empty is valid");
-        assert!(snap.packages.is_empty());
+        assert!(snap.espacio.packages.is_empty());
         assert!(!runner.se_llamo_a("outdated -g"));
     }
 

@@ -26,7 +26,7 @@ Paquete de brew (solo macOS) que instala aplicaciones de usuario.
 _Avoid_: app, aplicación
 
 **Fórmula hoja**:
-Fórmula que el usuario instaló a propósito (no llegó como dependencia de otra): las únicas fórmulas del espacio global de brew.
+Fórmula que brew lista como hoja: no es dependencia de runtime de otra fórmula ni de un cask instalado. Es lo que brew llama _leaf_. Que una fórmula esté instalada a propósito no la hace hoja: `cairo` y `pango` se instalaron a propósito y a la vez son dependencias, así que brew no las considera hojas.
 _Avoid_: top-level, principal
 
 **Pineada**:
@@ -50,8 +50,12 @@ Instalar la última versión publicada de un paquete global (`npm i -g pkg@lates
 _Avoid_: upgradear, refrescar
 
 **Actualizar todo**:
-Cola secuencial que actualiza, de a uno, los paquetes desactualizados no excluidos.
+Cola secuencial que actualiza, de a uno, el objetivo menos las Excluidas. Las Pineadas no llegan al objetivo (brew se niega a actualizarlas), así que la cola nunca las ve.
 _Avoid_: actualizar en lote, bulk
+
+**Objetivo de actualización**:
+Los paquetes que un gestor declara actualizables ahora mismo. Para los gestores de node es el subconjunto desactualizado del Espacio global; para brew es todo lo que `brew outdated` declara, dependencias incluidas (las dependencias no son filas, pero sí se pueden actualizar), menos las Pineadas: brew se niega a actualizarlas, así que su fila las muestra como Excluida y quitarles el pino en brew las devuelve al objetivo. El botón de Actualizar todo, el contador y la cola leen el objetivo: nunca pueden discrepar entre sí.
+_Avoid_: lista de actualización, pendientes, desactualizables
 
 **Desinstalar**:
 Quitar un paquete global de su espacio global (`npm rm -g pkg`, `brew uninstall pkg`): destructivo, pide confirmación y borra el registro de Excluido si lo había. Aplica en toda fila, incluso Excluida o Pineada.

@@ -58,17 +58,17 @@ CI exige, en este orden: `npm run format:check` → `npm run lint` → `npm test
 
 La spec es #48. Cada tarea es un ticket hijo (rama `ticket/<n>-<slug>`):
 
-| Tarea                                                            | Ticket                                           | Depende de |
-| ---------------------------------------------------------------- | ------------------------------------------------ | ---------- |
-| 1 — El vocabulario (GLOSSARY.md)                                 | [#49](https://github.com/zademy/nuupa/issues/49) | —          |
-| 2 — brew: la identidad de una fila es el nombre completo         | [#50](https://github.com/zademy/nuupa/issues/50) | —          |
-| 3 — El objetivo de actualización cruza el IPC                    | [#51](https://github.com/zademy/nuupa/issues/51) | #50        |
-| 4 — brew: el objetivo es todo lo que brew declara desactualizado | [#52](https://github.com/zademy/nuupa/issues/52) | #51        |
-| 5 — Verificación contra el brew real                             | (sin ticket: es la comprobación final)           | #49–#52    |
+| Task                                                                  | Ticket                                           | Depende de |
+| --------------------------------------------------------------------- | ------------------------------------------------ | ---------- |
+| Task 1 — El vocabulario (GLOSSARY.md)                                 | [#49](https://github.com/zademy/nuupa/issues/49) | —          |
+| Task 2 — brew: la identidad de una fila es el nombre completo         | [#50](https://github.com/zademy/nuupa/issues/50) | —          |
+| Task 3 — El objetivo de actualización cruza el IPC                    | [#51](https://github.com/zademy/nuupa/issues/51) | #50        |
+| Task 4 — brew: el objetivo es todo lo que brew declara desactualizado | [#52](https://github.com/zademy/nuupa/issues/52) | #51        |
+| Task 5 — Verificación contra el brew real                             | (sin ticket: es la comprobación final)           | #49–#52    |
 
 ---
 
-## Tarea 1 — El vocabulario (GLOSSARY.md)
+## Task 1 — El vocabulario (GLOSSARY.md)
 
 **Por qué primero:** las tareas siguientes nombran cosas que el GLOSSARY tiene que definir ya.
 
@@ -91,7 +91,7 @@ La spec es #48. Cada tarea es un ticket hijo (rama `ticket/<n>-<slug>`):
 
 ---
 
-## Tarea 2 — brew: la identidad de una fila es el nombre completo
+## Task 2 — brew: la identidad de una fila es el nombre completo
 
 **Por qué aquí:** es el bug visible, se arregla entero en `src-tauri/src/brew.rs` y no toca el IPC (así que se puede revisar y mergear solo).
 
@@ -195,7 +195,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
 ---
 
-## Tarea 3 — El objetivo de actualización cruza el IPC
+## Task 3 — El objetivo de actualización cruza el IPC
 
 **Por qué aquí:** es la costura que hace posible el objetivo de brew. Es un **refactor sin cambio de comportamiento**: npm/pnpm/bun llenan el objetivo con sus filas desactualizadas, o sea exactamente lo que la cola y el botón usan hoy.
 
@@ -223,6 +223,16 @@ pub struct PlanGestor {
     #[serde(flatten)]
     pub espacio: EspacioGlobal,
     pub objetivo: Vec<GlobalPackage>,
+}
+
+impl PlanGestor {
+    /// The plan of a manager whose updatable set IS its outdated rows
+    /// (npm, pnpm, bun). Brew has its own: everything `brew outdated`
+    /// declares, dependencies included.
+    pub fn de_filas(espacio: EspacioGlobal) -> Self {
+        let objetivo = espacio.packages.iter().filter(|p| p.outdated).cloned().collect();
+        PlanGestor { espacio, objetivo }
+    }
 }
 ```
 
@@ -269,14 +279,14 @@ let pendientes: Vec<GlobalPackage> = snap0
 
 Los helpers de test que fabrican un gestor — `def_brew_con` en `lib.rs` y `cola.rs`, y el `def_con` equivalente — pasan a devolver `PlanGestor` (con `objetivo` incluido), porque `DefinicionGestor.snapshot` cambia de tipo.
 
-4. `src-tauri/src/npm.rs`, `pnpm.rs`, `bun.rs` — el objetivo son las filas desactualizadas:
+4. `src-tauri/src/npm.rs`, `pnpm.rs`, `bun.rs` — el objetivo son las filas desactualizadas. El bloque vive **una vez** en `PlanGestor::de_filas` (kernel), no repetido en los tres adaptadores:
 
 ```rust
-let objetivo = packages.iter().filter(|p| p.outdated).cloned().collect();
-Ok(PlanGestor {
-    espacio: EspacioGlobal { version_gestor, version_node, packages },
-    objetivo,
-})
+Ok(PlanGestor::de_filas(EspacioGlobal {
+    version_gestor,
+    version_node,
+    packages,
+}))
 ```
 
 5. `src/store.js` — el botón y el contador leen el objetivo:
@@ -303,8 +313,10 @@ const conteo = computed(() => {
 });
 ```
 
-6. `src/store.test.js` y `src/PanelGestor.test.js` — los snapshots falsos llevan `objetivo`:
-   - `src/store.test.js`: la constante `SNAPSHOT` gana `objetivo` con los dos paquetes desactualizados (`context-mode` y `hunkdiff`); los tests que reescriben `packages` para cambiar el conjunto desactualizado reescriben **también** `objetivo`: `"updateAll sin desactualizados no hace nada"` y `"un excluido desactualizado desactiva 'Actualizar todo' si es el único"`.
+6. `GLOSSARY.md` — la entrada **Cola** dice hoy que actualiza «los paquetes desactualizados no excluidos»; con el objetivo, la cola actualiza **el objetivo menos Pineadas y menos Excluidas**. Esa frase se corrige en esta task para que el glosario no contradiga el código nuevo. (El objetivo **sí** incluye las Pineadas — brew las declara desactualizadas — pero la cola nunca las actualiza.)
+
+7. `src/store.test.js` y `src/PanelGestor.test.js` — los snapshots falsos llevan `objetivo`:
+   - `src/store.test.js`: la constante `SNAPSHOT` gana `objetivo` con los dos paquetes desactualizados (`context-mode` y `hunkdiff`). **Regla general**: cualquier test que arme un snapshot a mano tiene que mantener `objetivo` coherente con `packages` — si el test marca filas como desactualizadas, el `objetivo` tiene que traerlas también. Los que lo hacen hoy: `"updateAll sin desactualizados no hace nada"` y `"un excluido desactualizado desactiva 'Actualizar todo' si es el único"`. Si al ejecutar los tests aparece algún otro que dependa del conjunto desactualizado, se actualiza igual: el store ya no lee `packages` para eso.
    - `src/PanelGestor.test.js`: `SNAPSHOT` y `SNAPSHOT_BREW` ganan `objetivo` con sus filas desactualizadas. Los snapshots que se inventan dentro de un test (los de las filas) no lo necesitan: no miran el botón ni el contador.
 
 **Comandos:**
@@ -321,9 +333,9 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
 ---
 
-## Tarea 4 — brew: el objetivo es todo lo que brew declara desactualizado
+## Task 4 — brew: el objetivo es todo lo que brew declara desactualizado
 
-**Por qué aquí:** el comportamiento que pedía el usuario. Depende de la Tarea 3 (el objetivo ya existe; aquí se llena con lo que brew declara).
+**Por qué aquí:** el comportamiento que pedía el usuario. Depende de la Task 3 (el objetivo ya existe; aquí se llena con lo que brew declara).
 
 **Test primero**, en `src-tauri/src/brew.rs`:
 
@@ -341,7 +353,9 @@ con las hojas `node\n` (simdjson **no** es hoja: es dependencia de node).
 
 - `el_objetivo_de_brew_incluye_una_dependencia_que_no_son_fila` — el objetivo trae `node` **y** `simdjson`; la tabla (`espacio.packages`) trae solo `node`.
 - `el_objetivo_de_brew_trae_la_version_instalada_de_cada_paquete` — la entrada de `simdjson` trae `installed == "5.0.6, 5.0.7"` (las dos versiones instaladas, como las de brew) y `latest == "5.1.0"`.
-- `una_dependencia_pineada_no_entra_en_la_cola` — una entrada con `pinned: true` va en el objetivo (brew la declara) pero la cola la salta (eso lo verifica `cola.rs`, no brew).
+- `una_dependencia_pineada_no_entra_en_el_objetivo` — una entrada con `pinned: true` **no** entra en el objetivo.
+
+  > **Ruling (revisión final de rama, contra la spec #48):** esta task decía que la pineada entraba en el objetivo y la cola la saltaba. La spec dice que el objetivo es lo que `brew outdated` devuelve «**menos Pineadas y menos Excluidas**», y el GLOSSARY define la Pineada como «nunca la actualiza»: un objetivo que contiene un paquete que la app nunca actualiza se contradice a sí mismo. Además `brew outdated` **sí** reporta las pineadas (`cmd/outdated.rb`: `select_outdated` no filtra por pin, y el JSON trae `pinned`/`pinned_version`), así que la entrada pineada llega al objetivo de verdad. Con la pineada dentro, el contador y el botón cuentan un paquete que la cola va a saltarse —justo la desacuerdo que este cambio viene a eliminar—. El objetivo queda como «lo que brew puede actualizar de verdad»: desactualizadas, dependencias incluidas, **menos las pineadas**. El filtro de pines de la cola se queda (defensivo).
 
 **Qué cambia** (`src-tauri/src/brew.rs`): `armar_brew` devuelve `PlanGestor` y arma el objetivo con el mapa de desactualizados:
 
@@ -354,15 +368,19 @@ fn armar_brew(
     outdated: &BTreeMap<(String, String), Desactualizado>,
 ) -> PlanGestor {
     let mut packages = Vec::new();
-    // …las filas, igual que en la Tarea 2…
+    // …las filas, igual que en la Task 2…
 
     // The update objective: EVERYTHING brew declares outdated, not just
     // the rows. A dependency that brew reports outdated is updatable
     // (`brew upgrade --formula simdjson` works) even though it is not
     // a leaf — and `brew upgrade --formula node` would NOT take it
     // along. Without this, its update is stranded.
+    // The pinned ones do NOT enter the objective: brew refuses to
+    // update them (the spec: the objective is what brew declares
+    // outdated, minus the pinned ones).
     let objetivo = outdated
         .iter()
+        .filter(|((_, _), d)| !d.pinned)
         .map(|((tipo, nombre), d)| {
             let installed = match tipo.as_str() {
                 TIPO_CASK => casks.get(nombre).cloned().unwrap_or_default(),
@@ -399,7 +417,7 @@ npm test
 
 ---
 
-## Tarea 5 — Verificación contra el brew real
+## Task 5 — Verificación contra el brew real
 
 **Qué hacer:** con el brew de esta máquina (Homebrew 7.0.11, 141 fórmulas, 30 hojas, 5 casks):
 

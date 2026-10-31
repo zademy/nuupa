@@ -56,6 +56,27 @@ pub struct EspacioGlobal {
     pub packages: Vec<GlobalPackage>,
 }
 
+/// A manager's plan: its global space and the packages it declares updatable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanGestor {
+    #[serde(flatten)]
+    pub espacio: EspacioGlobal,
+    pub objetivo: Vec<GlobalPackage>,
+}
+
+impl PlanGestor {
+    /// The plan of a manager whose updatable set is its outdated rows.
+    pub fn de_filas(espacio: EspacioGlobal) -> Self {
+        let objetivo = espacio
+            .packages
+            .iter()
+            .filter(|p| p.outdated)
+            .cloned()
+            .collect();
+        PlanGestor { espacio, objetivo }
+    }
+}
+
 /// The photo that crosses the seam to the UI: the global space plus the
 /// visible update command (single source of the verb; the UI never
 /// duplicates it).
@@ -67,16 +88,16 @@ pub struct Snapshot {
     #[serde(default)]
     pub comando_desinstalar: Option<String>,
     #[serde(flatten)]
-    pub espacio: EspacioGlobal,
+    pub plan: PlanGestor,
 }
 
-impl EspacioGlobal {
-    /// Completes the global space with its visible commands for the IPC.
+impl PlanGestor {
+    /// Completes the manager plan with its visible commands for the IPC.
     pub fn con_comando(self, comando: &str, desinstalar: Option<&str>) -> Snapshot {
         Snapshot {
             comando_actualizar: comando.to_string(),
             comando_desinstalar: desinstalar.map(str::to_string),
-            espacio: self,
+            plan: self,
         }
     }
 }
@@ -896,19 +917,39 @@ mod tests {
     }
 
     #[test]
-    fn espacio_global_con_comando_agrega_el_verbo_visible() {
-        let espacio = EspacioGlobal {
-            version_gestor: "11.4.2".into(),
-            version_node: Some("26.2.0".into()),
-            packages: Vec::new(),
+    fn el_objetivo_de_actualizacion_cruza_el_ipc() {
+        let actualizado = GlobalPackage {
+            tipo: None,
+            name: "al_dia".into(),
+            installed: "1.0".into(),
+            latest: Some("1.0".into()),
+            outdated: false,
+            pinned: false,
         };
-        let snap = espacio.con_comando("npm i -g", Some("npm uninstall -g"));
-        assert_eq!(snap.comando_actualizar, "npm i -g");
-        assert_eq!(
-            snap.comando_desinstalar.as_deref(),
-            Some("npm uninstall -g")
-        );
-        assert_eq!(snap.espacio.version_node.as_deref(), Some("26.2.0"));
+        let desactualizado = GlobalPackage {
+            tipo: None,
+            name: "atrasado".into(),
+            installed: "1.0".into(),
+            latest: Some("2.0".into()),
+            outdated: true,
+            pinned: false,
+        };
+        let plan = PlanGestor {
+            espacio: EspacioGlobal {
+                version_gestor: "11.4.2".into(),
+                version_node: Some("26.2.0".into()),
+                packages: vec![actualizado, desactualizado.clone()],
+            },
+            objetivo: vec![desactualizado],
+        };
+        let snap = plan.con_comando("npm i -g", Some("npm uninstall -g"));
+        let json = serde_json::to_value(snap).unwrap();
+        assert_eq!(json["comando_actualizar"], "npm i -g");
+        assert_eq!(json["comando_desinstalar"], "npm uninstall -g");
+        assert_eq!(json["version_gestor"], "11.4.2");
+        assert_eq!(json["version_node"], "26.2.0");
+        assert_eq!(json["packages"].as_array().unwrap().len(), 2);
+        assert_eq!(json["objetivo"][0]["name"], "atrasado");
     }
 
     fn nvm_con(dir: &std::path::Path, versiones: &[&str]) {

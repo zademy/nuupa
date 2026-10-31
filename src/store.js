@@ -275,16 +275,14 @@ export function createPackagesStore(
 
   const excluyendoAhora = (name) => !!excluyendo[name];
 
-  // Single rule for "updatable outdated": outdated and not excluded. It
-  // feeds the button and the queue.
+  // The queue, button and count all read the manager's update objective.
+  const objetivo = computed(() => state.snapshot?.objetivo ?? []);
+
   const desactualizables = computed(() =>
-    (state.snapshot?.packages ?? []).filter(
-      (p) => p.outdated && !isExcluded(p.name),
-    ),
+    objetivo.value.filter((p) => !isExcluded(p.name)),
   );
 
-  // Is there anything "Update all" can do? Looks at the full list (not
-  // the filter) and discounts the excluded ones.
+  // Is there anything "Update all" can do? Excluded items are discounted.
   const hayDesactualizados = computed(() => desactualizables.value.length > 0);
 
   // Counts for the statusbar (pure derivations, no invoke).
@@ -292,7 +290,7 @@ export function createPackagesStore(
     const all = state.snapshot?.packages ?? [];
     return {
       total: all.length,
-      desactualizados: all.filter((p) => p.outdated).length,
+      desactualizados: objetivo.value.length,
       excluidos: excluded.value.length,
     };
   });
