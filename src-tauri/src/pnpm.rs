@@ -8,6 +8,7 @@ use crate::kernel::{
     local_app_data, parse_outdated, version_de, EspacioGlobal, PlanGestor, Runner, RunnerOutput,
 };
 use crate::sondeo;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// pnpm's standard locations (outside the PATH), in order: the `PNPM_HOME`
@@ -27,6 +28,43 @@ fn ubicaciones_pnpm() -> Vec<PathBuf> {
         rutas.push(h.join(".local/share/pnpm/pnpm")); // Linux
     }
     rutas
+}
+
+/// pnpm's home: the `PNPM_HOME` variable when present (a user's
+/// explicit choice), else the per-OS default — the same locations
+/// [`ubicaciones_pnpm`] probes for the binary.
+fn decidir_home_pnpm(pnpm_home_env: Option<&OsStr>) -> Option<PathBuf> {
+    if let Some(v) = pnpm_home_env.filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(v));
+    }
+    if cfg!(windows) {
+        local_app_data().map(|lad| lad.join("pnpm"))
+    } else {
+        home().map(|h| {
+            if cfg!(target_os = "macos") {
+                h.join("Library/pnpm")
+            } else {
+                h.join(".local/share/pnpm")
+            }
+        })
+    }
+}
+
+/// Lends the child pnpm its home: a global install (`add -g`) dies
+/// with ERR_PNPM_NO_GLOBAL_BIN_DIR under the GUI, which does not
+/// inherit the shell's variables. The default home is created if
+/// missing (pnpm writes its shims there) and prepended to the PATH,
+/// as `pnpm setup` would have it. An explicit variable is inherited
+/// untouched.
+fn guardar_pnpm_home(cmd: &mut std::process::Command, pnpm_home_env: Option<&OsStr>) {
+    if pnpm_home_env.filter(|v| !v.is_empty()).is_some() {
+        return;
+    }
+    if let Some(dir) = decidir_home_pnpm(None) {
+        let _ = std::fs::create_dir_all(&dir);
+        cmd.env("PNPM_HOME", &dir);
+        crate::kernel::guardar_path(cmd, &dir);
+    }
 }
 
 /// Is there a pnpm on this machine? Presence check: the environment
@@ -68,6 +106,7 @@ impl RealPnpmRunner {
         let mut cmd = std::process::Command::new(bin);
         cmd.args(args);
         guardar_path_node(&mut cmd);
+        guardar_pnpm_home(&mut cmd, std::env::var_os("PNPM_HOME").as_deref());
         cmd
     }
 }
@@ -207,5 +246,55 @@ mod tests {
             .respuesta("outdated", OUTDATED_JSON, 1); // there are outdated
         let snap = snapshot(&runner).expect("exit 1 is not an error");
         assert!(snap.espacio.packages.iter().any(|p| p.outdated));
+    }
+
+    #[test]
+    fn home_pnpm_respeta_la_variable_del_usuario() {
+        let dir = decidir_home_pnpm(Some(OsStr::new("/pnpm/elegido/a_mano")));
+        assert_eq!(dir, Some(PathBuf::from("/pnpm/elegido/a_mano")));
+    }
+
+    #[test]
+    fn home_pnpm_sin_variable_cae_en_el_default_del_so() {
+        let dir = decidir_home_pnpm(None).expect("every OS has a default");
+        let esperado = if cfg!(windows) {
+            crate::kernel::local_app_data().unwrap().join("pnpm")
+        } else {
+            let h = crate::kernel::home().unwrap();
+            if cfg!(target_os = "macos") {
+                h.join("Library/pnpm")
+            } else {
+                h.join(".local/share/pnpm")
+            }
+        };
+        assert_eq!(dir, esperado);
+    }
+
+    #[test]
+    fn comando_sin_variable_recibe_pnpm_home_y_path() {
+        let mut cmd = std::process::Command::new("pnpm");
+        guardar_pnpm_home(&mut cmd, None);
+        let dir = decidir_home_pnpm(None).expect("default exists");
+        let home_env = cmd
+            .get_envs()
+            .find(|(k, _)| k.to_str() == Some("PNPM_HOME"))
+            .map(|(_, v)| v);
+        assert_eq!(home_env, Some(Some(dir.as_os_str())));
+        let path = cmd
+            .get_envs()
+            .find(|(k, _)| k.to_str() == Some("PATH"))
+            .and_then(|(_, v)| v)
+            .expect("PATH inyectado");
+        assert_eq!(std::env::split_paths(&path).next(), Some(dir));
+    }
+
+    #[test]
+    fn comando_con_variable_del_usuario_no_la_pisa() {
+        let mut cmd = std::process::Command::new("pnpm");
+        guardar_pnpm_home(&mut cmd, Some(OsStr::new("/pnpm/ya/configurado")));
+        let toco = cmd
+            .get_envs()
+            .any(|(k, _)| k.to_str() == Some("PNPM_HOME") || k.to_str() == Some("PATH"));
+        assert!(!toco);
     }
 }
